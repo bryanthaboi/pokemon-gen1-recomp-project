@@ -137,3 +137,5 @@ rm -f "$HOME/Library/Application Support/LOVE/pokemon-love2d/rom-cache.complete"
 
 ```
 
+## Special Thanks
+This project would not be possible without [pret](https://github.com/pret) > the pret band of decompiling maniacs > and their [pokered](https://github.com/pret/pokered) disassembly.
