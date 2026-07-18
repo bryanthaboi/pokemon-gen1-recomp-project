@@ -32,9 +32,6 @@ jobs:
   release:
     runs-on: [self-hosted, macOS]
 
-    env:
-      KEYCHAIN_PATH: ${{ runner.temp }}/pokemon-signing.keychain-db
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -114,6 +111,7 @@ jobs:
       - name: Import signing certificate into a temporary keychain
         run: |
           set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/pokemon-signing.keychain-db"
           ci_dir="${POKEMON_CI_DIR:-$HOME/.config/pokemon-ci}"
           p12="$ci_dir/signing.p12"
           passfile="$ci_dir/signing.pass"
@@ -222,4 +220,4 @@ jobs:
       - name: Clean up signing keychain
         if: always()
         run: |
-          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          security delete-keychain "$RUNNER_TEMP/pokemon-signing.keychain-db" 2>/dev/null || true
