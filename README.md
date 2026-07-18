@@ -4,6 +4,8 @@ A native LÖVE2D recreation of Pokemon Red. The engine and map behavior are
 hand-written Lua; game data and graphics are decoded from a ROM supplied by
 the player.
 
+SUPPORT AND ANNOUNCEMENTS: [Discord](https://bois.icu)
+
 This project does not include a ROM, emulate the Game Boy, transpile assembly,
 or download a disassembly. A canonical US Pokemon Red ROM is the only game
 content input.
