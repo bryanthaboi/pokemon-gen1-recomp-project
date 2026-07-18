@@ -32,6 +32,9 @@ jobs:
   release:
     runs-on: [self-hosted, macOS]
 
+    env:
+      KEYCHAIN_PATH: ${{ runner.temp }}/pokemon-signing.keychain-db
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -108,10 +111,82 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      - name: Import signing certificate into a temporary keychain
+        run: |
+          set -euo pipefail
+          ci_dir="${POKEMON_CI_DIR:-$HOME/.config/pokemon-ci}"
+          p12="$ci_dir/signing.p12"
+          passfile="$ci_dir/signing.pass"
+          if [ ! -f "$p12" ] || [ ! -f "$passfile" ]; then
+            echo "::error::Signing material not found in $ci_dir. Run scripts/ci-setup-signing.sh on the runner."
+            exit 1
+          fi
+          p12pw="$(cat "$passfile")"
+
+          kcpw="$(openssl rand -base64 24)"
+          echo "::add-mask::$kcpw"
+
+          # Fresh, dedicated keychain — no dependence on the login keychain/session.
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          security create-keychain -p "$kcpw" "$KEYCHAIN_PATH"
+          security set-keychain-settings "$KEYCHAIN_PATH"          # disable auto-lock
+          security unlock-keychain -p "$kcpw" "$KEYCHAIN_PATH"
+
+          security import "$p12" -P "$p12pw" -k "$KEYCHAIN_PATH" \
+            -T /usr/bin/codesign -T /usr/bin/security
+
+          # Let codesign use the key non-interactively.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$kcpw" "$KEYCHAIN_PATH" >/dev/null
+
+          # Make the keychain visible to find-identity/codesign (prepend to search list).
+          existing="$(security list-keychains -d user | sed -e 's/^[[:space:]]*//' -e 's/"//g')"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $existing
+
+          echo "Identities available to codesign:"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
       - name: Build macOS + Windows
         run: |
           set -euo pipefail
-          scripts/build.sh all --version "${{ steps.ver.outputs.version }}"
+          # Sign in-build (identity auto-detected from the temp keychain);
+          # notarize separately below so it uses secret credentials, not a
+          # login-keychain profile.
+          scripts/build.sh all --version "${{ steps.ver.outputs.version }}" --no-notarize
+
+      - name: Notarize & staple macOS app
+        run: |
+          set -euo pipefail
+          ci_dir="${POKEMON_CI_DIR:-$HOME/.config/pokemon-ci}"
+          if [ ! -f "$ci_dir/notary.env" ]; then
+            echo "::error::Missing $ci_dir/notary.env. Run scripts/ci-setup-signing.sh on the runner."
+            exit 1
+          fi
+          set -a; . "$ci_dir/notary.env"; set +a
+          echo "::add-mask::$APPLE_APP_PASSWORD"
+
+          app=".bazinga/work/PokemonRed.app"
+          zip="dist/mac/PokemonRed-macos.zip"
+          [ -d "$app" ] || { echo "::error::signed app not found at $app"; exit 1; }
+          if [ -z "${APPLE_ID:-}" ] || [ -z "${APPLE_APP_PASSWORD:-}" ] || [ -z "${APPLE_TEAM_ID:-}" ]; then
+            echo "::error::notary.env is missing APPLE_ID / APPLE_APP_PASSWORD / APPLE_TEAM_ID."
+            exit 1
+          fi
+
+          echo "Submitting to Apple notary service (can take a few minutes)..."
+          xcrun notarytool submit "$zip" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+
+          echo "Stapling ticket to the app..."
+          xcrun stapler staple "$app"
+
+          # Re-zip the now-stapled app (same format build.sh uses).
+          rm -f "$zip"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
+          echo "Notarized + stapled ✓"
 
       - name: Stage release assets
         id: assets
@@ -143,3 +218,8 @@ jobs:
             "dist/release/PokemonRed-${v}-windows.zip"
 
           echo "Published release $tag"
+
+      - name: Clean up signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
