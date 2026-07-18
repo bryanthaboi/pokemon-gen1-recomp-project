@@ -1,0 +1,145 @@
+name: Release
+
+# Builds the macOS and Windows desktop apps on the self-hosted Mac runner
+# and publishes them as a GitHub Release.
+#
+# Versioning:
+#   - First ever release is 0.1.0.
+#   - Every push to main auto-increments the patch: 0.1.0 -> 0.1.1 -> ... -> 0.1.99,
+#     then rolls over to 0.2.0 and keeps going.
+#   - To force a specific version, either:
+#       * run this workflow manually (Actions tab) and type it into "version", or
+#       * put "[release X.Y.Z]" anywhere in the commit message.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact version to release (e.g. 0.2.0). Leave blank to auto-increment."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: [self-hosted, macOS]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine version
+        id: ver
+        env:
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          semver_re='^[0-9]+\.[0-9]+\.[0-9]+$'
+
+          # 1) Explicit override from a manual run.
+          override=""
+          if [ -n "${DISPATCH_VERSION:-}" ]; then
+            override="$DISPATCH_VERSION"
+          else
+            # 2) Override from the commit message: [release X.Y.Z]
+            msg="$(git log -1 --pretty=%B || true)"
+            tag_ver="$(printf '%s' "$msg" | sed -n -E 's/.*\[release[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/p' | head -1)"
+            if [ -n "$tag_ver" ]; then
+              override="$tag_ver"
+            fi
+          fi
+
+          if [ -n "$override" ]; then
+            if ! printf '%s' "$override" | grep -Eq "$semver_re"; then
+              echo "::error::Invalid version override '$override' (expected X.Y.Z)"
+              exit 1
+            fi
+            version="$override"
+            echo "Using override version: $version"
+          else
+            # 3) Auto-increment from the highest existing vX.Y.Z tag.
+            latest="$(git tag -l 'v*' \
+              | sed -E 's/^v//' \
+              | grep -E "$semver_re" \
+              | sort -t. -k1,1n -k2,2n -k3,3n \
+              | tail -1 || true)"
+
+            if [ -z "$latest" ]; then
+              version="0.1.0"
+              echo "No existing release tag; starting at $version"
+            else
+              major="${latest%%.*}"
+              rest="${latest#*.}"
+              minor="${rest%%.*}"
+              patch="${rest##*.}"
+              patch=$((patch + 1))
+              if [ "$patch" -gt 99 ]; then
+                minor=$((minor + 1))
+                patch=0
+              fi
+              version="${major}.${minor}.${patch}"
+              echo "Latest was $latest; next is $version"
+            fi
+          fi
+
+          tag="v${version}"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::Tag $tag already exists. Pick a different version."
+            exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::Release $tag already exists. Pick a different version."
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Build macOS + Windows
+        run: |
+          set -euo pipefail
+          scripts/build.sh all --version "${{ steps.ver.outputs.version }}"
+
+      - name: Stage release assets
+        id: assets
+        run: |
+          set -euo pipefail
+          v="${{ steps.ver.outputs.version }}"
+          outdir="dist/release"
+          rm -rf "$outdir"
+          mkdir -p "$outdir"
+          cp "dist/mac/PokemonRed-macos.zip" "$outdir/PokemonRed-${v}-macos.zip"
+          cp "dist/win/PokemonRed-win64.zip" "$outdir/PokemonRed-${v}-windows.zip"
+          ls -lh "$outdir"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          v="${{ steps.ver.outputs.version }}"
+          tag="${{ steps.ver.outputs.tag }}"
+
+          notes="Download the correct version for your computer below."
+
+          gh release create "$tag" \
+            --target "$GITHUB_SHA" \
+            --title "$v" \
+            --notes "$notes" \
+            "dist/release/PokemonRed-${v}-macos.zip" \
+            "dist/release/PokemonRed-${v}-windows.zip"
+
+          echo "Published release $tag"
