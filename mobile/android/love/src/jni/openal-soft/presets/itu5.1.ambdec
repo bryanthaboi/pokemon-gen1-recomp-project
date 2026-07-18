@@ -1,0 +1,48 @@
+# AmbDec configuration
+# Written by Ambisonic Decoder Toolbox, version 8.0
+
+/description     itu50_2h0p_allrad_5200_rE_max_1_band
+
+/version         	3
+
+/dec/chan_mask   	11b
+/dec/freq_bands  	2
+/dec/speakers    	5
+/dec/coeff_scale 	fuma
+
+/opt/input_scale  	fuma
+/opt/nfeff_comp   	output
+/opt/delay_comp   	on
+/opt/level_comp   	on
+/opt/xover_freq   	400.000000
+/opt/xover_ratio  	3.000000
+
+/speakers/{
+#           id     dist         azim       elev     conn
+#-----------------------------------------------------------------------
+add_spkr 	LS	 1.000000	 110.000000	 0.000000
+add_spkr 	LF	 1.000000	  30.000000	 0.000000
+add_spkr 	CE	 1.000000	   0.000000	 0.000000
+add_spkr 	RF	 1.000000	 -30.000000	 0.000000
+add_spkr 	RS	 1.000000	-110.000000	 0.000000
+/}
+
+/lfmatrix/{
+order_gain	1.000000	1.000000	1.000000	0.000000
+add_row 	 0.420330	 0.330200	-0.312250	 0.019350	-0.027010
+add_row 	 0.197700	 0.288820	 0.287820	 0.049110	 0.007420
+add_row 	 0.058030	 0.000000	 0.205970	 0.000000	 0.050790
+add_row 	 0.197700	-0.288820	 0.287820	-0.049110	 0.007420
+add_row 	 0.420330	-0.330200	-0.312250	-0.019350	-0.027010
+/}
+
+/hfmatrix/{
+order_gain	1.000000	0.866025	0.500000	0.000000
+add_row 	 0.470934	 0.378170	-0.400085	-0.082226	-0.044377
+add_row 	 0.208954	 0.257988	 0.230383	 0.288520	-0.025085
+add_row 	 0.109403	-0.000002	 0.194278	-0.000003	 0.200863
+add_row 	 0.208950	-0.257989	 0.230379	-0.288516	-0.025088
+add_row 	 0.470936	-0.378173	-0.400081	 0.082228	-0.044372
+/}
+
+/end

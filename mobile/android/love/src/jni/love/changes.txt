@@ -1,0 +1,1440 @@
+LOVE 11.5 [Mysterious Mysteries]
+--------------------------------
+
+Released: 2023-12-03
+
+* Added "LÖVE Loader" launcher on Android for easier loading of .love files.
+
+* Changed iOS game selector to alphabetically sort the list of .love files.
+* Changed JIT compilation on macOS arm64 (Apple Silicon) to be off by default, since performance and available JIT memory isn't reliable.
+
+* Fixed inconsistent and buggy behaviour of 'pairs' by updating LuaJIT.
+* Fixed "unexpected alignment" errors when running love on some 32 bit Linux systems.
+* Fixed running fused games on Windows when the executable has been code-signed.
+* Fixed undefined behaviour in love.data.hash's implementation.
+* Fixed writing files when a symlink exists in the save directory's path.
+* Fixed love.threaderror not being called if the error message is an empty string.
+* Fixed a race condition when a Thread is destroyed immediately after Thread:start.
+* Fixed unexpectedly slow first frames on macOS.
+* Fixed love.joystick.setGamepadMapping when replacing an existing mapping.
+* Fixed love.joystick.getGamepadMappingString.
+* Fixed duplicate platform fields in love.joystick.saveGamepadMappings.
+* Fixed DistanceJoint type information.
+* Fixed time drift in Source:tell after a Source loops.
+* Fixed audio not always pausing when the app is minimized on Android.
+* Fixed RecordingDevice:start to return false instead of hard-crashing on iOS.
+* Fixed identical frames in Ogg Theora videos being skipped.
+* Fixed love.font.newBMFontRasterizer's single file parameter variant.
+* Fixed the original window size not always being restored when exiting fullscreen on Linux.
+* Fixed some cases of framerate hitches in Windows when vsync is enabled in windowed mode.
+* Fixed colors appearing over-saturated on P3 displays in macOS.
+* Fixed textures looking washed out when gamma-correct rendering is used on some Android devices.
+* Fixed images with mipmaps when ANGLE is used with an AMD GPU.
+* Fixed line rendering when duplicate points are used in the line.
+* Fixed line rendering with miter and bevel line join modes when antiparallel lines are formed.
+* Fixed a crash when calling Text:add with an empty string parameter.
+
+LOVE 11.4 [Mysterious Mysteries]
+--------------------------------
+
+Released: 2022-01-02
+
+* Added native arm64 support on macOS.
+* Added a variant of love.filesystem.newFileData which accepts a Data object.
+* Added Body:getLocalPoints.
+* Added Font:getKerning.
+* Added support for r16, rg16, and rgba16 pixel formats in Canvases.
+* Added Shader:send(name, matrixlayout, data, ...) variant, whose argument order is more consistent than Shader:send(name, data, matrixlayout, ...).
+
+* Changed all builds and platforms where LOVE provides LuaJIT to use LuaJIT 2.1 instead of 2.0.
+* Changed love.timer.getTime to start at 0 when the module is first loaded.
+* Changed certain out-of-Lua-memory situations to show a message box instead of instantly crashing.
+* Changed the naming scheme of LOVE's embedded Lua files for improved integration with Lua chunkname APIs.
+
+* Fixed build-time compatibility with Lua 5.4.
+* Fixed code compatibility with math.mod and string.gfind when LuaJIT 2.1 is used.
+* Fixed errors on some systems related to > 53 bit pointer addresses, when recent versions of LuaJIT 2.1 are used.
+* Fixed the default error handler showing a blank screen on some mobile devices.
+* Fixed drag-and-drop to open a love game on macOS causing love.event.quit("restart") to fail.
+* Fixed fused macOS apps opening other love games when drag-and-drop is used (if the fused app hasn't already removed .love files from recognized document types).
+* Fixed File:isEOF when called on a dropped file.
+* Fixed support for > 2GB dropped files on desktops.
+* Fixed ByteData and DataView missing Data:clone implementations.
+* Fixed love.physics meter scale value persisting after love.event.quit("restart").
+* Fixed audio to resume properly after interruption on iOS.
+* Fixed love.graphics.newVideo to error instead of crash when an invalid video file is given.
+* Fixed initial window creation to set the window's title during creation instead of after.
+* Fixed the window's screen position when exiting fullscreen via love.window.setFullscreen.
+* Fixed love.displayrotated being given a boolean instead of an enum string.
+* Fixed memory corruption and a crash when drawing smooth lines.
+* Fixed a crash in Canvas:newImageData when the pixel format's pixel byte size multiplied by its width isn't a multiple of 4.
+* Fixed love.graphics.newVolumeImage when explicit mipmaps are provided.
+* Fixed freezes and crashes in automatic batching when an AMD GPU is used.
+* Fixed love.graphics.print and Image:replacePixels on more AMD/ATI GPUs.
+* Fixed Font:setFallbacks to account for different DPI scales in each fallback font.
+* Fixed Font:getWrap to not remove trailing newlines.
+* Fixed Text:getWidth when the Text's string only contains spaces.
+* Fixed a crash with some Intel graphics drivers on Linux.
+* Fixed a hang with some Intel graphics drivers on Windows, by preventing gamma correct rendering on affected systems.
+* Fixed a crash with some Intel graphics drivers on Windows when mipmapped Canvases are used.
+* Fixed texture memory reported by love.graphics.getStats when a volume or array Canvas is created.
+* Fixed DXT1 textures which use 1 bit alpha-cutout.
+* Fixed rare issues where textures were not sent to shaders correctly.
+* Fixed Shader:send(name, data, matrixlayout, ...).
+* Fixed quad offsets in ParticleSystems when ParticleSystem:setOffset is not used.
+* Fixed a performance issue with setting a small subrange of data in non-stream Meshes and SpriteBatches.
+* Fixed rounded rectangles breaking if the rx or ry parameters are negative.
+* Fixed rounded rectangle automatic points calculation when rx or ry are more than half the rectangle's size.
+* Fixed source code compilation on Xcode 12+.
+* Fixed source code compilation on Linux systems that don't provide posix_spawn APIs.
+
+LOVE 11.3 [Mysterious Mysteries]
+--------------------------------
+
+Released: 2019-10-27
+
+* Added support for FLAC audio files.
+* Added support for microphone recording on Android.
+* Added t.audio.mic (false by default). On Android, setting it to true requests microphone recording permission from the user.
+* Added Decoder:clone.
+* Added Data:getFFIPointer.
+* Added Joystick:getDeviceInfo.
+* Added Joystick:getGamepadMappingString and love.joystick.getGamepadMappingString(guid).
+* Added love.math.colorToBytes and love.math.colorFromBytes.
+* Added 'usedpiscale' boolean (true by default) to love.window.setMode and love.conf. Disables automatic DPI scaling when false.
+* Added love.window.getDisplayOrientation and a love.displayrotated callback.
+* Added love.window.get/setVSync, to allow setting vsync without recreating the window.
+* Added love.window.getSafeArea.
+* Added an optional vertex count parameter to Mesh:setVertices.
+* Added support for rgba4, rgb5a1, rgb565, rgb10a2, rg11b10f, r8, rg8, r16, rg16, r16f, rg16f, r32f, and rg32f formats in ImageData and Images.
+* Added support for loading .dds files that contain uncompressed pixel data.
+
+* Changed audio file type detection, so it probes all supported backends for unrecognized extensions.
+
+* Fixed "bad lightuserdata" errors when running love on some arm64 devices.
+* Fixed boot.lua's line numbers in stack traces to match its source code.
+* Fixed the deprecation system not fully restarting when love.event.quit("restart") is used.
+* Fixed love.isVersionCompatible.
+* Fixed named Channels persisting across love.event.quit("restart") occurrences.
+* Fixed race conditions when different love.physics Worlds are used in different threads.
+* Fixed World:getJoints to return the fully resolved type of the Joint, instead of the base type.
+* Fixed love.timer.sleep(0) to return control to the OS scheduler instead of being a no-op.
+* Fixed love.math.randomNormal incorrectly using cached state after love.math.setRandomSeed or setRandomState.
+* Fixed love.data.hash returning an incorrect hash for certain input sizes.
+* Fixed love.data.newByteData to cause a Lua error instead of crashing when invalid arguments are used.
+* Fixed the Data-returning variant of love.filesystem.read and File:read to return the number of bytes that were read.
+* Fixed love.filesystem's require loaders to error instead of crashing when no argument is given.
+* Fixed love.filesystem.mount(Data).
+* Fixed a memory leak when loading files in some situations.
+* Fixed t.audio.mixwithsystem.
+* Fixed audio clicks immediately after playing a Source on iOS.
+* Fixed Source:play + Source:stop + Source:play looping the first few ms of sound for streaming Sources on iOS.
+* Fixed Source:play + Source:seek looping the first few ms of sound for streaming Sources on iOS.
+* Fixed occasional pops in streaming sources on iOS. 
+* Fixed love.audio.play(sources) to use previously set playback positions on stopped Sources.
+* Fixed Source:setEffect(name, true) and Source:getEffect(name) when the effect has no associated Filter.
+* Fixed love.audio.newSource(filename, "queue") to cause a Lua error.
+* Fixed Source:setPitch to error if the given pitch is <= 0, NaN, or infinity.
+* Fixed video seeking and pausing in various scenarios.
+* Fixed an audio Source memory leak when a Video gets garbage collected after playing it.
+* Fixed video playback support on some Adreno-based Android devices.
+* Fixed black fringes around text in some situations.
+* Fixed extreme flickering when text moves along non-integer coordinates.
+* Fixed the first character in a string sometimes not being processed during text vertex generation.
+* Fixed Text:set(" ") not clearing any previously set text in a Text object.
+* Fixed love.graphics.getTextureTypes to return a table with boolean values in its fields instead of number values.
+* Fixed lines not rendering properly if a single line has more than 65,000 vertices.
+* Fixed a pixel shader performance regression on some graphics drivers when OpenGL 3 or OpenGL ES 3 is used.
+* Fixed text not showing up on Radeon HD 3000-series graphics cards on Windows.
+* Fixed non-integer DPI scale values being truncated to integers in love.graphics.newCanvas.
+* Fixed creating depth canvases on Windows systems when using an Intel HD 3000 GPU.
+* Fixed automatic batching performance to be more consistent on all operating systems.
+* Fixed gammaToLinearPrecise in shaders not being as precise as it should be.
+* Fixed ImageData:paste and ImageData:setPixel to have more consistent clamping and rounding of color values when different formats are used.
+
+LOVE 11.2 [Mysterious Mysteries]
+--------------------------------
+
+Released: 2018-11-25
+
+* Added Source:setAirAbsorption and Source:getAirAbsorption.
+* Added Body:setTransform and Body:getTransform.
+
+* Improved performance of love.graphics.draw slightly on iOS and Android.
+
+* Fixed filesystem initialization on Windows 10 update 1809.
+* Fixed compatibility with Lua 5.2 and 5.3.
+* Fixed the explicit format + Data argument variant of love.data.decompress.
+* Fixed love.joystick.setGamepadMapping not being able to change existing mappings.
+* Fixed a crash on quit on Linux if a custom cursor is active when quitting.
+* Fixed a crash in the Data variant of Shader:send when it's called after love.window.setMode.
+* Fixed a love.graphics.setCanvas error message to be less confusing.
+
+LOVE 11.1 [Mysterious Mysteries]
+--------------------------------
+
+Released: 2018-04-15
+
+* Fixed love.graphics.setCanvas failing randomly.
+* Fixed love.graphics.clear(colortable) when no Canvas is active.
+* Fixed stencil and depth support on older phones.
+* Fixed love.event.quit causing crashes and other unexpected behaviour if a Canvas is active.
+* Fixed Fixture:getShape crashing when returning a ChainShape.
+* Fixed love.joystick.loadJoystickMappings outputting a deprecation warning about love.filesystem.isFile.
+* Fixed Source:queue to show the correct argument name in the error message when an invalid data parameter is given.
+* Fixed t.console=true causing an error on Windows if lovec.exe is used.
+
+LOVE 11.0 [Mysterious Mysteries]
+--------------------------------
+
+Released: 2018-04-01
+
+  * Added Object:release.
+  * Added Data:clone.
+  * Added queueable audio sources.
+  * Added audio input support.
+  * Added Source filters: low gain, high gain and band pass.
+  * Added audio effect APIs (reverb, echo, etc.)
+  * Added variants of SoundData:getSample/setSample which take a channel parameter.
+  * Added variants of all table-with-fields-returning get* functions, the new variants take an existing table to fill in.
+  * Added a variant to World:update, which accepts the number of iterations to run. The defaults are now 8 and 3.
+  * Added Body:isTouching.
+  * Added RopeJoint:setMaxLength.
+  * Added a click count argument to love.mousepressed and love.mousereleased.
+  * Added variants of love.filesystem.mount which accept a Data or FileData object containing zipped data.
+  * Added love.filesystem.get/setCRequirePath, and use that to find c libraries for require.
+  * Added variants of File:read and love.filesystem.read which take an enum to determine whether they return a FileData or a string.
+  * Added love.data module. It includes hex/base64 encoding functions, MD5 and SHA hashing, string packing, compression APIs, and more.
+  * Added Channel:hasRead, which checks if a message has been read. Takes an id, which Channel:push will now return.
+  * Added variants of Channel:demand and Channel:supply which take a timeout argument.
+  * Added Transform objects to love.math.
+  * Added support for different ImageData formats, including RGBA8 (the default), RGBA16, RGBA16F, and RGBA32F.
+  * Added the ability to load Radiance HDR, OpenEXR, and 16 bit PNG images.
+  * Added love.graphics.getImageFormats (replaces love.graphics.getCompressedImageFormats).
+  * Added the ability to specify a per-object pixel density scale factor when creating Images, Canvases, Fonts, and Videos. Affects drawing.
+  * Added Texture:getPixelWidth/Height and love.graphics.getPixelWidth/Height.
+  * Added Texture:getPixelDensity, love.graphics.getPixelDensity, and Font:getPixelDensity.
+  * Added Texture:getMipmapCount, getFormat, getLayerCount, getDepth, and getTextureType.
+  * Added Array, Cubemap, and Volume texture types and corresponding Image and Canvas APIs.
+  * Added love.graphics.getTextureTypes, returns a table with fields indicating support for each texture type.
+  * Added mipmapping support to Canvases, including both auto-generated mipmaps and manually rendering to a specific mipmap level.
+  * Added 'stencil8', 'depth24stencil8', 'depth32fstencil8', 'depth16', 'depth24', and 'depth32f' pixel formats for Canvases.
+  * Added variant of love.graphics.newCanvas which accepts a table of settings.
+  * Added optional 'readable' boolean field to the table passed into love.graphics.newCanvas.
+  * Added optional 'depthstencil' field to the table passed into love.graphics.setCanvas, for using a depth/stencil Canvas.
+  * Added optional 'depth' and 'stencil' boolean fields to the table passed into setCanvas, for enabling depth and stencil buffers if 'depthstencil' isn't used.
+  * Added shadow sampler support for Canvases.
+  * Added love.graphics.setDepthMode for using the depth buffer for depth testing/writes. Depth values of rendered objects can only be set via shaders.
+  * Added love.graphics.setMeshCullMode, for culling back- or front-facing triangles when drawing a Mesh.
+  * Added love.graphics.setFrontFaceWinding.
+  * Added variant of love.graphics.getCanvasFormats which takes a 'readable' boolean.
+  * Added love.graphics.drawLayer and SpriteBatch:add/setLayer for easily drawing layers of Array Textures.
+  * Added variants of love.graphics.print and printf which take a Font argument.
+  * Added variants of love.graphics.clear to control how the active depth and stencil buffers are cleared.
+  * Added love.graphics.applyTransform and love.graphics.replaceTransform.
+  * Added love.graphics.transformPoint and love.graphics.inverseTransformPoint.
+  * Added love.graphics.getStackDepth.
+  * Added love.graphics.flushBatch for manually flushing automatically batched draws.
+  * Added SpriteBatch:setDrawRange.
+  * Added per-shader opt in support for the GLSL 3.30 and GLSL ES 3.00 shading languages.
+  * Added 'void effect()' pixel shader entry point.
+  * Added love.graphics.validateShader.
+  * Added Shader:hasUniform.
+  * Added support for non-square shader uniform matrices on desktop platforms and on mobile GLSL 3.
+  * Added Shader:send(matrixname, is_column_major, matrix, ...) which specifies how to interpret the matrix table arguments.
+  * Added Shader:send variants which accept a Data object.
+  * Added 'borderellipse' and 'borderrectangle' ParticleSystem distributions.
+  * Added variant of ParticleSystem:setEmissionArea which accepts an area angle and a flag for whether particle directions are relative to the center of the area.
+  * Added ParticleSystem:set/getAreaSpreadAngle and set/getAreaSpreadIsRelativeDirection.
+  * Added love.graphics.captureScreenshot (replaces love.graphics.newScreenshot).
+  * Added 'glsl3', 'instancing', 'fullnpot','pixelshaderhighp', and 'shaderderivatives' graphics features.
+  * Added 'anisotropy' graphics limit.
+  * Added Mesh instancing support via love.graphics.drawInstanced and Mesh:attachAttribute.
+  * Added a Mesh:attachAttribute variant that takes a different target attribute name.
+  * Added Mesh:detachAttribute.
+  * Added a variant of Mesh:setVertexMap which accepts a Data object.
+  * Added love.window.updateMode.
+  * Added love.window.isMinimized.
+  * Added love.window.restore.
+  * Added the ability to prevent love from creating a stencil buffer for the window.
+  * Added cycle detection to Variant's table serialization, cycles now cause an error, rather than a stack overflow.
+  * Added love.graphics.newShader File and FileData variants.
+  * Added a default love.threaderror callback, which raises the error in the main thread.
+  * Added checks for invalid constants passed to love.keyboard.isDown/isScancodeDown.
+  * Added deprecation warnings, on by default for non-fused games.
+  * Added love.filesystem.getInfo.
+  * Added 'drawcallsbatched' to love.graphics.getStats.
+  * Added support for header-less DEFLATE to love.data.compress/decompress.
+
+  * Deprecated love.filesystem.exists / isFile / isDirectory / isSymlink / getLastModified / getSize (use getInfo instead).
+  * Deprecated love.math.compress / decompress (use love.data.compress / decompress instead).
+
+  * - All renamed APIs are formally deprecated rather than completely removed.
+  * Renamed love.window.getPixelScale to love.window.getDPIScale.
+  * Renamed love.mouse.hasCursor to love.mouse.isCursorSupported.
+  * Renamed ParticleSystem:setAreaSpread to ParticleSystem:setEmissionArea.
+  * Renamed love.errhand to love.errorhandler.
+  * Renamed Source/SoundData/Decoder:getChannels to getChannelCount.
+  * Renamed PrismaticJoint/RevoluteJoint:hasLimitsEnabled to areLimitsEnabled.
+  * Renamed love.audio.getSourceCount to love.audio.getActiveSourceCount.
+  * Renamed all get[Object]List functions to get[Object]s.
+
+  * Removed the default source type for love.audio.newSource.
+  * Removed variant of love.filesystem.newFileData which takes base64 data, use love.data.decode instead.
+  * Removed the no-argument variant of Text:set, use Text:clear instead.
+  * Removed love.graphics.getCompressedImageFormats, use love.graphics.getImageFormats instead.
+  * Removed the 'void effects(...)' pixel shader entry point. Use the new 'void effect()' instead.
+  * Removed Shader:getExternVariable, use Shader:hasUniform instead.
+  * Removed love.graphics.newScreenshot, use love.graphics.captureScreenshot instead.
+  * Removed deprecated enet function host:socket_get_address.
+  * Removed functions deprecated in LÖVE 0.10.2:
+    * Removed Shader:sendInt, Shader:sendBoolean, Shader:sentFloat, Shader:sendMatrix, and Shader:sendTexture (use Shader:send instead).
+    * Removed love.window.isCreated (use love.window.isOpen instead).
+
+  * Improved performance when drawing textures, shapes, lines, and points by automatically batching their draw calls together when possible.
+  * Improved performance of Shader:send when the Shader is not active.
+  * Improved performance of love.math.randomNormal when LuaJIT's JIT compiler is enabled.
+  * Improved performance of love.filesystem.lines and File:lines, especially when reading from a file inside a zip/.love.
+
+  * Changed all color values to be in the range 0-1, rather than 0-255.
+  * Changed high-dpi functionality to require much less code (often none at all) for graphics to appear at the correct sizes and positions.
+  * Changed love.graphics.print and friends to ignore carriage returns.
+  * Changed the 'multiply' blend mode to error if not used with the 'premultiplied' blend alpha mode, since the formula only works with that anyway.
+  * Changed some love.graphics, love.window, and love.event APIs to cause an error if a Canvas is active.
+  * Changed stenciling functionality with a Canvas active to require stencil=true (or a custom stencil-formatted Canvas) to be set in setCanvas.
+  * Changed Mesh:setDrawRange to take 'start' and 'count' parameters instead of 'min' and 'max'.
+  * Changed the 'vsync' field of love.window.setMode and t.window in love.conf. It's now an integer with 0 disabling vsync.
+  * Changed the audio playback APIs drastically.
+  * Changed enet to no longer set the 'enet' global, again matching luasocket.
+  * Changed Source seeking behaviour, all kinds of Sources now behave similarly when seeking past the boundaries.
+  * Changed love.timer.step, it now returns dt.
+  * Changed love.run and love.errhand to return a function for their main loop, which gets called until love quits.
+
+  * Updated and improved command line argument handling.
+  * Updated the boot sequence to show an error instead of the no-game screen, if a nonexistant folder is passed in as the source game directory.
+  * Updated 'love.exe --version' on Windows to print to the parent console.
+  * Updated Android print rerouting and JIT compilation disabling to apply inside threads.
+  * Updated invalid enum value error messages to show a list of the valid enum values.
+  * Updated Source:seek to work if the Source isn't playing.
+  * Updated love.event.poll to stop allocating memory unnecessarily.
+  * Updated love.math.random to have improved numeric distribution.
+  * Updated love.graphics to support Core Profile OpenGL 3.3+ when available.
+  * Updated shaders to always expose derivative functions (dFdx, dFdy, fwidth) when available in OpenGL ES.
+  * Updated shaders to allow using VERTEX and PIXEL in shader code.
+  * Updated love.graphics.circle/ellipse/arc/rectangle to take transformation scale into account when determining the number of segments to use.
+  * Updated Font glyph generation to improve antialiasing.
+  * Updated Canvas:newImageData to return an ImageData with a format that matches the Canvas' as closely as possible.
+  * Updated love.graphics.newImage to treat file names ending with "@2x", "@3x", etc. as a pixel density scale factor if none is explicitly supplied.
+  * Updated the error message when bad values are given to love.graphics.line.
+  * Updated the maximum love.graphics transformation/state stack depth from 64 to 128.
+  * Updated the default error handler to allow copying the error to the clipboard when the user decides to do so.
+  * Updated love.filesystem.setRequirePath to support multiple template '?' characters in each path.
+  * Updated luasocket to version 3.0rc1.
+  * Updated love.joystick.loadGamepadMappings so it doesn't error when given an empty string.
+  * Updated love.joystick.setGamepadMapping to use the controller's name for the new mapping when possible.
+
+  * Fixed error in default error handler when the error message contains non UTF-8 bytes.
+  * Fixed a memory leak when sending love objects to threads which never load that object's module.
+  * Fixed a memory leak in enet when peer:send fails.
+  * Fixed os.execute always returning -1 in Linux.
+  * Fixed the default reference angle for WeldJoint, PrismaticJoint, and RevoluteJoint.
+  * Fixed Fixture:getShape to reuse the existing internal Fixture-owned shape.
+  * Fixed MouseJoint:setFrequency to error instead of crashing if a frequency of 0 is set.
+  * Fixed love.system.set/getClipboardText to error instead of crashing, when a window hasn't been created.
+  * Fixed Joystick:getGamepadMapping to work with xinput controllers.
+  * Fixed love.joystick.setGamepadMapping's replacement code.
+  * Fixed baseline calculation when rendering text.
+  * Fixed VaryingTexCoords and love_ScreenSize in shaders to be 'highp' in OpenGL ES, when supported.
+  * Fixed ParticleSystem:setParticleLifetime to error if a negative value is given.
+  * Fixed Shader:send and Shader:sendColor ignoring the last argument for an array.
+  * Fixed a crash when love.graphics.pop is called after a love.window.setMode while the transformation stack was not empty.
+  * Fixed love.window.isMaximized.
+  * Fixed video playback to work with a wider range of Ogg Theora files.
+  * Fixed video seeking to be faster.
+  * Fixed BezierCurves to error instead of hanging in some situations.
+  * Fixed compilation of luasocket with newer luajit 2.1.0 beta versions.
+
+LOVE 0.10.2 [Super Toast]
+-------------------------
+
+Released: 2016-10-31
+
+  * Added lovec.exe in Windows. It is the same as love.exe but built with the Console subsystem, so it always uses or provides a console.
+  * Added the ability to restart the game via love.event.quit("restart").
+  * Added support for passing a table to love.mouse.isDown, love.keyboard.isDown, love.keyboard.isScancodeDown, Joystick:isDown, and Joystick:isGamepadDown.
+  * Added love.window.isMaximized.
+  * Added 'shaderswitches' field to the table returned by love.graphics.getStats.
+  * Added Quad:getTextureDimensions.
+  * Added 'ellipse' area distribution to ParticleSystems.
+  * Added support for BC4-7 compressed texture formats in KTX files.
+  * Added PrismaticJoint:getAxis and WheelJoint:getAxis.
+  * Added 2-point version of love.physics.newRevoluteJoint.
+  * Added table variants of Fixture:setCategory and Fixture:setMask.
+  * Added getNextVertex and getPreviousVertex to ChainShape and EdgeShape.
+  * Added optional reference angle arguments to RevoluteJoint, PrismaticJoint, and WeldJoint constructors.
+  * Added RevoluteJoint:getReferenceAngle, PrismaticJoint:getReferenceAngle, and WeldJoint:getReferenceAngle.
+
+  * Deprecated undocumented Shader:sendTexture, Shader:sendMatrix, Shader:sendInt, and Shader:sendFloat functions.
+
+  * Fixed love on iOS 6.
+  * Fixed os.execute always returning -1 on Linux.
+  * Fixed the love.lowmemory callback to call collectgarbage() after the callback has fired, instead of before.
+  * Fixed love.math.noise(nil) to error instead of returning nil.
+  * Fixed an occasional crash when a Thread ends.
+  * Fixed a hang at the end of video playback with some video files.
+  * Fixed the video decoding thread to not do any work when there are no videos to decode.
+  * Fixed love.graphics.newVideo(file) to no longer error if love.audio is disabled.
+  * Fixed a rare bug in Source:play for streaming Sources if the associated OpenAL source object was previously used for a static Source.
+  * Fixed corrupted Font glyphs in rare cases.
+  * Fixed stencils inside Canvases on some OpenGL ES 2 devices.
+  * Fixed an OpenGL error in OpenGL ES 3 when multiple render targets are used.
+  * Fixed love.window.setMode crashing when called with a Canvas active.
+  * Fixed love.window.maximize to update the reported window dimensions immediately.
+  * Fixed gamma correction of ImageFonts and BMFonts with colored images.
+  * Fixed the default shader improperly applying gamma correction to per-vertex colors when gamma correction is requested but not supported on OpenGL ES.
+  * Fixed text coloring breaking because of an empty string.
+  * Fixed large burst of particles when dramatically increasing the emission rate of a ParticleSystem.
+  * Fixed SpriteBatch:setBufferSize to keep old sprite data if it can fit.
+  * Fixed MouseJoint:getBodies unconditionally erroring.
+  * Fixed memory leak in Text:set.
+  * Fixed incorrect kerning caused by using kerning information for the wrong character in some fonts.
+  * Fixed ImageData:setPixel/getPixel/mapPixel and SoundData:setSample/getSample to properly handle non-integer coordinates.
+
+  * Improved performance of Channel methods by roughly 2x in many cases.
+  * Improved performance of Shader:send when small numbers of arguments are given.
+  
+  * Updated love.filesystem.mount to accept a DroppedFile as the first parameter.
+  * Updated Shader:send to do type and argument checking based on the specified uniform variable's information instead of the arguments to the function.
+  * Updated Shader:send to accept a flat table for matrix uniforms.
+
+
+LOVE 0.10.1 [Super Toast]
+-------------------------
+
+Released: 2016-02-14
+
+  * Added a new love.conf flag t.externalstorage, which determines whether files are saved in internal or external storage on Android devices.
+  * Added a new variant of love.graphics.arc which can draw different types of arcs ("pie", "open", or "closed").
+  * Added "lighten" and "darken" BlendModes. They can only be used with the "premultiplied" BlendAlphaMode.
+  * Added the "lighten" GraphicsFeature constant.
+  * Added the ability to avoid clearing specific Canvases when calling love.graphics.clear, if multiple Canvases are active at once via love.graphics.setCanvas.
+  * Added Text:getDimensions.
+  * Added optional "collideconnected" argument to love.physics.newMotorJoint.
+
+  * Fixed a Lua error in the no-game screen if the window's height is too small.
+  * Fixed the default error handler to reset the mouse Cursor.
+  * Fixed love.filesystem functions crashing when called if liblove is used directly without calling love.filesystem.init.
+  * Fixed audio on Android to pause when the app is inactive, and resume when the app becomes active again.
+  * Fixed the Video decoding thread hanging after Video:seek or when a Video finishes.
+  * Fixed Video:isPlaying to always return false after it finishes playing.
+  * Fixed RandomGenerator:random crashing if a nil 'self' is used.
+  * Fixed loading BMFont files which have characters with 0 width or height (a space character, for example).
+  * Fixed love.graphics.newFont causing crashes if FileData is passed in.
+  * Fixed love.graphics.clear(colortable) causing crashes on OpenGL ES 2 systems when a Canvas is active.
+  * Fixed a driver bug on some Android devices which caused all objects to show up as black.
+  * Fixed a driver bug on Windows with AMD graphics cards where love.graphics.clear would not always work.
+  * Fixed Shader:sendColor incorrectly converting alpha values from sRGB to linear RGB when gamma-correct rendering is enabled.
+  * Fixed love.graphics.newMesh(vertices) double-converting colors from sRGB to linear RGB when gamma-correct rendering is enabled.
+  * Fixed love.graphics.new* crashing when there is no graphics context/window.
+
+  * Updated the Windows executable to prefer the high-powered AMD graphics card on systems which have switchable Intel+AMD GPUs.
+  * Updated love.touch.getTouches to return the list of IDs in the relative order that the touches initially happened, instead of being in a random order.
+  * Updated the error messages caused by invalid or bad arguments to ImageData and SoundData methods to be more descriptive.
+
+
+LOVE 0.10.0 [Super Toast]
+-------------------------
+
+Released: 2015-12-22
+
+  * Added an iOS port.
+  * Added an Android port.
+  * Added the flag t.accelerometerjoystick to love.conf. Disables accelerometer-as-joystick functionality on mobile devices when false.
+  * Added the flag t.gammacorrect to love.conf (replaces t.window.srgb.) Enabling it globally enables gamma-correct rendering, when supported.
+  * Added video playback support for Ogg Theora videos, via love.graphics.newVideo and Video objects.
+  * Added love.video module. It is not used for displaying videos on-screen, only decoding them.
+  * Added love.touch module. Note that it has important differences from the touch implementation in the LÖVE 0.9 Android and iOS ports.
+  * Added love.touchpressed, love.touchreleased, and love.touchmoved.
+  * Added love.system.vibrate.
+  * Added love.filesystem.setRequirePath and love.filesystem.getRequirePath.
+  * Added an optional program exit argument to love.event.quit.
+  * Added love.filedropped and love.directorydropped event callback functions.
+  * Added love.lowmemory event callback function, called when the app is running out of memory on mobile operating systems.
+  * Added love.textedited event callback function, called when the user is compositing text (e.g. via an IME.)
+  * Added love.wheelmoved event callback function (replaces "wu" and "wd" constants for love.mousepressed.)
+  * Added love.mouse.hasCursor.
+  * Added a boolean argument to love.mousepressed and love.mousereleased indicating whether the button event originated from a touch press.
+  * Added optional x/y/width/height arguments to love.keyboard.setTextInput. They tell the system where text will show up so on-screen keyboards can avoid that area.
+  * Added Source:getType (replaces Source:isStatic.)
+  * Added Source:getDuration and Decoder:getDuration.
+  * Added an optional string argument containing raw pixel byte data to the width/height variant of love.image.newImageData.
+  * Added love.graphics.ellipse.
+  * Added rounded-rectangle support to love.graphics.rectangle.
+  * Added love.graphics.points (replaces love.graphics.point.)
+  * Added love.graphics.intersectScissor.
+  * Added an optional argument to love.graphics.setBlendMode which indicates whether to treat the colors of drawn objects as having pre-multiplied alpha.
+  * Added love.graphics.getSupported (replaces love.graphics.isSupported.)
+  * Added love.graphics.getSystemLimits (replaces love.graphics.getSystemLimit.)
+  * Added love.graphics.stencil and love.graphics.set/getStencilTest (replaces love.graphics.setStencil.)
+  * Added love.graphics.isActive.
+  * Added color arguments to love.graphics.clear. It no longer always uses the background color value.
+  * Added love.graphics.discard.
+  * Added love.graphics.isGammaCorrect.
+  * Added the "clampzero" WrapMode.
+  * Added the ability to specify custom mipmaps when creating an image, via love.graphics.newImage(filename, {mipmaps={mip1, mip2, ...}})
+  * Added optional x/y/width/height arguments to Image:refresh and Canvas:newImageData.
+  * Added Image:getFlags.
+  * Added one- and two-channel Canvas formats: r8, rg8, r16f, rg16f, r32f, and rg32f.
+  * Added support for different formats in each Canvas when using multi-canvas rendering. Added the "multicanvasformats" Graphics Feature constant.
+  * Added support for OpenGL ES 2 and 3.
+  * Added support for loading ETC, EAC, PVRTC, and ASTC compressed textures on systems that support them.
+  * Added custom vertex attribute support for Meshes via new variants of love.graphics.newMesh.
+  * Added Mesh:setVertexAttribute and Mesh:getVertexAttribute.
+  * Added Mesh:getVertexFormat.
+  * Added Mesh:flush.
+  * Added an optional 'startvertex' argument to Mesh:setVertices.
+  * Added the ability for love.graphics.newMesh and Mesh:setVertices to accept a Data object.
+  * Added Mesh:setAttributeEnabled and Mesh:isAttributeEnabled.
+  * Added Mesh:attachAttribute.
+  * Added SpriteBatch:attachAttribute.
+  * Added Shader:sendColor.
+  * Added new shader functions: gammaCorrectColor, gammaToLinear, and linearToGamma. The functions also have 'precise' and 'fast' variants.
+  * Added Text objects and love.graphics.newText.
+  * Added per-character color support to love.graphics.print/printf and to Text objects.
+  * Added BMFont bitmap font file support to love.graphics.newFont and love.font.
+  * Added kerning support for TrueType/OpenType and BMFont Fonts.
+  * Added an optional font hinting argument to love.graphics.newFont when loading TrueType fonts.
+  * Added an optional spacing argument to love.graphics.newImageFont, which applies additional spacing to all rendered glyphs.
+  * Added Font:setFallbacks.
+  * Added love.window.maximize.
+  * Added love.window.close.
+  * Added love.window.requestAttention.
+  * Added love.window.setDisplaySleepEnabled and love.window.isDisplaySleepEnabled.
+  * Added BezierCurve:renderSegment and BezierCurve:removeControlPoint.
+  * Added BezierCurve:getSegment.
+  * Added love.math.compress and love.math.decompress.
+  * Added Channel:performAtomic.
+
+  * Changed love.mousepressed, love.mousereleased, and love.mouse.isDown to use button numbers instead of named button constants.
+  * Changed love.keypressed to be love.keypressed(key, scancode, isrepeat).
+  * Changed love.keyreleased to be love.keyreleased(key, scancode).
+  * Changed Font:getWrap's second return value to be a table containing the text split into lines.
+  * Changed love.graphics.newImage's optional second argument to be a table of flags (flags are "mipmaps" and "linear".)
+  * Changed the arguments for the standard variants of love.graphics.newMesh to newMesh(vertices [, drawmode, usage]) and newMesh(vertexcount [, drawmode, usage]).
+  * Changed ImageData:encode to return a FileData object. ImageData:encode's first parameter is now the format to encode to, and the second parameter is an optional filename to write to.
+
+  * Renamed the "normal" Fullscreen Type to "exclusive".
+  * Renamed the DistanceModel constants "inverse clamped", "linear clamped", and "exponent clamped" to "inverseclamped", "linearclamped", and "exponentclamped".
+  * Renamed the "additive", "subtractive", and "multiplicative" BlendModes to "add", "subtract", and "multiply".
+  * Renamed the KeyConstant and Scancode representing the spacebar from " " to "space".
+  * Renamed File:eof to File:isEOF.
+  * Renamed Canvas:getImageData to Canvas:newImageData.
+  * Renamed love.image's CompressedData type to CompressedImageData.
+
+  * Removed callback variant of love.filesystem.getDirectoryItems.
+  * Removed the "wu" and "wd" constants for love.mousepressed (replaced by love.wheelmoved.)
+  * Removed the named mouse button constants (replaced by button numbers.)
+  * Removed Source:isStatic (replaced by Source:getType.)
+  * Removed image loading support for all (non-compressed texture) file formats except for PNG, JPEG, TGA, and BMP.
+  * Removed JPEG encoding support from ImageData:encode.
+  * Removed love.graphics.point (replaced by love.graphics.points.)
+  * Removed love.graphics.setPointStyle and love.graphics.getPointStyle.
+  * Removed love.graphics.isSupported (replaced by love.graphics.getSupported.)
+  * Removed love.graphics.getSystemLimit (replaced by love.graphics.getSystemLimits.)
+  * Removed love.graphics.setStencil (replaced by love.graphics.stencil and love.graphics.setStencilTest.)
+  * Removed the "canvas", "shader", "npot", "subtractive", and "mipmap" Graphics Feature constants (the features always have guaranteed support now.)
+  * Removed the "multicanvas" Graphics Feature constant (use love.graphics.getSystemLimits instead.)
+  * Removed the "srgb" Graphics Feature constant (use love.graphics.isGammaCorrect() or love.graphics.getCanvasFormats().srgb instead.)
+  * Removed the "srgb" flag in love.window.setMode and in the t.window table in love.conf (Replaced by t.gammacorrect.)
+  * Removed the "premultiplied" blend mode (love.graphics.setBlendMode("alpha", "premultiplied") now does the same thing.)
+  * Removed Canvas:getPixel (use Canvas:newImageData instead.)
+  * Removed Canvas:clear (use love.graphics.clear instead.)
+  * Removed Mesh:getVertices.
+  * Removed Mesh:setVertexColors and Mesh:hasVertexColors (use Mesh:setAttributeEnabled("VertexColor", enable) instead.)
+  * Removed functions deprecated in LOVE 0.9.1 and 0.9.2:
+    * Removed love.graphics.getMaxImageSize and love.graphics.getMaxPointSize (replaced by love.graphics.getSystemLimits.)
+    * Removed Mesh:set/getImage, SpriteBatch:set/getImage, and ParticleSystem:set/getImage (replaced by set/getTexture.)
+    * Removed SpriteBatch:bind/unbind.
+    * Removed Canvas:getFSAA and the "fsaa" flag in love.conf and love.window.setMode (replaced by Canvas:getMSAA and "msaa".)
+    * Removed the "dxt" and "bc5" Graphics Feature constant (replaced by love.graphics.getCompressedImageFormats.)
+    * Removed the "hdrcanvas" Graphics Feature constant (replaced by love.graphics.getCanvasFormats.)
+    * Removed love.window.getWidth/getHeight/getDimensions (use love.graphics.getWidth/getHeight/getDimensions or love.window.getMode instead.)
+
+  * Fixed utf8.char.
+  * Fixed detection of fused love games.
+  * Fixed World:getCallbacks and World:getContactFilter when used in coroutines.
+  * Fixed crashes when objects which store Lua callback functions are garbage collected after being used in coroutines.
+  * Fixed memory leaks in love.physics if World:destroy is never called. When a World is GCed it now destroys all objects it owns.
+  * Fixed love.keyboard.getKeyFromScancode crashing when an invalid scancode is given.
+  * Fixed decoding of 8-bit WAV files.
+  * Fixed a crash issue when rewinding streaming ogg Sources, when certain versions of libvorbis are used.
+  * Fixed love.audio.stop() not rewinding streaming Sources.
+  * Fixed the stencil buffer in Canvases when an unsupported MSAA value is used to create the Canvas.
+  * Fixed Canvas:renderTo to restore the previous Canvas if an error occurs in the passed function.
+  * Fixed love.graphics.draw(canvas) to cause an error if that Canvas is the active one.
+  * Fixed Mesh:getVertexMap to return nil rather than an empty table, if no vertex map has been set.
+  * Fixed love.graphics.getColorMask.
+  * Fixed the default offset for particles when ParticleSystem:setQuads or ParticleSystem:setTexture is used.
+  * Fixed love.graphics.shear resetting all love.graphics transformations.
+  * Fixed the "add" and "subtract" blend modes to no longer modify the alpha of the Canvas / screen.
+
+  * Improved the performance of World:rayCast and World:queryBoundingBox.
+  * Improved the performance of love.graphics.line and other line drawing functions, when the "smooth" LineStyle is used.
+  * Improved the performance of Shader:send when matrices are used.
+  * Improved the performance of ImageData and SoundData methods when LuaJIT's JIT compiler is enabled, by using efficient FFI code.
+  * Improved the performance of love.math.noise, love.math.gammaToLinear, love.math.linearToGamma, love.math.random, and RandomGenerator:random when LuaJIT's JIT compiler is enabled.
+
+  * Updated the compatibility warning notice to use a message box and to show the version specified in love.conf.
+  * Updated the compatibility warning notice to display before main.lua is loaded.
+  * Updated the __tostring metamethod of love objects to output the pointer value, similar to tostring(table).
+  * Updated World:setCallbacks, World:setContactFilter, World:queryBoundingBox, and World:rayCast to have improved argument type checking.
+  * Updated threads to load love.filesystem automatically.
+  * Updated love.filesystem to enable symlinks by default.
+  * Updated love.math.setRandomSeed and RandomGenerator:setSeed to produce better results for the first few random() calls.
+  * Updated love.math.random and RandomGenerator:random to produce slightly better results in general.
+  * Updated Source methods that deal with spatial audio to error rather than failing silently if the Source isn't mono.
+  * Updated the 3D and 4D variants of love.math.noise to use Perlin noise rather than Simplex noise, to avoid patent issues.
+  * Updated ImageFonts to no longer treat separator pixels as spacing.
+  * Updated the default font to use less memory.
+  * Updated the behavior of text wrapping with love.graphics.printf and Font:getWrap to work better.
+  * Updated love.graphics.print and love.graphics.printf to no longer automatically round the x and y position arguments.
+  * Updated some error messages for love.graphics.newImage to be more descriptive.
+  * Updated love.graphics color functions to automatically apply love.math.gammaToLinear to color values when gamma-correct rendering is enabled.
+  * Updated the 'normal' Canvas format to internally use 'srgb' rather than 'rgba8' when gamma-correct rendering is enabled.
+  * Updated love.graphics.setColor to affect all drawn objects, including ParticleSystems, SpriteBatches, and Meshes.
+  * Updated the default fullscreen type to be "desktop" rather than "exclusive".
+  * Updated the minimum runtime system requirements of LOVE to require OpenGL 2.1 or OpenGL ES 2 support.
+  * Updated the pixel shader effect function so screen_coords.y is 0 at the top of the screen instead of the bottom.
+  * Updated Images to require setting the mipmaps flag to true on creation in order to use mipmaps.
+  * Updated Images to allow mipmaps for non-power-of-two sizes.
+
+LOVE 0.9.2 [Baby Inspector]
+---------------------------
+
+  Released: 2015-02-14
+
+  * Added Lua 5.3's UTF-8 module (via utf8 = require("utf8")).
+  * Added Shader:getExternVariable.
+  * Added several new canvas texture formats.
+  * Added love.graphics.getCanvasFormats.
+  * Added love.graphics.getCompressedImageFormats.
+  * Added ParticleSystem:setQuads.
+  * Added ParticleSystem:setLinearDamping.
+  * Added SpriteBatch:flush.
+  * Added love.graphics.getStats.
+  * Added "mirroredrepeat" wrap mode.
+  * Added love.audio.setDopplerScale and love.audio.getDopplerScale.
+  * Added optional duration argument to Joystick:setVibration.
+  * Added love.joystick.loadGamepadMappings and love.joystick.saveGamepadMappings.
+  * Added Joint:setUserData and Joint:getUserData.
+  * Added Joint:getBodies.
+  * Added GearJoint:getJoints.
+  * Added Contact:getFixtures and Body:getContactList.
+  * Added Body:getWorld.
+  * Added Body:getJointList.
+  * Added Body/Contact/Fixture/Joint/World:isDestroyed.
+  * Added love.mousemoved event callback.
+  * Added love.mouse.setRelativeMode and love.mouse.getRelativeMode.
+  * Added Scancode enums, love.keyboard.getKeyFromScancode, and love.keyboard.getScancodeFromKey.
+  * Added love.window.getDisplayName.
+  * Added love.window.minimize.
+  * Added love.window.showMessageBox.
+  * Added 'refreshrate' field to the table returned by love.window.getMode.
+  * Added love.window.toPixels and love.window.fromPixels.
+  * Added love.window.setPosition and love.window.getPosition, and 'x' and 'y' fields to love.window.setMode and t.window in love.conf.
+  * Added love.filesystem.isSymlink, love.filesystem.setSymlinksEnabled, and love.filesystem.areSymlinksEnabled.
+  * Added love.filesystem.getRealDirectory.
+
+  * Deprecated SpriteBatch:bind and SpriteBatch:unbind.
+  * Deprecated all uses of the name 'FSAA' in favor of 'MSAA'.
+  * Deprecated the 'hdrcanvas' graphics feature enum in favor of getCanvasFormats.
+  * Deprecated the 'dxt' and 'bc5' graphics feature enums in favor of getCompressedImageFormats.
+
+  * Fixed crashes when love objects are used in multiple threads.
+  * Fixed love.filesystem.setIdentity breaking in some situations when called multiple times.
+  * Fixed the default love.filesystem identity when in Fused mode in Windows.
+  * Fixed love.system.openURL sometimes blocking indefinitely on Linux.
+  * Fixed love.joystick.setGamepadMapping.
+  * Fixed the order of vertices in ChainShapes.
+  * Fixed love.mouse.getPosition returning outdated values if love.mouse.setPosition is used in the same frame.
+  * Fixed love.graphics.newFont to error when given an invalid size argument.
+  * Fixed the filename and backtrace given when love.graphics.print errors.
+  * Fixed a small memory leak if love.graphics.newCanvas errors.
+  * Fixed shader:getWarnings returning unnecessary information.
+  * Fixed some cases of noncompliant shader code not properly erroring on some nvidia drivers.
+  * Fixed a potential crash when Shader objects are garbage collected.
+  * Fixed a potential small memory leak triggered when love.graphics.newShader errors.
+  * Fixed love.graphics.newMesh(vertexcount, ...) causing the Mesh to do instanced rendering.
+  * Fixed Mesh:getVertexMap.
+  * Fixed Image:refresh generating mipmaps multiple times if mipmap filtering is enabled.
+  * Fixed Image:setMipmapFilter to not keep bad state around if it errors.
+  * Fixed Mesh:setDrawRange when the Mesh has a vertex map set.
+  * Fixed internal detection of the 'position' and 'effect' shader functions.
+  * Fixed Texture memory leak when Meshes are garbage collected.
+  * Fixed the default line join mode to be 'miter' instead of an undefined value.
+  * Fixed the default error handler text size when highdpi mode is enabled on a Retina monitor.
+  * Fixed the default error handler background color when sRGB mode is enabled for the window.
+  * Fixed love.window.setMode to fall back to the largest available mode if a width or height greater than the largest supported is specified and fullscreen is used.
+  * Fixed the state of wireframe mode when love.window.setMode is called.
+  * Fixed Canvas:getPixel to error if the coordinates are not within the Canvas' size.
+  * Fixed detection of compressed textures to work regardless of the file's extension.
+
+  * Renamed all cases of FSAA to MSAA. The FSAA names still exist for backward-compatibility.
+
+  * Updated the Windows executable to automatically prefer the higher performance GPU on nvidia Optimus systems.
+  * Updated the --console command-line argument in Windows to open the console before conf.lua is loaded.
+  * Updated t.console and the --console command-line argument in Windows to use the existing Console window, if love was launched from one.
+  * Updated the love executable to verify that the love library's version matches.
+  * Updated the Lua wrapper code for modules to avoid crashes when the module's instance is created, deleted, and recreated.
+  * Updated internal code for handling garbage collection of love objects to be more efficient.
+  * Updated love's initialization code to trigger a Lua error if love.conf has an error in it.
+  * Updated the paths returned by love.filesystem.getSaveDirectory and friends to strip double-slashes from the string.
+  * Updated the error message when love.filesystem.write or File:open fails because the directory doesn't exist.
+  * Updated the error message when love.math.setRandomseed(0) is attempted.
+  * Updated the error message when invalid UTF-8 strings are used in love functions that expect UTF-8.
+  * Updated love.physics.newPolygonShape and love.physics.newChainShape to accept a table of vertices.
+  * Updated love.physics.newChainShape to error if the number of arguments is invalid.
+  * Updated love.thread.newThread to accept a literal string of code directly.
+  * Updated love-created threads to use names visible in external debuggers.
+  * Updated SpriteBatch:unbind to use less VRAM if the SpriteBatch has the static usage hint.
+  * Updated love.graphics.newImage, love.image.newImageData, etc. to leave less Lua-owned memory around.
+  * Updated love.graphics.push to accept different stack types to push. Current types are "transform" and "all".
+  * Updated love shaders to accept GLSL ES precision qualifiers on variables, although they do nothing.
+  * Updated the error message for love.graphics.newShader to be less cryptic if an invalid filename is given.
+  * Updated compressed texture loading code to allow BC6 and BC7 compressed textures (if the graphics driver supports them.)
+
+LOVE 0.9.1 [Baby Inspector]
+---------------------------
+
+  Released: 2014-04-01
+
+  * Added Source:clone.
+  * Added blend mode "screen".
+  * Added ParticleSystem:clone.
+  * Added ParticleSystem:moveTo, has smoother emitter movement compared to setPosition.
+  * Added ParticleSystem:setRelativeRotation.
+  * Added love.graphics.setWireframe for debugging.
+  * Added Mesh:setDrawRange and Mesh:getDrawRange.
+  * Added CircleShape:getPoint and CircleShape:setPoint.
+  * Added Mesh/SpriteBatch/ParticleSystem:setTexture, accepts Canvases and Images.
+  * Added high-dpi window support for Retina displays in OS X, via the 'highdpi' window flag.
+  * Added love.window.getPixelScale.
+  * Added love.graphics.getSystemLimit.
+  * Added antialiasing support to Canvases.
+  * Added Canvas:getFSAA.
+  * Added 'love_ScreenSize' built-in variable in shaders.
+  * Added love.getVersion.
+  * Added support for gamma-correct rendering.
+  * Added love.graphics.isSupported("srgb").
+  * Added love.math.gammaToLinear and love.math.linearToGamma.
+  * Added RandomGenerator:getState and RandomGenerator:setState.
+  * Added Body:setUserData and Body:getUserData.
+  * Added some missing obscure key constants.
+  * Added optional callback function argument to love.filesystem.getDirectoryItems.
+  * Added love.system.openURL.
+
+  * Deprecated Mesh/SpriteBatch/ParticleSystem:setImage.
+  * Deprecated love.graphics.getMaxImageSize and love.graphics.getMaxPointSize.
+
+  * Fixed love.graphics.scale with negative values causing incorrect line widths.
+  * Fixed Joystick:isDown using 0-based button index arguments.
+  * Fixed Source:setPitch to error when infinity or NaN is given.
+  * Fixed love.graphics.setCanvas() to restore the proper viewport and scissor rectangles.
+  * Fixed TrueType font glyphs which request a monochrome bitmap pixel mode.
+  * Fixed love.graphics.reset causing crashes when called in between love.graphics.push/pop.
+  * Fixed tab characters ("\t") to display properly with love.graphics.print.
+  * Fixed love.graphics.isCreated to return false when love.window.setMode fails completely.
+  * Fixed love.window.setMode to not destroy OpenGL resources before checking whether a fullsceren size is supported.
+  * Fixed World:getBodyList and World:getJointList causing hard crashes.
+  * Fixed loading BC4 compressed textures.
+  * Fixed SoundData objects being initialized with garbage values.
+  * Fixed 8-bit SoundData samples when used in love.audio Sources.
+
+  * Updated the error text for love.filesystem’s module searchers when require fails.
+  * Updated the love.filesystem module searchers to be tried after package.preload instead of before.
+  * Updated love.graphics.newParticleSystem, newSpriteBatch, and newMesh to accept Canvases.
+  * Updated Canvas drawing code, texture coordinates are no longer flipped vertically.
+  * Updated Canvas:renderTo to work properly if a Canvas is currently active.
+  * Updated ParticleSystem:setEmissionRate to accept non-integer numbers.
+  * Updated Source:play to return a boolean indicating success.
+  * Updated t.console in conf.lua to create the console before modules are loaded in Windows.
+  * Updated Mesh vertex maps (index buffers) to use less space in VRAM.
+  * Updated love.graphics.newMesh and Mesh:setVertices to default the UV parameters to 0,0.
+  * Updated Fixture:set/getUserData to work in Coroutines.
+  * Updated fullscreen-desktop and resizable window modes in OS X to use Mac OS 10.7's fullscreen Spaces.
+  * Updated love.filesystem's C library loader to look in paths added via love.filesystem.mount, in Fused mode.
+  * Updated the default love.run code to make initial love.math.random calls more random.
+
+LOVE 0.9.0 [Baby Inspector]
+---------------------------
+
+  Released: 2013-12-13
+
+  * Added better multiplayer networking support via ENet.
+  * Added --fused command line argument, to simulate fusing.
+  * Added liblove.
+  * Added the ability to have exit values.
+  * Added exit value of 1 in case of error by default.
+  * Added basic support for the file:// uri scheme.
+  * Added love.filesystem.isFused.
+  * Added love.filesystem.getIdentity.
+  * Added love.filesystem.append.
+  * Added love.filesystem.getSize.
+  * Added love.filesystem.mount and love.filesystem.unmount.
+  * Added optional file search order parameter to love.filesystem.setIdentity.
+  * Added File:isOpen and File:getMode.
+  * Added Fie:setBuffer, File:getBuffer, and File:flush.
+  * Added textinput event for unicode text input.
+  * Added love.keyboard.setTextInput and love.keyboard.hasTextInput.
+  * Added previously internal Rasterizer and GlyphData object methods.
+  * Added support for UTF-8 ImageFonts.
+  * Added Font:getAscent/getDescent/getBaseline.
+  * Added Font:setFilter/getFilter.
+  * Added Font:hasGlyphs.
+  * Added angle, scale, and shear parameters to love.graphics.printf.
+  * Added HDR canvas support.
+  * Added mipmapping support (has isSupported test).
+  * Added vertex shader support.
+  * Added boolean support to Shader:send.
+  * Added Canvas:getPixel.
+  * Added blend mode "replace".
+  * Added line join modes.
+  * Added Mesh objects, allowing for arbitrary textured polygons.
+  * Added multiple render target support to love.graphics.setCanvas.
+  * Added love.graphics.setColorMask.
+  * Added love.graphics.origin.
+  * Added love.graphics.getRendererInfo.
+  * Added love.graphics.getMaxImageSize.
+  * Added SpriteBatch:getCount and SpriteBatch:getBufferSize.
+  * Added SpriteBatch:getColor.
+  * Added ParticleSystem:emit.
+  * Added ParticleSystem:setInsertMode and ParticleSystem:getInsertMode.
+  * Added many ParticleSystem getter methods.
+  * Added DXT compressed texture support via love.image.newCompressedData.
+  * Added love.image.isCompressed and Image:isCompressed.
+  * Added Image/Canvas/ImageData:getDimensions.
+  * Added anisotropic filtering support for Images, Canvases, and Fonts.
+  * Added Image:refresh.
+  * Added Image:getData.
+  * Added SoundData:getDuration and SoundData:getSampleCount.
+  * Added Source:isPlaying.
+  * Added Source:setRelative and Source:isRelative.
+  * Added Source:setCone and Source:getCone.
+  * Added Source:getChannels.
+  * Added new Channels API for love.thread.
+  * Added limited table support to Channel:push.
+  * Added Thread:getError.
+  * Added Thread:isRunning.
+  * Added threaderror event.
+  * Added love.math module.
+  * Added a platform-independent (good) random implementation to love.math.
+  * Added RandomGenerator objects.
+  * Added BezierCurve objects.
+  * Added love.math.triangulate and love.math.isConvex.
+  * Added love.math.noise.
+  * Added love.timer.getAverageDelta.
+  * Added Data:getString.
+  * Added Contact:getChildren.
+  * Added love.system module.
+  * Added love.system.getClipboardText and love.system.setClipboardText.
+  * Added love.system.getOS and love.system.getProcessorCount.
+  * Added love.window module.
+  * Added love.window.isVisible.
+  * Added flags to love.window.setMode.
+  * Added monitor choosing support to love.window.setMode.
+  * Added support for resizable, borderless, and non-centered windows.
+  * Added support for "fullscreen-desktop" mode.
+  * Added window resize and visible events.
+  * Added love.window.getDimensions.
+  * Added love.window.getIcon.
+  * Added t.window.icon to love.conf.
+  * Added love.mousefocus and love.window.hasMouseFocus.
+  * Added custom hardware cursors via love.mouse.newCursor.
+  * Added love.mouse.setX/setY.
+  * Added Joystick objects.
+  * Added love.joystick.getJoystick.
+  * Added joystick connect and disconnect events.
+  * Added joystickaxis and joystickhat events.
+  * Added unified Gamepad API for joysticks which have a similar layout to the Xbox controller.
+  * Added joystick vibration support, works with most common gamepads.
+  * OPTIONAL: Added support for Game Music Emu.
+
+  * Fixed fused mode in OS X.
+  * Fixed printing to the console in Windows before love.load is called.
+  * Fixed the default love.run to not include the time taken by love.load in the first frame's dt.
+  * Fixed the error screen not always appearing until the next input event.
+  * Fixed love.event.clear.
+  * Fixed love.mouse.setPosition when called in love.load.
+  * Fixed scaling in several love.physics functions.
+  * Fixed Box2D exception in World:update.
+  * Fixed many uncaught Box2D / love.physics exceptions for Bodies and Joints.
+  * Fixed ChainShape:getPoints running out of Lua stack space and crashing.
+  * Fixed File:read reading past end of file.
+  * Fixed love.filesystem.setIdentity not removing read access from old directories.
+  * Fixed possible memory leak in utf-8 decoder.
+  * Fixed spacing for the last character in an ImageFont.
+  * Fixed line wrapping in love.graphics.printf.
+  * Fixed love.graphics.printf to error if the wrap limit is negative.
+  * Fixed love.graphics.print truncating strings with embedded zeros.
+  * Fixed crashes with font drawing on some ATI cards.
+  * Fixed artifacts when drawing lines at huge scale.
+  * Fixed Fonts and Canvases ignoring default image filter.
+  * Fixed scissor boxes when a canvas is set after love.graphics.setScissor is called.
+  * Fixed love.graphics.getLineWidth returning incorrect values.
+  * Fixed love.graphics.getColor on some Windows systems.
+  * Fixed alpha blend mode.
+  * Fixed multiplicative blend mode.
+  * Fixed love.graphics.getPointStyle.
+  * Fixed line numbers in shader errors.
+  * Fixed Shader:send with Images and Canvases failing sometimes.
+  * Fixed Shader:send to keep a reference to sent Images and Canvases.
+  * Fixed crash when binding SpriteBatches multiple times.
+  * Fixed SpriteBatches with more than 16,384 sprites.
+  * Fixed particle draw order for ParticleSystems.
+  * Fixed ParticleSystem:setSizes resetting the size variation.
+  * Fixed the graphics viewport not matching the window size when using an unsupported fullscreen mode.
+  * Fixed getMode and friends returning wrong values when using desktop size.
+  * Fixed keyrepeat settings being lost after (indirect) setMode.
+  * Fixed the icon being reset after setMode.
+  * Fixed memory leak in the mp3 decoder.
+  * Fixed sound issues with some versions of OpenAL soft, by enabling direct channels.
+  * Fixed 'random' hangs in audio.
+  * Fixed love.sound.newDecoder not accepting FileData.
+  * Fixed case (in)sensitivity of sound file extension parsing.
+  * Fixed looping support in tracker music formats.
+  * Fixed skipping/looping issues when playing streaming audio Sources.
+  * Fixed race condition in Source:play.
+  * Fixed WAVE sound playback.
+
+  * Moved love's startup to modules/love.
+  * Moved window-related functions from love.graphics to love.window.
+
+  * Renamed love's boot script to 'love.boot', which can be required.
+  * Renamed love.filesystem.mkdir to love.filesystem.createDirectory.
+  * Renamed love.filesystem.enumerate to love.filesystem.getDirectoryItems.
+  * Renamed World:setAllowSleeping to World:setSleepingAllowed.
+  * Renamed ChainShape:setPrevVertex to ChainShape:setPreviousVertex.
+  * Renamed Joint:enableMotor to Joint:setMotorEnabled.
+  * Renamed Joint:enableLimit and Joint:isLimitEnabled to Joint:setLimitsEnabled and Joint:hasLimitsEnabled.
+  * Renamed t.screen to t.window in love.conf.
+  * Renamed love.graphics.setCaption to love.window.setTitle.
+  * Renamed PixelEffect to Shader (but now with vertex shaders).
+  * Renamed love.graphics.setDefaultImageFilter to love.graphics.setDefaultFilter.
+  * Renamed ParticleSystem:setSprite to ParticleSystem:setImage.
+  * Renamed ParticleSystem:setGravity to ParticleSystem:setLinearAcceleration.
+  * Renamed ParticleSystem:setLifetime/setParticleLife to setEmitter/ParticleLifetime.
+  * Renamed ParticleSystem:count and all getNum* functions to get*Count.
+  * Renamed Source:setDistance to Source:setAttenuationDistances.
+  * Renamed SoundData:getBits and Decoder:getBits to SoundData:getBitDepth and Decoder:getBitDepth.
+  * Renamed love.mouse.setGrab to love.mouse.setGrabbed.
+
+  * Removed release mode.
+  * Removed love.keyboard.getKeyRepeat (see love.keyboard.hasKeyRepeat).
+  * Removed the unicode argument from love.keypressed (see love.textinput).
+  * Removed love.graphics.drawTest.
+  * Removed love.graphics.quad/triangle.
+  * Removed love.graphics.setColorMode.
+  * Removed love.graphics.newStencil.
+  * Removed love.graphics.setLine/setPoint.
+  * Removed love.graphics.drawq (functionality is merged into love.graphics.draw).
+  * Removed SpriteBatch:addq/setq (functionality is merged into SpriteBatch:add/set).
+  * Removed Quad:flip.
+  * Removed ParticleSystem:isFull/isEmpty.
+  * Removed ParticleSystem:getX/getY.
+  * Removed love.graphics.checkMode.
+  * Removed love.joystick.open and friends.
+  * Removed love.joystick module functions which operated on individual joysticks (see Joystick objects).
+  * Removed joystick ball support.
+  * Removed thread names.
+  * Removed old thread messaging API (see Channels).
+  * Removed love.timer.getMicroTime.
+
+  * Updated functions which return love objects to re-use the Lua-side object instead of always recreating it.
+  * Updated the windows console, it now tries to re-use an active one first.
+  * Updated error handling, error handlers now get resolved when the error occurs.
+  * Updated order of sleep/present in love.run (now draws, *then* sleeps).
+  * Updated love.filesystem to try to create the appdata directory if it doesn't exist yet.
+  * Updated the default filesystem identity to omit file extension.
+  * Updated love.filesystem.newFile to optionally open the file.
+  * Updated most love.filesystem functions to return nil, error on internal failure.
+  * Updated love.keyboard.setKeyRepeat to take a boolean argument instead of numbers.
+  * Updated love.keypressed's second argument to be a boolean indicating key repeat.
+  * Updated keyboard key constants for some more modern keyboard keys.
+  * Updated window code to use adaptive vsync when available, if vsync is enabled.
+  * updated love.graphics.print's x and y arguments to default to 0.
+  * Updated the setFilter and setWrap methods, the second argument is now optional.
+  * Updated Font and ParticleSystem rendering code, now more performant.
+  * Updated SpriteBatch code, now more performant when adding/setting and (un)binding.
+  * Updated Canvas code to support more systems.
+  * Updated Canvas:getImageData and love.graphics.newScreenshot to be more efficient.
+  * Updated love.graphics.newScreenshot to create a fully opaque image by default.
+  * Updated error messages when sending bad values to Shaders.
+  * Updated love.graphics.newParticleSystem to have a default buffer size of 1000.
+  * Updated ImageData:setPixel to accept a table and default to 255 alpha.
+  * Updated ImageData:mapPixel, is now more efficient and accepts optional x,y,w,h arguments.
+  * Updated love.image memory handling, improves errors and thread-safety.
+  * Updated all love object constructors to optionally accept FileData if they accept a filename.
+  * Updated allocation for SoundData, it's more efficient and less wasteful.
+  * Updated SoundData:set/getSample to error for invalid samples.
+  * Updated Source:set* functions to default z to 0.
+  * Updated Source:seek to error for negative offsets.
+  * Updated Thread:start to accept arguments which get passed to the thread.
+  * Updated love.timer.getFPS to be microsecond-accurate.
+  * Updated love.timer.getTime to be microsecond-accurate and monotonic.
+  * Updated Box2D to version 2.3.0.
+
+LOVE 0.8.0 [Rubber Piggy]
+-------------------------
+
+  Released: 2012-04-02
+
+  * Added release error screen.
+  * Added alpha to love.graphics.setBackgroundColor.
+  * Added Canvas:clear(r, g, b, a).
+  * Added Canvas support to love.graphics.drawq.
+  * Added Canvas:getWidth and Canvas:getHeight.
+  * Added love.graphics.arc.
+  * Added seek and tell to Source objects.
+  * Added color interpolation to ParticleSystem.
+  * Added automatic PO2 padding for systems not supporting the OpenGL extension.
+  * Added UTF-8 support for fonts.
+  * Added Box2D error handling for some commonly failing functions.
+  * Added ability for fused release games to have their write dir in appdata.
+  * Added shear transformation to drawing functions.
+  * Added origin to font printing.
+  * Added love.graphics.getMode.
+  * Added per-sprite colors on SpriteBatches.
+  * Added PixelEffects.
+  * Added love.graphics.isSupported.
+  * Added love.graphics.getCanvas.
+  * Added love.event.quit.
+  * Added stencil masks.
+  * Added alternative SpriteBatch provider, it should work everywhere now.
+  * Added a loader for binary modules.
+  * Added Thread:getKeys.
+  * Added option of fractions for Quads.
+  * Added PNG, JPEG and GIF support to ImageData:encode.
+  * Added 64-bit support for Mac OS X.
+  * Added premultiplied blending mode.
+  * Added functions to set/get default image filter modes.
+  * Added SpriteBatch:set.
+  * Added new events system, with support for custom events and long event names.
+  * Added sound attenuation by distance.
+  * Added SpriteBatch:getImage.
+  * Added combine color mode.
+  * Added automatic random seeding to love.run.
+  * Added support for the subtract BlendMode on older graphics cards.
+  * Added love._os field, which contains the OS the game is running on.
+
+  * Fixed wrapping for single words.
+  * Fixed tracebacks not showing filenames.
+  * Fixed love.graphics.push/pop capable of causing overflows/underflows.
+  * Fixed setScissor on Canvases.
+  * Fixed several issues with audio, e.g. clicks and pops in mp3s.
+  * Fixed crashes when bodies were destroyed during collisions.
+  * Fixed bound SpriteBatches corrupting when drawing.
+  * Fixed thread-safety issues with ImageData.
+  * Fixed memory leaks in audio sources.
+  * Fixed thread's set (previously send) accidentally changing the type.
+  * Fixed SoundData allocating the wrong number of samples.
+  * Fixed SpriteBatch support on Intel cards.
+  * Fixed love.filesystem.lines() leaking.
+  * Fixed most leaking on unclosed File objects.
+  * Fixed crashes when operating on non-existent files.
+  * Fixed a bug where empty files on windows would never reach eof.
+  * Fixed crash when SoundData runs out of memory.
+  * Fixed ordering of loaders, love should have priority over lua.
+  * Fixed several miscellaneous memory leaks.
+  * Fixed a few cases where strings with \0 in them would not be stored correctly.
+  * Fixed love's startup time being in the first dt.
+  * Fixed internal string conversions, they are faster now.
+  * Fixed (bad) performance of ImageData:paste.
+  * Fixed love.graphics.toggleFullscreen not maintaining graphics state.
+
+  * Renamed SpriteBatch's lock/unlock to bind/unbind.
+  * Renamed Framebuffer to Canvas.
+  * Renamed love.thread.send/receive to set/get.
+  * Renamed love.graphics.setRenderTarget to setCanvas.
+
+  * Removed canvas auto-clearing.
+  * Removed EncodedImageData.
+  * Removed old syntax for require (with extension).
+  * Removed love.graphics.setFont([file], [size]).
+  * Removed Thread:kill.
+
+  * Updated love.joystick to be 1-indexed.
+  * Updated Sources to update more cleanly and control more intuitively.
+  * Updated font engine.
+  * Updated line drawing to a custom system.
+  * Updated love.timer.sleep to use seconds, like the rest of love.
+  * Updated love.timer to be more accurate.
+  * Updated love.graphics.circle to have max(10, r) as default for segments.
+  * Updated ImageData:encode to write to files directly.
+  * Updated version compatibility system to actually do something.
+  * Updated love.run's order, events are checked just before update.
+  * Updated Box2D to version 2.2.1.
+
+LOVE 0.7.2 [Game Slave]
+-----------------------
+
+  Released: 2011-05-04
+
+  * Added Framebuffer:get/setWrap.
+  * Added love.event.clear.
+  * Added support for any number of arguments to love.keyboard.isDown, love.mouse.isDown and love.joystick.isDown.
+  * Added SpriteBatch:setImage().
+
+  * Fixed fused games not working.
+  * Fixed ParticleSystem:setSize ignoring the variation argument.
+  * Fixed some file-opening exceptions not being caught.
+  * Fixed files loaded by libmodplug being too loud.
+  * Fixed paths with periods in them not working.
+  * Fixed love.graphics.getBlendMode not detecting subtractive and multiplicative blend modes.
+  * Fixed crash when there was no memory available for newImageData(w, h).
+
+  * Updated PhysicsFS version to 2.0.2 on Windows
+  * Updated OpenAL Soft version to 1.13 on Windows
+  * Updated libmodplug version to 0.8.8.1 on Windows
+  * Updated FreeType version to 2.4.4 on Windows
+  * Updated libmpg123 version to 1.13.2 on Windows
+  * Windows binary no longer depends on VC2005 runtime.
+  * Windows binary no longer depends on SSE2 support.
+
+LOVE 0.7.1 [Game Slave]
+-----------------------
+
+  Released: 2011-02-14
+
+  * Added source:isPaused()
+  * Added error when initial window can't be created.
+  * Added framebuffer filter modes.
+  * Added love.filesystem.getLastModified.
+  * Added filter modes for ImageFonts.
+  * Added dead key support by using "unknown" key with correct unicode value.
+  * Added 0 width and height in love.conf. (for current desktop resolution)
+  * Added alpha support when encoding TGA images.
+
+  * Fixed a lot of bugs regarding zero characters in threads.
+  * Fixed handling of a directory named "love" in current directory.
+  * Fixed a few unhandled errors in setScissor.
+  * Fixed a bug where old physics callbacks were never dereferenced.
+  * Fixed loss of mouse visibility settings on setMode.
+  * Fixed creation of a framebuffer unbinding current framebuffer.
+  * Fixed several race conditions in love.thread.
+  * Fixed 'love .', so it won't use lovedir/. as save dir.
+  * Fixed setLineHeight.
+  * Fixed extended ascii and ImageFonts.
+  * Fixed printf's line wrapping.
+  * Fixed crash when playing sounds.
+  * Fixed playback of mp3s with arbitrary sample rates.
+  * Fixed handling of negative indices in love.joystick.
+  * Fixed toggleFullscreen.
+  * Fixed unexpected behaviour with hash tables to love.graphics.line.
+  * Fixed mouse coordinates being capped after setMode.
+  * Fixed setFont's error handling on a non-existant file.
+  * Fixed issue where Windows builds would hard crash on Lua errors
+
+  * Removed custom sample rates for Decoders.
+
+LOVE 0.7.0 [Game Slave]
+-----------------------
+
+  Released: 2010-12-05
+
+  * Added love.thread.
+  * Added love.font.
+  * Added love.graphics.Framebuffer.
+  * Added Source:play, Source:pause, etc.
+  * Added Source:isStatic().
+  * Added get/setPosition, get/setVelocity, and get/setDirection to Source.
+  * Added get/setGroupIndex to CircleShape and PolygonShape.
+  * Added Font:getWrap.
+  * Added identity field to love.conf.
+  * Added love.quit callback.
+  * Added love.focus callback.
+  * Added extra meter parameter to love.physics.newWorld.
+  * Added love.graphics.setIcon.
+  * Added way to make the window desktop resolution.
+  * Added subtractive and multiplicative blend modes.
+  * Added body:getAllowSleeping.
+  * Added shape:getBody.
+  * Added love.filesystem.FileData for public usage.
+  * Added base64 support for love.filesystem.FileData.
+  * Added table support for love.graphics.setColor and love.graphics.setBackgroundColor.
+  * Added love.graphics.hasFocus().
+  * Added ?/init.lua to the loader.
+
+  * Fixed the debug module not being an upvalue of the error handlers. (you can now override debug)
+  * Fixed some cases when love.audio.pause and friends, were acting on everything, not just the passed Source.
+  * Fixed setFixedRotation enabling other flags.
+  * Fixed a bug in the loader (for require).
+  * Fixed ParticleSystem::setSprite not retaining the new image.
+  * Fixed setMode removing images settings (wrapping, filters).
+  * Fixed shape:getBody, it's now exposed for LÖVE usage.
+  * Fixed DistanceJoint:getType() returning "circle" - it now returns "distance".
+  * Fixed SpriteBatches being unaffected by setColor
+  * Fixed the audio bug.
+  * Fixed invalid FSAA values crashing LÖVE.
+  * Fixed a bunch of compiler warnings.
+  * Fixed OS X not properly using UTIs for .love files.
+  * Fixed the modplug decoder not properly handeling files that fail to load.
+  * Fixed a memory leak in setFont.
+  * Fixed bug where errors in threads wouldn't get picked up by demand.
+  * Fixed part of the bug with newlines when scaling text (rotating still messes up the lines).
+  * Fixed the bug where newImageFont would try to created ImageData out of ImageData.
+  * Fixed error handler not resetting the blend mode.
+
+  * Changed fonts, they're now po2 safe.
+  * Changed the traceback in the error screen.
+  * Changed font origin to top-left.
+  * Changed linux save dir location to obey to Freedesktop.org's XDG specs. (~/.local/share/love by default.)
+
+  * Removed font functions from love.graphics.
+  * Removed love.physics.newWorld(w, h). Use love.physics.newWorld(x1, y1, x2, y2) instead.
+
+LOVE 0.6.2 [Jiggly Juice]
+-------------------------
+
+  Released: 2010-03-06
+
+  * Fixed a bug causing ImageFonts to cut off some pixels.
+  * Fixed a bug where filled rectangles were too small.
+  * Fixed a bug in Image:setFilter where it would switch the parameters.
+  * Fixed a bug in ImageRasterizer where it wasn't using the data.
+  * Image filter and wrap modes now use string constants as well.
+  * Fixed double-transform bug in SpriteBatch.
+  * Errors are reported on stdout again.
+  * Another fix for the icons on ubuntu.
+
+LOVE 0.6.1 [Jiggly Juice]
+-------------------------
+
+  Released: 2010-02-07
+
+  * Added Shape:setGroupIndex and getGroupIndex.
+  * Added Body:setFixedRotation and Body:getFixedRotation.
+  * Added Body:setInertia.
+  * Added CircleShape:getLocalCenter and CircleShape:getWorldCenter.
+  * Added icons and file associations for the debs.
+  * Added the demos folder to the Mac OS X DMG.
+  * It's now possible to run a .love from Resources in Mac OS X, thanks to Steve Johnson.
+  * Fixed a bug with multiple Sources on the same Music.
+  * Fixed a bug so the mouse doesn't get crippled when the keyboard is disabled.
+  * Fixed a bug where love.graphics.rectangle drew a too large rectangle.
+  * Fixed a bug where memory wouldn't be released correctly.
+  * Fixed epic physics typo (getRestituion->getRestitution).
+  * Fixed crash on opening non-existent image.
+  * The error screen redraws when an event occurs.
+  * The default love.run() now gracefully handles disabled modules.
+  * The debian packages should now successfully include icons, file associations, etc, and should give the correct architecture.
+  * Added support for drawing polylines to love.graphics.line - the syntax is the same as love.graphics.polygon.
+  * Removed Music and Sound. There are now only sources.
+  * Improved the stability of love.audio/love.sound.
+
+LOVE 0.6.0 [Jiggly Juice]
+-------------------------
+
+  Released: 2009-12-24
+
+  * Lost track of 0.6.0 changes a long while ago. Don't trust the list below.
+
+  * Added love.graphics.print()/printf().
+  * Added unicode-translated parameter to love.keypressed().
+  * Added love.event.
+  * Added love.filesystem.setIdentity().
+  * Added OpenAL dependency.
+
+  * Fixed love.fileystem problems with internal \0 in strings.
+  * Fixed love.filesystem.mkdir/remove not working when write directory not set.
+  * Fixed position of Window.
+
+  * Changed parameter order of draws().
+  * Changed origin for images to top-left.
+  * Changed love.filesystem.open to accept mode (removed from love.filesystem.newFile).
+  * Changed love.filesystem.read() which now returns two parameters (data, length).
+  * Changed love.filesystem.write() which now takes up to four parameters (file, data, length, mode).
+  * Changed default color mode to "modulate".
+  * Changed name of love.color_normal to "replace".
+  * Changed name of love.blend_normal to "alpha".
+  * Changed the conf file format.
+
+  * Removed Color object.
+  * Removed Animation.
+  * Removed several constants.
+  * Removed love.graphics.draw() for strings.
+  * Removed love.system.
+  * Removed SWIG.
+  * Removed boost.
+  * Removed SDL_mixer.
+
+
+LOVE 0.5.0 [Salted Nuts]
+------------------------
+
+  Released: 2009-01-02
+
+  * Added love.joystick.
+  * Added network support via LuaSocket.
+  * Added support for loading of appended .love-file.
+
+  * Added love.filesystem.lines().
+  * Added a loader function to enable use of normal require().
+  * Added love.filesystem.load().
+  * Added love.filesystem.getSaveDirectory()
+  * Added love.filesystem.getWorkingDirectory()
+
+  * Added optional explicit destruction of Box2D objects.
+  * Added shape:testSegment().
+  * Added love.graphics.screenshot() (.bmp only).
+  * Added default size (12) to font-related functions.
+  * Added love.graphics.setFont( filename, size )
+  * Added love.graphics.setLineStippe and related functions.
+  * Added love.graphics.setPointSize and related functions.
+
+  * Changed love.filesystem.read() to accept file name.
+  * Changed love.filesystem.write() to accept file name.
+  * Changed love.graphics.triangle() to accept CCW and CW ordering.
+
+  * Fixed love.graphics.read adding bogus characters at the end of string.
+  * Fixed epic swigfusion bug.
+  * Fixed love.graphics.getFont so it returns nil if no font is present.
+  * Fixed bug where love.graphics.getBlendMode() always returns blend_normal.
+  * Fixed bug which caused error screen to be scissored (when enabled).
+  * Fixed Body:setAngle to accept degrees like everything else.
+
+  * Cleaned up love::File and love_physfs.
+  * Cleaned up love::Reference so it stores its reference in _G.
+
+LOVE 0.4.0 [Taco Beam]
+----------------------
+
+  Released: 2008-08-29
+
+  * Added love.physics. (YES!)
+  * Added love.audio.setMode().
+  * Added love.audio.setChannels().
+  * Added love.graphics.polygon().
+  * Added love.graphics.setScissor() and love.graphics.getScissor() to handle scissoring the graphical area.
+  * Fixed missing constants related to image optimization.
+  * Fixed memory leak related to love::File (thanks amnesiasoft!).
+
+
+LOVE 0.3.2 [Lemony Fresh]
+-------------------------
+
+  Released: 2008-07-04
+
+  * Added love.graphics.rectangle()
+  * Added love.graphics.setLineWidth()
+  * Added love.graphics.setLineStyle()
+  * Added love.graphics.getLineWidth()
+  * Added love.graphics.getLineStyle()
+  * Added love.mouse.getPosition()
+  * Added love.audio_loop
+  * Added love.timer.getTime()
+  * Changed love.graphics.quad() to accept CCW and CW ordering.
+  * Fixed default color mode bug.
+  * Fixed line width being applied unnecessarily.
+  * Fixed line width bug related to fullscreen toggle.
+  * Fixed music not looping.
+
+LOVE 0.3.1 [Space Meat]
+-----------------------
+
+  Released: 2008-06-21
+
+  * Fixed segfault related to graphics.
+  * Fixed wait-forever bug related to audio.
+  * Fixed error reporting not working across modules.
+  * Fixed bug where games with a trailing "/" would not start.
+  * Fixed bug which caused love.timer.sleep to delay for (way) too long.
+
+LOVE 0.3.0 [Mutant Vermin]
+--------------------------
+
+  Released: 2008-06-17
+
+  * Added ParticleSystem.
+  * Added visual error reporting.
+  * Added love.system for game control needs.
+  * Added input grabbing.
+  * Added functions in love.graphics for display management.
+  * Added love.graphics.point().
+  * Added functions in love.graphics for getting current color, font, etc.
+  * Added love.filesystem.enumerate() for getting folder contents.
+  * Added functions for setting the window caption.
+  * Added version checking. An error occurs if the game is incompatible.
+  * Fixed print() :)
+  * Removed all keyboard shortcuts.
+  * Save folders are now created only if required.
+  * On Windows, the new save location is %APPDATA%\LOVE\game
+
+LOVE 0.2.1 [Impending Doom]
+---------------------------
+
+  Released: 2008-03-29
+
+  * Added many functions in love.filesystem.
+  * Added a dedicated save-folder for each game.
+  * Added timer.sleep.
+  * Added line heights to font objects.
+  * Added love.graphics.getWidth/getHeight.
+  * Added scaling and rotation for text.
+  * Added variable spacing to ImageFont.
+  * Added support for variable line quality when drawing primitives.
+  * Added several functions for drawing sections of images. (love.graphics.draws)
+  * Added image optimization function and padding function.
+  * Added love.graphics.getWidth/Height.
+
+  * Split devices up into actual SWIG-modules. This means that:
+    - Functions are used like this: love.graphics.draw, not love.graphics:draw
+    - love.objects is no more. Objects are created by an appropriate device.
+  * How you draw primitives has been altered.
+  * draw(string, x, y, wrap, align) has become drawf(string, x, y, wrap, align)
+
+  * Changed getFps to getFPS.
+  * Escape is no more ... enter: Alt+F4.
+  * love.filesystem.include has been renamed to love.filesystem.require.
+  * ImageFonts now consider the spacing as well as the glyph size.
+  * Fixed a massive ImageFont bug which resulted in float-positioning failure.
+  * Fixed a bug when loading fonts where the specified size doesn't represent the true size of the font.
+
+  * Updated DevIL to version 1.6.8-rc2 (Windows)
+  * Updated FreeType to freetype-2.3.5-1 (Windows)
+  * Updated Lua to 5.1.3 (Windows)
+  * Updated SDL to 1.2.13 (Windows)
+  * Removed boost::filesystem.
+
+LOVE 0.2.0 [Mini-Moose]
+-----------------------
+
+  Released: 2008-02-06
+
+  * Added ImageFont
+  * Added Animation
+  * Added text formatting functions
+  * Added setCenter for Image and Animation.
+  * Added methods for rendering of scaled/rotated sprites.
+  * Added the drawing of basic shapes.
+  * Added default font and embedded resources.
+  * Added Ctrl+R for reload.
+  * Added blending and color modes.
+  * Fixed memory usage of Graphics.
+  * Fixed a bug where the set text color would change the color of any images rendered.
+  * Fixed CWD bug.
+  * Fixed titlebar. Game title is now displayed.
+
+
+LOVE 0.1.1 [Santa-Power]
+------------------------
+
+	Initial release!
+  Released: 2008-01-13
+
+ * Image loading and rendering.
+ * Sound loading and playing.
+ * Font loading and rendering.
+ * Lua-scriptable games.
+ * Config files.
+ * Stuff is loadable from archive files.
+ * Keyboard, mouse, display, timer, etc. (Basic devices).

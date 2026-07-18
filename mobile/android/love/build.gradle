@@ -1,0 +1,122 @@
+apply plugin: 'com.android.library'
+
+android {
+    // If you want to use the debugger for JNI code, you want to debug this lib-project in Debug!
+    // And due to gradle limitations/bugs, the best way is to always debug it in debug.
+    // See https://code.google.com/p/android/issues/detail?id=52962
+    // and http://stackoverflow.com/questions/27277433/why-does-gradle-build-my-module-in-release-mode-when-the-app-is-in-debug
+    // defaultPublishConfig "debug"
+    namespace "org.love2d.android"
+    ndkVersion '25.2.9519653'
+
+    defaultConfig {
+        minSdk 16
+        compileSdk 34
+        targetSdk 34
+        externalNativeBuild {
+            ndkBuild {
+                arguments "-j" + Runtime.runtime.availableProcessors()
+            }
+        }
+        ndk {
+            // Specifies the ABI configurations of your native
+            // libraries Gradle should build and package with your APK.
+            // noinspection ChromeOsAbiSupport
+            abiFilters 'armeabi-v7a', 'arm64-v8a'
+            debugSymbolLevel 'SYMBOL_TABLE'
+        }
+    }
+
+    def retrieveAll3pModules = { ->
+        def modules = []
+
+        fileTree("src/jni/lua-modules").visit { FileVisitDetails details ->
+            if (details.isDirectory()) {
+                if (file(details.file.path + "/Android.mk").exists()) {
+                    def logger = project.getLogger()
+                    logger.lifecycle("3rd-party module: " + details.file.path)
+
+                    def javainfo = file(details.file.path + "/java.txt")
+                    if (javainfo.exists()) {
+                        def fstream = new FileInputStream(javainfo)
+                        def infile = new BufferedReader(new InputStreamReader(fstream))
+                        def javapath = infile.readLine().replace("\\", "/")
+                        def mpath = ""
+
+                        if (javapath[0] != '/') {
+                            mpath = details.file.path + "/" + javapath
+                        } else {
+                            mpath = details.file.path + javapath
+                        }
+
+                        modules << mpath
+
+                        logger.lifecycle("Registered path " + mpath)
+                        infile.close()
+                    }
+                }
+            }
+        }
+
+        return modules
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            ndk {
+                // noinspection ChromeOsAbiSupport
+                abiFilters += 'x86_64'
+            }
+        }
+    }
+    flavorDimensions = ['mode']
+    productFlavors {
+        normal {
+            dimension 'mode'
+        }
+        embed {
+            dimension 'mode'
+        }
+    }
+    sourceSets {
+        main {
+            java {
+                srcDir 'src/jni/SDL2/android-project/app/src/main/java'
+                srcDir 'src/main/java'
+                srcDirs += retrieveAll3pModules()
+            }
+        }
+        normal {
+            java {
+                srcDirs += 'src/normal/java'
+            }
+        }
+    }
+    externalNativeBuild {
+        ndkBuild {
+            path 'src/jni/Android.mk'
+        }
+    }
+    packagingOptions {
+        jniLibs {
+            excludes += [
+                'lib/arm64-v8a/libSDL2.so',
+                'lib/armeabi-v7a/libSDL2.so',
+                'lib/x86_64/libSDL2.so',
+                'lib/x86/libSDL2.so'
+            ]
+        }
+    }
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    api fileTree(dir: 'libs', include: ['*.jar'])
+    api 'androidx.appcompat:appcompat:1.6.1'
+}

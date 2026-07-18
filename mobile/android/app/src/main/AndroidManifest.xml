@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" >
+<uses-permission android:name="android.permission.VIBRATE" />
+  <uses-permission android:name="android.permission.BLUETOOTH" />
+<!-- OpenGL ES 2.0 -->
+  <uses-feature android:glEsVersion="0x00020000" />
+  <!-- Touchscreen support -->
+  <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+  <!-- Game controller support -->
+  <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+  <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+  <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+  <!-- External mouse input events -->
+  <uses-feature android:name="android.hardware.type.pc" android:required="false" />
+  <!-- Low latency audio -->
+  <uses-feature android:name="android.hardware.audio.low_latency" android:required="false" />
+  <uses-feature android:name="android.hardware.audio.pro" android:required="false" />
+
+  <application
+      android:allowBackup="true"
+      android:icon="@drawable/love"
+      android:label="${NAME}" >
+    <activity
+        android:name="org.love2d.android.GameActivity"
+        android:exported="true"
+        android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation"
+        android:label="${NAME}"
+        android:launchMode="singleInstance"
+        android:screenOrientation="${ORIENTATION}"
+        android:resizeableActivity="false"
+        android:theme="@android:style/Theme.NoTitleBar.Fullscreen" >
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+        <category android:name="tv.ouya.intent.category.GAME" />
+      </intent-filter>
+      <intent-filter>
+        <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>

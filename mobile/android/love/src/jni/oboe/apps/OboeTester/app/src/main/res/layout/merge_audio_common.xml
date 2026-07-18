@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<merge xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent">
+
+    <com.google.sample.oboe.manualtest.StreamConfigurationView
+        android:id="@+id/streamConfiguration"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:orientation="horizontal" />
+
+    <com.google.sample.oboe.manualtest.BufferSizeView
+        android:id="@+id/buffer_size_view"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:orientation="horizontal" />
+
+    <com.google.sample.oboe.manualtest.WorkloadView
+        android:id="@+id/workload_view"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:orientation="horizontal" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/button_open"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:onClick="openAudio"
+            android:text="@string/openAudio" />
+
+        <Button
+            android:id="@+id/button_start"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:onClick="startAudio"
+            android:text="@string/startAudio" />
+
+        <Button
+            android:id="@+id/button_pause"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:onClick="pauseAudio"
+            android:text="@string/pauseAudio" />
+
+        <Button
+            android:id="@+id/button_stop"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:onClick="stopAudio"
+            android:text="@string/stopAudio" />
+
+        <Button
+            android:id="@+id/button_close"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:onClick="closeAudio"
+            android:text="@string/closeAudio" />
+
+    </LinearLayout>
+
+    <CheckBox
+        android:id="@+id/callbackReturnStop"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="callback returns STOP" />
+
+</merge>

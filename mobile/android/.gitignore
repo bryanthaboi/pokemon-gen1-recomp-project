@@ -1,0 +1,33 @@
+assets/
+bin/
+gen/
+libs/
+obj/
+
+local.properties
+
+.*.swp
+.*~
+*~
+*.o
+*.so
+*.a
+*.orig
+*.rej
+
+
+# Downloaded gradle wrapper
+.gradle
+
+# Android Studio project files
+.idea
+*.iml
+
+# Gradle build files
+build
+.externalNativeBuild
+.cxx
+
+# love-android specific
+!app/src/main/assets/
+app/src/main/assets/game.love

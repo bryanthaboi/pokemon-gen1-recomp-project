@@ -1,0 +1,12 @@
+prefix=/usr/local
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libmodplug
+Description: The ModPlug mod file playing library.
+Version: 0.8.8.4
+Requires: 
+Libs: -L${libdir} -lmodplug 
+Libs.private: -lstdc++ -lm
+Cflags: -I${includedir} -I${includedir}/libmodplug

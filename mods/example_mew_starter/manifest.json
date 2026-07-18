@@ -1,0 +1,12 @@
+{
+  "id": "example_mew_starter",
+  "name": "Mew Starter Example",
+  "version": "1.0.0",
+  "entry": "main.lua",
+  "category": "GAMEPLAY",
+  "priority": 100,
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "description": "Turns the Oak's Lab Charmander gift into a level 20 Mew with inverted battle sprites."
+}

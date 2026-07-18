@@ -1,0 +1,38 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 11.00
+# Visual Studio 2010
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "feedseek", "feedseek\feedseek.vcxproj", "{AE56D9D0-ECBA-44CD-943A-E530F6C46E15}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libmpg123", "libmpg123\libmpg123.vcxproj", "{67CAA87B-7CF1-4F93-BB67-21C513F40803}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "scan", "scan\scan.vcxproj", "{1B03F4FD-A10A-4F99-A476-BE7FFD1CB508}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "dump_seekindex", "dump_seekindex\dump_seekindex.vcxproj", "{3C75D302-5DA2-49DD-A27A-5EB199D6933B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Win32 = Debug|Win32
+		Release|Win32 = Release|Win32
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{AE56D9D0-ECBA-44CD-943A-E530F6C46E15}.Debug|Win32.ActiveCfg = Debug|Win32
+		{AE56D9D0-ECBA-44CD-943A-E530F6C46E15}.Debug|Win32.Build.0 = Debug|Win32
+		{AE56D9D0-ECBA-44CD-943A-E530F6C46E15}.Release|Win32.ActiveCfg = Release|Win32
+		{AE56D9D0-ECBA-44CD-943A-E530F6C46E15}.Release|Win32.Build.0 = Release|Win32
+		{67CAA87B-7CF1-4F93-BB67-21C513F40803}.Debug|Win32.ActiveCfg = Debug_x86|Win32
+		{67CAA87B-7CF1-4F93-BB67-21C513F40803}.Debug|Win32.Build.0 = Debug_x86|Win32
+		{67CAA87B-7CF1-4F93-BB67-21C513F40803}.Release|Win32.ActiveCfg = Release_x86|Win32
+		{67CAA87B-7CF1-4F93-BB67-21C513F40803}.Release|Win32.Build.0 = Release_x86|Win32
+		{1B03F4FD-A10A-4F99-A476-BE7FFD1CB508}.Debug|Win32.ActiveCfg = Debug|Win32
+		{1B03F4FD-A10A-4F99-A476-BE7FFD1CB508}.Debug|Win32.Build.0 = Debug|Win32
+		{1B03F4FD-A10A-4F99-A476-BE7FFD1CB508}.Release|Win32.ActiveCfg = Release|Win32
+		{1B03F4FD-A10A-4F99-A476-BE7FFD1CB508}.Release|Win32.Build.0 = Release|Win32
+		{3C75D302-5DA2-49DD-A27A-5EB199D6933B}.Debug|Win32.ActiveCfg = Debug|Win32
+		{3C75D302-5DA2-49DD-A27A-5EB199D6933B}.Debug|Win32.Build.0 = Debug|Win32
+		{3C75D302-5DA2-49DD-A27A-5EB199D6933B}.Release|Win32.ActiveCfg = Release|Win32
+		{3C75D302-5DA2-49DD-A27A-5EB199D6933B}.Release|Win32.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

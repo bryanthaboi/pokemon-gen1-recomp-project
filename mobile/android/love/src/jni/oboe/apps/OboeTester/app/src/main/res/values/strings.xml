@@ -1,0 +1,150 @@
+<resources>
+    <string name="app_name">Oboe Tester</string>
+    <string name="init_device">Device:</string>
+    <string name="init_status">Status:</string>
+    <string name="init_result">Result:</string>
+    <string name="action_settings">Settings</string>
+    <string name="openAudio">Open</string>
+    <string name="startAudio">Start</string>
+    <string name="pauseAudio">Pause</string>
+    <string name="stopAudio">Stop</string>
+    <string name="closeAudio">Close</string>
+    <string name="recordAudio">Record</string>
+    <string name="playAudio">Play</string>
+    <string name="measure">Measure</string>
+    <string name="cancel">Cancel</string>
+
+    <string name="GetParam">Get Param</string>
+    <string name="device_name">Device Name</string>
+    <string name="auto_select">Auto select</string>
+    <string name="hint_hide_settings">Hide Settings</string>
+    <string name="hint_show_settings">Show Settings</string>
+    <string name="use_loopback">Click Show Settings to configure stream.\nRequires a loopback adapter!</string>
+
+    <string name="api_prompt">Choose an API</string>
+    <string-array name="output_modes">
+        <item>Unspecified</item>
+        <item>OpenSL ES</item>
+        <item>AAudio</item>
+    </string-array>
+
+    <string name="audio_mode_prompt">Performance Mode</string>
+    <string-array name="audio_modes">
+        <item>NORMAL</item>
+        <item>RINGTONE</item>
+        <item>IN_CALL</item>
+        <item>IN_COMMUNICATION</item>
+    </string-array>
+
+    <string name="sample_rate_prompt">SRate:</string>
+    <string-array name="sample_rates">
+        <item>0</item>
+        <item>8000</item>
+        <item>11025</item>
+        <item>12000</item>
+        <item>16000</item>
+        <item>22050</item>
+        <item>24000</item>
+        <item>32000</item>
+        <item>44100</item>
+        <item>48000</item>
+        <item>64000</item>
+        <item>88200</item>
+        <item>96000</item>
+    </string-array>
+
+    <string name="format_prompt">Format:</string>
+    <string-array name="audio_formats">
+        <item>Unspecified</item>
+        <item>PCM_I16</item>
+        <item>PCM_FLOAT</item>
+    </string-array>
+
+    <string name="input_preset_prompt">InPreset:</string>
+    <string-array name="audio_input_presets">
+        <item>Generic</item>
+        <item>Camcorder</item>
+        <item>VoiceRec</item>
+        <item>VoiceComm</item>
+        <item>Unprocessed</item>
+        <item>Performance</item>
+    </string-array>
+
+    <string name="channel_count_prompt">Channels:</string>
+    <string-array name="channel_counts">
+        <item>0</item>
+        <item>1</item>
+        <item>2</item>
+        <item>3</item>
+        <item>4</item>
+        <item>5</item>
+        <item>6</item>
+        <item>7</item>
+        <item>8</item>
+        <item>9</item>
+    </string-array>
+
+    <string-array name="glitch_times">
+        <item>10</item>
+        <item>25</item>
+        <item>70</item>
+        <item>200</item>
+        <item>600</item>
+    </string-array>
+
+    <string name="performance_prompt">Perf:</string>
+    <string-array name="performance_modes">
+        <item>NONE</item>
+        <item>POWER_SAVING</item>
+        <item>LOW_LATENCY</item>
+    </string-array>
+
+<!--Must match SignalType in NativeAudioContext.h-->
+    <string name="output_signal_prompt">choose a signal</string>
+    <string-array name="output_signals">
+        <item>Sine</item>
+        <item>Sawtooth</item>
+        <item>Freq Sweep</item>
+        <item>Pitch Sweep</item>
+    </string-array>
+
+    <string name="synth_sender_text">Select Sender for Synth</string>
+    <string name="error_port_busy">Selected port is in use or unavailable.</string>
+    <string name="port_open_ok">Port opened OK.</string>
+    <string-array name="senders">
+        <item>"none"</item>
+    </string-array>
+
+    <string name="title_activity_main">Test Oboe</string>
+    <string name="title_activity_test_output">Test Output</string>
+    <string name="title_activity_test_input">Test Input</string>
+    <string name="title_activity_output_latency">Tap to Tone</string>
+    <string name="title_activity_recorder">Recorder</string>
+    <string name="title_activity_echo">Echo Input to Output</string>
+    <string name="title_activity_rt_latency">Round Trip Latency</string>
+    <string name="title_activity_glitches">Test Glitches</string>
+
+    <string name="need_record_audio_permission">"This app needs RECORD_AUDIO permission"</string>
+    <string name="share">Share</string>
+    <string name="seconds_per_test">seconds per test</string>
+    <string name="duration">Duration:</string>
+    <string name="auto_glitch_instructions">Use loopback adapter or speakers.</string>
+    <string name="log_of_glitch_tests">Log of Glitch Tests</string>
+    <string name="save_file">Save</string>
+
+    <string name="src_prompt">SRC:</string>
+    <string name="average">Average</string>
+    <string name="failTest">Fail</string>
+    <string name="skipTest">Skip</string>
+    <string name="title_test_disconnect">Test Disconnect</string>
+    <string name="test_disconnect_instructions">Unplug all headsets then click [START]</string>
+    <string-array name="conversion_qualities">
+        <item>None</item>
+        <item>Fastest</item>
+        <item>Low</item>
+        <item>Medium</item>
+        <item>High</item>
+        <item>Best</item>
+    </string-array>
+
+</resources>
