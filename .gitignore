@@ -1,0 +1,37 @@
+# Generated from a user-provided Pokemon Red ROM.
+# Regenerate with: python3 tools/build_data.py --rom /path/to/pokemon-red.gb --clean
+data/generated/
+assets/generated/
+
+# LÖVE packages
+*.love
+
+# Local saves (LÖVE writes to its save dir, but keep the repo clean anyway)
+save/
+
+__pycache__/
+*.pyc
+.venv
+.*/
+.*
+
+!.gitignore
+
+# Android build outputs / local SDK path / packaged payload (keep love-android sources)
+mobile/android/app/build/
+mobile/android/love/build/
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/app/src/embed/assets/game.love
+mobile/android/**/build/
+
+# iOS love-src (downloaded love-*-ios-source; see mobile/ios/README.md)
+mobile/ios/love-src/
+mobile/ios/cache/
+mobile/ios/build/
+
+# Final packaged build artifacts (mac/win/web/android/ios) — see scripts/build.sh
+/dist/
+
+# Legacy manual convenience-copy location (superseded by /dist/android/)
+mobile/dist/
