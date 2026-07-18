@@ -1,0 +1,20 @@
+-- Driver: watch the intro movie from boot (does NOT skip).
+return function(game)
+  local U = dofile("tests/drivers/util.lua")
+  local DIR = os.getenv("SHOT_DIR") or "/tmp/shots"
+  -- the boot stack already has IntroMovie on top (Game:load pushed it)
+  U.wait(30)
+  U.shot(game, DIR .. "/intro_0_copyright.png")
+  U.wait(180)
+  U.shot(game, DIR .. "/intro_1_star.png")
+  U.wait(90)
+  U.shot(game, DIR .. "/intro_2_gamefreak.png")
+  U.wait(120)
+  U.shot(game, DIR .. "/intro_3_fight_a.png")
+  U.wait(90)
+  U.shot(game, DIR .. "/intro_4_fight_b.png")
+  U.wait(90)
+  U.shot(game, DIR .. "/intro_5_fight_c.png")
+  U.wait(120)
+  U.shot(game, DIR .. "/intro_6_title.png")
+end
