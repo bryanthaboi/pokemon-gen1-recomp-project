@@ -16,7 +16,11 @@ function love.conf(t)
     t.window.height = 800
   else
     t.identity = os.getenv("POKEPORT_IDENTITY") or "pokemon-love2d"
-    t.window.title = "Pokemon Red (Gen 1 Recompilation Project)"
+    -- Version.lua has zero requires, so it is loadable this early; fall
+    -- back to the plain title if the source is not mounted yet
+    local ok, Version = pcall(require, "src.core.Version")
+    t.window.title = ok and Version.title()
+      or "Pokemon Red (Gen 1 Recompilation Project)"
     t.window.width = 160 * 4
     t.window.height = 144 * 4
   end

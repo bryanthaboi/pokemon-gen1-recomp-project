@@ -2,6 +2,9 @@
 -- a single static SpriteBatch covering the map plus a border-block ring
 -- (the ring plays the role of the GB border blocks around small maps).
 
+local Assets = require("src.render.Assets")
+local PaletteFX = require("src.render.PaletteFX")
+
 local TileRenderer = {}
 TileRenderer.__index = TileRenderer
 
@@ -24,7 +27,7 @@ local imageCache = {}
 
 local function getImage(path)
   if not imageCache[path] then
-    imageCache[path] = love.graphics.newImage(path)
+    imageCache[path] = Assets.image(path)
   end
   return imageCache[path]
 end
@@ -33,6 +36,9 @@ end
 -- Tile animation (home/vcopy.asm): tilesets with TILEANIM_WATER[_FLOWER]
 -- rotate water tile $14 one pixel every 20 frames (4 steps right, 4
 -- left) and cycle flower tile $03 through 3 frames.
+-- Those two cycles are the *defaults* a vanilla tileset record derives
+-- from its `animation` string; a tileset that carries `animatedTiles`
+-- declares its own set instead and animates with no engine change.
 -- ------------------------------------------------------------------
 
 local WATER_TILE, FLOWER_TILE = 0x14, 0x03
@@ -40,6 +46,13 @@ local WATER_TILE, FLOWER_TILE = 0x14, 0x03
 local WATER_OFFSETS = { 1, 2, 3, 2, 1, 0, 7, 0 }
 -- flower frame per step (wMovingBGTilesCounter2 & 3: <2 -> 1, 2, 3)
 local FLOWER_FRAMES = { 1, 2, 3, 1, 1, 2, 3, 1 }
+local ANIM_PERIOD = 20
+local FLOWER_IMAGES = {
+  "assets/generated/tilesets/flower1.png",
+  "assets/generated/tilesets/flower2.png",
+  "assets/generated/tilesets/flower3.png",
+}
+local SPINNER_STRIP = "assets/generated/tilesets/spinners.png"
 
 local animFrame = 0
 function TileRenderer.tick()
@@ -87,19 +100,26 @@ function TileRenderer.spinBlurActive()
   return spinning and (math.floor(animFrame / 8) % 2 == 0)
 end
 
--- the 8 shifted variants of a tileset's water tile (built once per sheet)
-local waterVariants = {}
-local function getWaterVariants(tilesetImagePath, perRow)
-  if waterVariants[tilesetImagePath] ~= nil then
-    return waterVariants[tilesetImagePath]
-  end
+-- ------------------------------------------------------------------
+-- animatedTiles: the per-kind resource builders.  Each returns the
+-- texture list a step indexes into, or false when the pixels are
+-- unreachable (headless, or a missing frame file) -- false disables that
+-- one entry and leaves the static batch showing through, which is what
+-- the water/flower branches did before they were data.
+-- ------------------------------------------------------------------
+
+-- the 8 shifted variants of one tile (built once per sheet + tile id)
+local shiftVariants = {}
+local function getShiftVariants(tilesetImagePath, perRow, tile)
+  local key = tilesetImagePath .. "#" .. tile
+  if shiftVariants[key] ~= nil then return shiftVariants[key] end
   if not (love.image and love.image.newImageData) then
-    waterVariants[tilesetImagePath] = false
+    shiftVariants[key] = false
     return false
   end
-  local id = love.image.newImageData(tilesetImagePath)
-  local sx = (WATER_TILE % perRow) * 8
-  local sy = math.floor(WATER_TILE / perRow) * 8
+  local id = Assets.imageData(tilesetImagePath)
+  local sx = (tile % perRow) * 8
+  local sy = math.floor(tile / perRow) * 8
   local out = {}
   for o = 0, 7 do
     local v = love.image.newImageData(8, 8)
@@ -111,74 +131,153 @@ local function getWaterVariants(tilesetImagePath, perRow)
     end
     out[o + 1] = love.graphics.newImage(v)
   end
-  waterVariants[tilesetImagePath] = out
+  shiftVariants[key] = out
   return out
 end
 
-local flowerFrames
-local function getFlowerFrames()
-  if flowerFrames ~= nil then return flowerFrames end
-  flowerFrames = {}
-  for i = 1, 3 do
-    local ok, img = pcall(love.graphics.newImage,
-                          ("assets/generated/tilesets/flower%d.png"):format(i))
-    if not ok then flowerFrames = false return false end
-    flowerFrames[i] = img
+local frameImages = {}
+local function getFrameImages(paths)
+  local key = table.concat(paths, "|")
+  if frameImages[key] ~= nil then return frameImages[key] end
+  local out = {}
+  for i, path in ipairs(paths) do
+    local ok, img = pcall(getImage, path)
+    if not ok then
+      frameImages[key] = false
+      return false
+    end
+    out[i] = img
   end
-  return flowerFrames
+  frameImages[key] = out
+  return out
 end
 
--- the tileset's own atlas ImageData with the 4 spinner-tile slots blitted
--- over with the shared blur strip (assets/generated/tilesets/spinners.png,
--- extracted from gfx/overworld/spinners.png); cached per tileset image path
-local spinnerBlurImages = {}
-local spinnerStripData
-local function getSpinnerBlurImage(tilesetId, tilesetImagePath, perRow)
-  if spinnerBlurImages[tilesetImagePath] ~= nil then
-    return spinnerBlurImages[tilesetImagePath]
-  end
-  if not (love.image and love.image.newImageData) then
-    spinnerBlurImages[tilesetImagePath] = false
+-- the tileset's own atlas ImageData with the patched tile slots blitted
+-- over with a shared strip (vanilla: assets/generated/tilesets/spinners.png,
+-- extracted from gfx/overworld/spinners.png); cached per tileset + strip
+local toggleImages = {}
+local stripData = {}
+local function getToggleImage(spec, tilesetImagePath, perRow)
+  local key = tilesetImagePath .. "#" .. tostring(spec.image)
+  if toggleImages[key] ~= nil then return toggleImages[key] end
+  local offsets = spec.stripOffsets
+  if not (love.image and love.image.newImageData) or not offsets then
+    toggleImages[key] = false
     return false
   end
-  local destTiles = TileRenderer.SPINNER_ARROW_TILES[tilesetId]
-  local offsets = SPINNER_STRIP_OFFSET[tilesetId]
-  if not (destTiles and offsets) then
-    spinnerBlurImages[tilesetImagePath] = false
+  if stripData[spec.image] == nil then
+    local ok, id = pcall(Assets.imageData, spec.image)
+    stripData[spec.image] = ok and id or false
+  end
+  local strip = stripData[spec.image]
+  if not strip then
+    toggleImages[key] = false
     return false
   end
-  if spinnerStripData == nil then
-    local ok, id = pcall(love.image.newImageData,
-                         "assets/generated/tilesets/spinners.png")
-    spinnerStripData = ok and id or false
-  end
-  if not spinnerStripData then
-    spinnerBlurImages[tilesetImagePath] = false
-    return false
-  end
-  local atlas = love.image.newImageData(tilesetImagePath)
+  local atlas = Assets.imageData(tilesetImagePath)
   local clone = love.image.newImageData(atlas:getWidth(), atlas:getHeight())
   clone:paste(atlas, 0, 0, 0, 0, atlas:getWidth(), atlas:getHeight())
-  for _, id in ipairs(destTiles) do
-    local sx = offsets[id] * 8
+  for id, offset in pairs(offsets) do
+    local sx = offset * 8
     local dx = (id % perRow) * 8
     local dy = math.floor(id / perRow) * 8
     for y = 0, 7 do
       for x = 0, 7 do
-        local r, g, b, a = spinnerStripData:getPixel(sx + x, y)
+        local r, g, b, a = strip:getPixel(sx + x, y)
         clone:setPixel(dx + x, dy + y, r, g, b, a)
       end
     end
   end
   local img = love.graphics.newImage(clone)
-  spinnerBlurImages[tilesetImagePath] = img
+  toggleImages[key] = img
   return img
+end
+
+-- a toggle entry names the predicate that decides whether its patch shows
+-- this frame; an unknown name (or none) is always on
+TileRenderer.GATES = {
+  spinning = function() return TileRenderer.spinBlurActive() end,
+}
+
+function TileRenderer.registerGate(name, predicate)
+  TileRenderer.GATES[name] = predicate
+end
+
+local function gateOpen(name)
+  local predicate = TileRenderer.GATES[name]
+  if not predicate then return true end
+  return predicate() and true or false
+end
+
+-- The vanilla animation set as data: what the importer would write onto a
+-- tileset record derived from its `animation` string and its spinner-tile
+-- row.  Consulted only when the record declares no animatedTiles of its
+-- own, so the vanilla frame is byte-for-byte what it always was.
+function TileRenderer.defaultAnimatedTiles(tileset)
+  local out = {}
+  local anim = tileset.animation
+  if anim == "TILEANIM_WATER" or anim == "TILEANIM_WATER_FLOWER" then
+    out[#out + 1] = { tile = WATER_TILE, kind = "hshift",
+                      period = ANIM_PERIOD, offsets = WATER_OFFSETS }
+  end
+  if anim == "TILEANIM_WATER_FLOWER" then
+    out[#out + 1] = { tile = FLOWER_TILE, kind = "frames",
+                      period = ANIM_PERIOD, images = FLOWER_IMAGES,
+                      sequence = FLOWER_FRAMES }
+  end
+  local spinners = TileRenderer.SPINNER_ARROW_TILES[tileset.id]
+  if spinners then
+    out[#out + 1] = { tiles = spinners, kind = "toggle", image = SPINNER_STRIP,
+                      stripOffsets = SPINNER_STRIP_OFFSET[tileset.id],
+                      gate = "spinning" }
+  end
+  return out
+end
+
+-- one entry's runtime form: the tile ids it claims, the textures a step
+-- picks from, and either a step sequence (hshift/frames) or a gate
+-- (toggle).  nil when the entry's pixels could not be built.
+local function buildAnim(spec, tilesetImagePath, perRow, quads)
+  local tiles = spec.tiles
+  if not tiles then
+    if spec.tile == nil then return nil end
+    tiles = { spec.tile }
+  end
+  local period = spec.period or ANIM_PERIOD
+  if spec.kind == "hshift" then
+    local offsets = spec.offsets
+    if not offsets or #offsets == 0 then return nil end
+    local textures = getShiftVariants(tilesetImagePath, perRow, tiles[1])
+    if not textures then return nil end
+    local sequence = {}
+    for i, offset in ipairs(offsets) do sequence[i] = offset + 1 end
+    return { tiles = tiles, textures = textures, sequence = sequence,
+             period = period }
+  elseif spec.kind == "frames" then
+    local sequence = spec.sequence
+    if not (spec.images and sequence and #sequence > 0) then return nil end
+    local textures = getFrameImages(spec.images)
+    if not textures then return nil end
+    return { tiles = tiles, textures = textures, sequence = sequence,
+             period = period }
+  elseif spec.kind == "toggle" then
+    local image = getToggleImage(spec, tilesetImagePath, perRow)
+    if not image then return nil end
+    -- the patch texture is a whole-atlas clone, so each cell needs the
+    -- quad of the tile it stands in rather than a single-tile image
+    return { tiles = tiles, textures = { image }, gate = spec.gate,
+             quadFor = function(tile) return quads[tile] end }
+  end
+  return nil
 end
 
 function TileRenderer.new(map)
   local self = setmetatable({}, TileRenderer)
   self.map = map
   self.image = getImage(map.tileset.image)
+  -- a full-color atlas colors everything it paints, ring and border fill
+  -- included, so every draw entry point claims its rect out of the pass
+  self.trueColor = map.tileset.trueColor or nil
 
   local iw, ih = self.image:getDimensions()
   self.quads = {}
@@ -195,20 +294,22 @@ function TileRenderer.new(map)
   local total = (wB + 2 * BORDER_BLOCKS) * (hB + 2 * BORDER_BLOCKS) * 16
   self.ringBatch = love.graphics.newSpriteBatch(self.image, total, "static")
   self.mapBatch = love.graphics.newSpriteBatch(self.image, wB * hB * 16, "static")
-  -- animated tiles overdraw the static batches each frame
-  local anim = map.tileset.animation
-  local animWater = anim == "TILEANIM_WATER" or anim == "TILEANIM_WATER_FLOWER"
-  local variants = animWater and getWaterVariants(map.tileset.image, perRow)
-  local flowers = anim == "TILEANIM_WATER_FLOWER" and getFlowerFrames()
-  -- Gym/Rocket-Hideout spinner-arrow tiles (see SPINNER_ARROW_TILES above);
-  -- only GYM/FACILITY tilesets carry these dest tile ids
-  local spinnerIds = TileRenderer.SPINNER_ARROW_TILES[map.tileset.id]
-  local spinnerSet
-  if spinnerIds then
-    spinnerSet = {}
-    for _, id in ipairs(spinnerIds) do spinnerSet[id] = true end
+  -- animated tiles overdraw the static batches each frame.  Entry order
+  -- decides which one claims a tile listed twice, so the vanilla defaults
+  -- keep the old water-then-flower-then-spinner precedence.
+  local anims, claimedBy = {}, {}
+  local declared = map.tileset.animatedTiles
+                   or TileRenderer.defaultAnimatedTiles(map.tileset)
+  for _, spec in ipairs(declared) do
+    local anim = buildAnim(spec, map.tileset.image, perRow, self.quads)
+    if anim then
+      anim.cells = {}
+      anims[#anims + 1] = anim
+      for _, tile in ipairs(anim.tiles) do
+        if claimedBy[tile] == nil then claimedBy[tile] = anim end
+      end
+    end
   end
-  local water, flower, spinner = {}, {}, {}
 
   for by = -BORDER_BLOCKS, hB + BORDER_BLOCKS - 1 do
     for bx = -BORDER_BLOCKS, wB + BORDER_BLOCKS - 1 do
@@ -222,12 +323,10 @@ function TileRenderer.new(map)
           if quad then
             batch:add(quad, bx * 32 + tx * 8, by * 32 + ty * 8)
           end
-          if variants and tile == WATER_TILE then
-            table.insert(water, { bx * 32 + tx * 8, by * 32 + ty * 8, inside })
-          elseif flowers and tile == FLOWER_TILE then
-            table.insert(flower, { bx * 32 + tx * 8, by * 32 + ty * 8, inside })
-          elseif spinnerSet and spinnerSet[tile] then
-            table.insert(spinner, { bx * 32 + tx * 8, by * 32 + ty * 8, inside, tile })
+          local anim = claimedBy[tile]
+          if anim then
+            local cells = anim.cells
+            cells[#cells + 1] = { bx * 32 + tx * 8, by * 32 + ty * 8, inside, tile }
           end
         end
       end
@@ -237,9 +336,9 @@ function TileRenderer.new(map)
   -- animated overdraw batches: the full set (ring + body) for the
   -- current map, and a body-only set for connected-map drawing --
   -- a neighbor's water ring must never overdraw this map's tiles.
-  -- `quadFor`, when given, looks up a per-entry quad (used by the spinner
-  -- batch, whose texture is a full tileset-atlas clone rather than a
-  -- single-tile image like the water/flower variants).
+  -- `quadFor`, when given, looks up a per-entry quad (used by toggle
+  -- entries, whose texture is a full tileset-atlas clone rather than a
+  -- single-tile image like the hshift/frames variants).
   local function animBatches(entries, image, quadFor)
     if #entries == 0 then return nil, nil end
     local all = love.graphics.newSpriteBatch(image, #entries, "static")
@@ -253,23 +352,12 @@ function TileRenderer.new(map)
     end
     return all, body
   end
-  if variants then
-    self.waterBatch, self.waterBodyBatch = animBatches(water, variants[1])
-    self.waterVariants = self.waterBatch and variants or nil
+  for _, anim in ipairs(anims) do
+    anim.batch, anim.bodyBatch =
+      animBatches(anim.cells, anim.textures[1], anim.quadFor)
+    anim.cells = nil
   end
-  if flowers then
-    self.flowerBatch, self.flowerBodyBatch = animBatches(flower, flowers[1])
-    self.flowerFrames = self.flowerBatch and flowers or nil
-  end
-  if spinnerSet then
-    local blurImage = getSpinnerBlurImage(map.tileset.id, map.tileset.image, perRow)
-    if blurImage then
-      local quads = self.quads
-      self.spinnerBatch, self.spinnerBodyBatch =
-        animBatches(spinner, blurImage, function(tile) return quads[tile] end)
-      self.spinnerBlurImage = self.spinnerBatch and blurImage or nil
-    end
-  end
+  self.anims = anims
 
   -- a repeating 32x32 image of the border block, tiled behind
   -- everything the 3-block ring doesn't cover (the survey zoom sees
@@ -302,6 +390,7 @@ end
 -- meshes seamlessly with the ring batch)
 function TileRenderer:drawBorderFill(camX, camY, vw, vh)
   if not self.borderFill then return end
+  if self.trueColor then PaletteFX.markTrueColor(0, 0, vw, vh) end
   local x, y = math.floor(camX), math.floor(camY)
   local quad = love.graphics.newQuad(x, y, vw, vh, 32, 32)
   love.graphics.draw(self.borderFill, quad, 0, 0)
@@ -349,33 +438,41 @@ function TileRenderer:drawCellBottom(cx, cy, camX, camY)
   if shader then love.graphics.setShader() end
 end
 
--- water/flower overdraw at the current animation step; bodyOnly skips
--- the ring positions (connected maps draw body-only)
+-- animated overdraw at the current step; bodyOnly skips the ring
+-- positions (connected maps draw body-only)
 function TileRenderer:drawAnimated(camX, camY, bodyOnly)
-  local waterBatch = bodyOnly and self.waterBodyBatch or self.waterBatch
-  local flowerBatch = bodyOnly and self.flowerBodyBatch or self.flowerBatch
-  local spinnerBatch = bodyOnly and self.spinnerBodyBatch or self.spinnerBatch
-  if not (waterBatch or flowerBatch or spinnerBatch) then return end
-  local i = (math.floor(animFrame / 20) % 8) + 1
+  local anims = self.anims
+  if not anims then return end
   local x, y = -math.floor(camX), -math.floor(camY)
-  if waterBatch then
-    waterBatch:setTexture(self.waterVariants[WATER_OFFSETS[i] + 1])
-    love.graphics.draw(waterBatch, x, y)
-  end
-  if flowerBatch then
-    flowerBatch:setTexture(self.flowerFrames[FLOWER_FRAMES[i]])
-    love.graphics.draw(flowerBatch, x, y)
-  end
-  -- spinner arrow tiles (engine/overworld/spinners.asm): only 2 frames
-  -- (blur / restore-to-static), gated on spinBlurActive() rather than the
-  -- free-running water/flower cycle above -- when false, draw nothing so
-  -- the already-static mapBatch/ringBatch tile shows through unchanged
-  if spinnerBatch and TileRenderer.spinBlurActive() then
-    love.graphics.draw(spinnerBatch, x, y)
+  for _, anim in ipairs(anims) do
+    local batch = bodyOnly and anim.bodyBatch or anim.batch
+    if batch then
+      if anim.gate then
+        -- a gated entry has only the two frames the asm has (patch /
+        -- restore-to-static); when the gate is shut draw nothing so the
+        -- already-static mapBatch/ringBatch tile shows through unchanged
+        if gateOpen(anim.gate) then love.graphics.draw(batch, x, y) end
+      else
+        local step = math.floor(animFrame / anim.period) % #anim.sequence + 1
+        batch:setTexture(anim.textures[anim.sequence[step]])
+        love.graphics.draw(batch, x, y)
+      end
+    end
   end
 end
 
+-- the drawn extent of one batch in world-canvas pixels; `blocks` is the
+-- ring width the batch reaches past the map body on every side
+function TileRenderer:markTrueColor(camX, camY, blocks)
+  local def = self.map.def
+  PaletteFX.markTrueColor(-math.floor(camX) - blocks * 32,
+                          -math.floor(camY) - blocks * 32,
+                          (def.width + 2 * blocks) * 32,
+                          (def.height + 2 * blocks) * 32)
+end
+
 function TileRenderer:draw(camX, camY)
+  if self.trueColor then self:markTrueColor(camX, camY, BORDER_BLOCKS) end
   love.graphics.draw(self.ringBatch, -math.floor(camX), -math.floor(camY))
   love.graphics.draw(self.mapBatch, -math.floor(camX), -math.floor(camY))
   self:drawAnimated(camX, camY)
@@ -383,6 +480,7 @@ end
 
 -- body only, for connected-map strips
 function TileRenderer:drawMapOnly(camX, camY)
+  if self.trueColor then self:markTrueColor(camX, camY, 0) end
   love.graphics.draw(self.mapBatch, -math.floor(camX), -math.floor(camY))
   self:drawAnimated(camX, camY, true)
 end
@@ -392,16 +490,22 @@ function TileRenderer:rebuild()
   local fresh = TileRenderer.new(self.map)
   self.ringBatch = fresh.ringBatch
   self.mapBatch = fresh.mapBatch
-  self.waterBatch = fresh.waterBatch
-  self.waterBodyBatch = fresh.waterBodyBatch
-  self.waterVariants = fresh.waterVariants
-  self.flowerBatch = fresh.flowerBatch
-  self.flowerBodyBatch = fresh.flowerBodyBatch
-  self.flowerFrames = fresh.flowerFrames
-  self.spinnerBatch = fresh.spinnerBatch
-  self.spinnerBodyBatch = fresh.spinnerBodyBatch
-  self.spinnerBlurImage = fresh.spinnerBlurImage
+  self.anims = fresh.anims
   self.borderFill = fresh.borderFill
 end
+
+-- drop every atlas and every derived animation texture so the next
+-- TileRenderer.new re-resolves through the asset search path.  Live
+-- instances keep the batches they already built; MapLoader.invalidateAll
+-- is what drops those (14 §cache-invalidation contract).
+function TileRenderer.invalidate()
+  imageCache = {}
+  shiftVariants = {}
+  frameImages = {}
+  toggleImages = {}
+  stripData = {}
+end
+
+Assets.register(TileRenderer.invalidate)
 
 return TileRenderer

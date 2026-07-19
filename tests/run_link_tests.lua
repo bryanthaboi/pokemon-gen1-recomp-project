@@ -240,5 +240,11 @@ eq(gameA.save.money, 3000, "no prize money in link battles")
 eq(gameA.save.party[1].hp, gameA.save.party[1].stats.hp,
    "the real party is untouched (battle used clamped copies)")
 
+-- ---------------------------------------------------------------- mod link compat
+-- Self-contained like the tests/mod_*.lua suites: own bootstrap and
+-- assert-based checks, so it lands here as a single pass/fail line.
+local modOk, modErr = pcall(dofile, "tests/mod_link_tests.lua")
+check(modOk, "mod link compat suite" .. (modOk and "" or (": " .. tostring(modErr))))
+
 print(("\n%s"):format(failures == 0 and "ALL LINK TESTS PASSED" or failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

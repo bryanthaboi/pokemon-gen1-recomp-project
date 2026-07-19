@@ -9,8 +9,8 @@ if not _G.love then _G.love = require("tests.love_stub") end
 local Data = require("src.core.Data")
 if not (Data.maps and Data.maps.PALLET_TOWN) then Data:load() end
 local init = require("data.scripts.init")
-local fails, total = 0, 0
-local function check(c, m) total = total + 1; if c then print("ok   " .. m) else fails = fails + 1; print("FAIL " .. m) end end
+local S = require("tests.harness").suite("parity flavor")
+local check = S.check
 
 -- (1) every ported (map, TEXT const) resolves via the registry
 local ported = 0
@@ -49,5 +49,4 @@ for _, modname in ipairs({ "data.scripts.flavor_all", "data.scripts.story7" }) d
 end
 check(missing == 0, ("all %d row-list text labels exist in generated text"):format(labels))
 
-print(("parity flavor: %d/%d passed"):format(total - fails, total))
-if fails > 0 then error(fails .. " parity-flavor assertion(s) failed") end
+S.finish()

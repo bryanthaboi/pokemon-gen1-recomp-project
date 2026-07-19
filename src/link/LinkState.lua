@@ -3,8 +3,11 @@
 -- lua-enet (bundled with LÖVE),  no relay server.
 
 local Font = require("src.render.Font")
+local Handshake = require("src.link.Handshake")
 local Net = require("src.link.Net")
 local Protocol = require("src.link.Protocol")
+local Runtime = require("src.mods.Runtime")
+local Screens = require("src.ui.Screens")
 local TextBox = require("src.render.TextBox")
 
 local LinkState = {}
@@ -12,6 +15,10 @@ LinkState.__index = LinkState
 LinkState.isOpaque = true
 
 local CURSOR = 0xED
+
+-- how long the host waits for a v2 hello before deciding the peer predates
+-- the handshake (a pre-mod guest sends nothing until it hears the mode)
+local HELLO_GRACE = 2
 
 -- the joiner edits an IPv4 address as 12 digits (three per octet),
 -- prefilled with our own LAN IP so usually only the tail needs changing
@@ -40,12 +47,68 @@ function LinkState.new(game)
   return self
 end
 
-function LinkState:exitWith(message)
+function LinkState:exitWith(message, reason)
+  Runtime.emit("link.ended", { reason = reason or (message and "error" or "bye") })
   if self.net then self.net:close() end
   self.game.stack:pop()
   if message then
     self.game.stack:push(TextBox.new(self.game, message))
   end
+end
+
+-- -------------------------------------------------------------------
+-- handshake v2 (D8): both peers announce engine version, api version and
+-- a fingerprint of their link surface, and the verdict comes from the two
+-- hellos rather than from whoever picked the mode.  The guest announces
+-- itself the moment it pairs; the host's hello still carries the mode, so
+-- a pre-mod build reads it exactly as it always did.
+-- -------------------------------------------------------------------
+
+-- take the peer's hello out of the inbox without eating anything that
+-- shares the batch with it
+function LinkState:pollHello()
+  local msgs = self.net:poll()
+  local keep, got = {}, false
+  for _, msg in ipairs(msgs) do
+    if msg.type == "hello" and not self.peerHello then
+      self.peerHello = msg
+      self.peerName = msg.name
+      got = true
+    else
+      keep[#keep + 1] = msg
+    end
+  end
+  for i = #keep, 1, -1 do
+    table.insert(self.net.inbox, 1, keep[i])
+  end
+  return got, #keep > 0
+end
+
+function LinkState:sendHello(mode)
+  self.myHello = Handshake.hello(self.game, mode)
+  self.net:send(self.myHello)
+end
+
+function LinkState:decideCompat(mode, isHost)
+  self.isHost = isHost
+  self.pendingMode = mode
+  self.myHello = self.myHello or Handshake.hello(self.game, isHost and mode or nil)
+  local peer = self.peerHello
+  self.verdict = Handshake.checkCompat(self.myHello, peer)
+  Runtime.emit("link.connected", {
+    role = isHost and "host" or "guest",
+    remote = { name = peer and peer.name or self.peerName, mode = mode,
+               mods = peer and peer.mods, fingerprint = peer and peer.fingerprint },
+  })
+  if self.verdict == "full" or self.verdict == "vanilla_peer" then
+    self:startMode(mode, isHost)
+    return
+  end
+  -- naming the difference up front is the whole point: the old behaviour
+  -- was a silent draw three turns into a battle that could never work
+  self.noticeLines = Handshake.describe(self.myHello, peer, self.verdict, mode)
+  self.noticeExits = self.verdict == "refused" or mode ~= "trade"
+  self.stage = "notice"
 end
 
 -- -------------------------------------------------------------------
@@ -64,7 +127,7 @@ function LinkState:update(dt)
     -- so a final message travelling with the disconnect still counts)
     if self.net.closed and #self.net.inbox == 0
        and self.stage ~= "menu" and self.stage ~= "addrEntry"
-       and self.stage ~= "battleRunning" then
+       and self.stage ~= "notice" and self.stage ~= "battleRunning" then
       self:exitWith("The link was\nbroken.")
       return
     end
@@ -124,17 +187,35 @@ function LinkState:update(dt)
     if input:wasPressed("b") then self:exitWith(nil) return end
     if self.net.paired then
       self.stage = "waitMode"
+      self:sendHello(nil) -- the host owns the mode; this is just who we are
     end
 
   elseif self.stage == "modeSelect" then -- host picks
+    self:pollHello()
     if input:wasPressed("up") or input:wasPressed("down") then
       self.index = self.index == 1 and 2 or 1
     elseif input:wasPressed("a") then
       local mode = self.index == 1 and "trade" or "battle"
-      self.net:send({ type = "hello", name = self.game.save.player.name, mode = mode })
-      self:startMode(mode, true)
+      self:sendHello(mode)
+      if self.peerHello then
+        self:decideCompat(mode, true)
+      else
+        self.pendingMode = mode
+        self.helloWait = 0
+        self.stage = "waitHello"
+      end
     elseif input:wasPressed("b") then
       self:exitWith(nil)
+    end
+
+  elseif self.stage == "waitHello" then -- host waits for the peer's hello
+    if input:wasPressed("b") then self:exitWith(nil) return end
+    local got, other = self:pollHello()
+    self.helloWait = self.helloWait + (dt or 0)
+    -- a pre-mod peer never sends one: it just gets on with the mode, so
+    -- its first message -- or the grace period -- is the answer
+    if got or other or self.helloWait > HELLO_GRACE then
+      self:decideCompat(self.pendingMode, true)
     end
 
   elseif self.stage == "waitMode" then -- guest waits for host's pick
@@ -142,15 +223,24 @@ function LinkState:update(dt)
     local msgs = self.net:poll()
     for i, msg in ipairs(msgs) do
       if msg.type == "hello" then
+        self.peerHello = msg
         self.peerName = msg.name
-        self:startMode(msg.mode, false)
         -- the host's next messages (party, ...) can share this batch;
         -- put them back so the new stage's poll sees them
         for j = #msgs, i + 1, -1 do
           table.insert(self.net.inbox, 1, msgs[j])
         end
+        self:decideCompat(msg.mode, false)
         break
       end
+    end
+
+  elseif self.stage == "notice" then
+    if input:wasPressed("b") or (self.noticeExits and input:wasPressed("a")) then
+      self.net:send({ type = "bye" })
+      self:exitWith(nil, "error")
+    elseif input:wasPressed("a") then
+      self:startMode(self.pendingMode, self.isHost)
     end
 
   elseif self.stage == "trade" then
@@ -167,12 +257,21 @@ function LinkState:update(dt)
           theirParty = msg.mons,
           theirName = self.peerName or "FOE",
           seed = self.isHost and self.linkSeed or msg.seed,
+          verdict = self.verdict,
+          strict = Handshake.strict(self.verdict),
         }
+        local battle, why
         if self.isHost then
-          self.game.stack:push(LinkBattle.newHost(self.game, self.net, opts))
+          battle, why = LinkBattle.newHost(self.game, self.net, opts)
         else
-          self.game.stack:push(LinkBattle.newGuest(self.game, self.net, opts))
+          battle, why = LinkBattle.newGuest(self.game, self.net, opts)
         end
+        if not battle then
+          self.net:send({ type = "bye" })
+          self:exitWith(why or "Link battle\ncan't start.", "error")
+          return
+        end
+        self.game.stack:push(battle)
         self.stage = "battleRunning"
         for j = #msgs, i + 1, -1 do
           table.insert(self.net.inbox, 1, msgs[j])
@@ -192,8 +291,15 @@ function LinkState:startMode(mode, isHost)
   self.isHost = isHost
   if mode == "trade" then
     self.stage = "trade"
-    self.trade = Protocol.TradeSession.new(self.game.data, self.game.save.party)
-    self.net:send({ type = "party", mons = Protocol.packParty(self.game.save.party) })
+    -- a subset session settles which mons both games rebuild identically
+    -- before either party goes out, so a pick can't land on a mon the
+    -- other side would reconstruct differently
+    self.trade = Protocol.TradeSession.new(self.game.data, self.game.save.party, {
+      subset = self.verdict == "subset",
+      strict = Handshake.strict(self.verdict),
+      peerName = self.peerName,
+    })
+    self.net:send(self.trade:opening())
     self.index = 1
   else
     self.stage = "battleWait"
@@ -213,24 +319,26 @@ end
 
 function LinkState:updateTrade(input)
   for _, msg in ipairs(self.net:poll()) do
-    self.trade:handle(msg)
+    local reply = self.trade:handle(msg)
+    if reply then self.net:send(reply) end
   end
   local t = self.trade
 
   if t.stage == "cancelled" then
-    self:exitWith("The trade was\ncancelled.")
+    self:exitWith(t.error and ("The trade stopped:\n%s."):format(t.error)
+                  or "The trade was\ncancelled.")
     return
   end
   if t.stage == "done" then
     local sent = t.party[t.myPick]
     local received, evoTo = t:apply(self.game)
     local name = received.nickname or self.game.data.pokemon[received.species].name
+    Runtime.emit("link.ended", { reason = "done" })
     self.net:close()
     self.game.stack:pop()
     local game = self.game
     require("src.core.Sound").play(game.data, "Trade_Machine")
-    local TradeAnim = require("src.ui.TradeAnim")
-    game.stack:push(TradeAnim.new(game, {
+    Screens.push(game, "TradeAnim", {
       sent = sent, received = received,
       onDone = function()
         game.stack:push(TextBox.new(game,
@@ -241,7 +349,7 @@ function LinkState:updateTrade(input)
             end
           end))
       end,
-    }))
+    })
     return
   end
 
@@ -257,7 +365,9 @@ function LinkState:updateTrade(input)
     self.net:send({ type = "bye" })
     self:exitWith("The trade was\ncancelled.")
   elseif t.stage == "picking" and input:wasPressed("a") then
-    self.net:send(t:pick(self.index))
+    if t:canPick(self.index) then
+      self.net:send(t:pick(self.index))
+    end
   elseif t.stage == "confirming" and self.confirmed == nil then
     if input:wasPressed("a") then
       self.confirmed = true
@@ -318,10 +428,23 @@ function LinkState:draw()
     Font.draw("BATTLE", 32, 68)
     Font.drawCode(CURSOR, 24, self.index == 1 and 48 or 68)
 
-  elseif self.stage == "waitMode" then
+  elseif self.stage == "waitMode" or self.stage == "waitHello" then
     drawTitle("CONNECTED!")
-    Font.draw("Waiting for the", 16, 56)
-    Font.draw("host to choose...", 16, 72)
+    if self.stage == "waitHello" then
+      Font.draw("Checking the", 16, 56)
+      Font.draw("other game...", 16, 72)
+    else
+      Font.draw("Waiting for the", 16, 56)
+      Font.draw("host to choose...", 16, 72)
+    end
+
+  elseif self.stage == "notice" then
+    drawTitle("CHECK YOUR MODS")
+    for i, line in ipairs(self.noticeLines or {}) do
+      if i > 8 then break end -- what fits above the prompt row
+      Font.draw(line, 8, 24 + (i - 1) * 12)
+    end
+    Font.draw(self.noticeExits and "A: back" or "A: trade anyway", 8, 128)
 
   elseif self.stage == "trade" then
     drawTitle("TRADE")
@@ -329,7 +452,9 @@ function LinkState:draw()
     Font.draw("YOURS", 8, 20)
     for i, mon in ipairs(self.game.save.party) do
       local def = self.game.data.pokemon[mon.species]
-      Font.draw((mon.nickname or def.name):sub(1, 8), 16, 20 + i * 12)
+      local label = (mon.nickname or def.name):sub(1, 8)
+      if not t:canPick(i) then label = label .. "X" end
+      Font.draw(label, 16, 20 + i * 12)
       if i == self.index then Font.drawCode(CURSOR, 8, 20 + i * 12) end
     end
     Font.draw("THEIRS", 84, 20)
@@ -339,8 +464,11 @@ function LinkState:draw()
       if t.theirPick == i then Font.drawCode(CURSOR, 84, 20 + i * 12) end
     end
     local hint
-    if t.stage == "waitParty" then hint = "Exchanging data..."
-    elseif t.stage == "picking" then hint = "Pick one to trade"
+    if t.stage == "waitRecords" then hint = "Comparing games..."
+    elseif t.stage == "waitParty" then hint = "Exchanging data..."
+    elseif t.stage == "picking" then
+      hint = t:canPick(self.index) and "Pick one to trade"
+             or "X: not on theirs"
     elseif t.stage == "waitPick" then hint = "Waiting for them..."
     elseif t.stage == "confirming" then
       hint = self.confirmed and "Waiting..." or "A: trade  B: cancel"

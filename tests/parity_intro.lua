@@ -11,9 +11,8 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 if not _G.love then _G.love = require("tests.love_stub") end
 local Data = require("src.core.Data")
 if not (Data.maps and Data.maps.PALLET_TOWN) then Data:load() end
-local fails, total = 0, 0
-local function check(c, m) total = total + 1; if c then print("ok   " .. m) else fails = fails + 1; print("FAIL " .. m) end end
-local function eq(g, w, m) check(g == w, ("%s (got %s, want %s)"):format(m, tostring(g), tostring(w))) end
+local S = require("tests.harness").suite("parity intro")
+local check, eq = S.check, S.eq
 
 local mapScripts = require("data.scripts.init")
 local pallet = mapScripts.get("PALLET_TOWN")
@@ -187,5 +186,4 @@ do
   for k, v in pairs(prev) do Game[k] = v end
 end
 
-if fails > 0 then error(("parity_intro: %d/%d checks failed"):format(fails, total)) end
-print(("parity_intro: %d checks passed"):format(total))
+S.finish()

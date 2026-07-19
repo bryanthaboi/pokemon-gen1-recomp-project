@@ -8,6 +8,7 @@
 
 local Zoom = require("src.render.Zoom")
 local Tilt = require("src.render.Tilt")
+local PaletteFX = require("src.render.PaletteFX")
 
 local Renderer = {}
 
@@ -61,6 +62,9 @@ end
 function Renderer:beginFrame(transparent)
   self.worldActive = false
   self.uprightActive = false
+  -- last frame's trueColor rects go before anything draws this one
+  PaletteFX.clearTrueColor()
+  PaletteFX.setPass("ui")
   love.graphics.setCanvas(self.canvas)
   if transparent then
     love.graphics.clear(0, 0, 0, 0)
@@ -77,11 +81,13 @@ function Renderer:beginWorldPass()
     self.worldCanvas:setFilter("nearest", "nearest")
   end
   self.worldActive = true
+  PaletteFX.setPass("world")
   love.graphics.setCanvas(self.worldCanvas)
   love.graphics.clear(1, 1, 1, 1)
 end
 
 function Renderer:endWorldPass()
+  PaletteFX.setPass("ui")
   love.graphics.setCanvas(self.canvas)
 end
 
@@ -103,6 +109,7 @@ function Renderer:beginUprightPass()
     self.uprightCanvas:setFilter("nearest", "nearest")
   end
   self.uprightActive = true
+  PaletteFX.setPass(nil)
   love.graphics.setCanvas(self.uprightCanvas)
   love.graphics.clear(0, 0, 0, 0)
   -- shift the whole pass into the padded canvas so billboards keep drawing
@@ -115,6 +122,7 @@ end
 -- return to the ground world canvas (the world pass owns it until draw()
 -- calls endWorldPass)
 function Renderer:endUprightPass()
+  PaletteFX.setPass("world")
   love.graphics.pop()
   love.graphics.setCanvas(self.worldCanvas)
 end
@@ -181,7 +189,6 @@ function Renderer:drawTiltedWorld(zoneList, s, wox, woy, target)
   local shader = self:tiltShader()
   local mesh = self:tiltMesh()
   if not (shader and mesh) then return false end
-  local PaletteFX = require("src.render.PaletteFX")
   local wvw = self.worldCanvas:getWidth()
   local wvh = self.worldCanvas:getHeight()
 
@@ -201,8 +208,15 @@ function Renderer:drawTiltedWorld(zoneList, s, wox, woy, target)
   local zoneShader = zoneList and zoneList[1] and PaletteFX.shader() or nil
   if zoneShader then
     love.graphics.setShader(zoneShader)
+    -- same trueColor sentinel the flat blit honors (14 §trueColor)
+    local bare = false
     for _, z in ipairs(zoneList) do
-      PaletteFX.sendColors(zoneShader, z.colors)
+      local plain = z.colors == false
+      if plain ~= bare then
+        bare = plain
+        love.graphics.setShader(not plain and zoneShader or nil)
+      end
+      if not plain then PaletteFX.sendColors(zoneShader, z.colors) end
       local x, y = math.max(0, z.x), math.max(0, z.y)
       local x2, y2 = math.min(wvw, z.x + z.w), math.min(wvh, z.y + z.h)
       if x2 > x and y2 > y then
@@ -240,6 +254,20 @@ local function scissorClamped(x, y, w, h, ox, oy, vpw, vph)
   return true
 end
 
+-- Splice the pass's trueColor rects (reported by the renderers that drew
+-- a record carrying the flag) onto the end of its zone list, so each one
+-- re-blits its region with no shader over the colorized pass.  An absent
+-- or empty zone list is left alone: that already draws the whole canvas
+-- unshaded, which is what the rects were asking for.
+local function withTrueColor(zoneList, pass)
+  local rects = PaletteFX.trueColorRects(pass)
+  if not (rects[1] and zoneList and zoneList[1]) then return zoneList end
+  local merged = {}
+  for i = 1, #zoneList do merged[i] = zoneList[i] end
+  for i = 1, #rects do merged[#merged + 1] = rects[i] end
+  return merged
+end
+
 -- zones: optional list of SGB palette regions (see PaletteFX) in
 -- 160x144 UI space, applied to the UI pass.  worldZones: optional
 -- regions in world-canvas pixels (overworld survey zoom colors each
@@ -255,12 +283,17 @@ function Renderer:endFrame(zones, worldZones)
   local vpw, vph = self.WIDTH * S, self.HEIGHT * S
   local ox = math.floor((ww - vpw) / 2)
   local oy = math.floor((wh - vph) / 2)
-  local PaletteFX = require("src.render.PaletteFX")
   local GBCFX = require("src.render.GBCFX")
   -- Forced mono/Classic modes still need a whole-screen zone when a state
   -- exposes no SGB packets (raw DMG canvas), so sendColors can remap.
   zones = PaletteFX.ensureZones(zones)
   if worldZones then worldZones = PaletteFX.ensureZones(worldZones) end
+  -- the UI rects are in 160x144 canvas space and the world rects in world-
+  -- canvas pixels, matching the zone list each is appended to.  A world
+  -- pass with no world zones falls back to the UI list, whose coordinate
+  -- space the world rects are not in, so they are dropped there.
+  zones = withTrueColor(zones, "ui")
+  worldZones = withTrueColor(worldZones, "world")
 
   local needPresent = GBCFX.active()
   local present = nil
@@ -289,8 +322,17 @@ function Renderer:endFrame(zones, worldZones)
       return
     end
     love.graphics.setShader(shader)
+    -- a colors == false zone is the trueColor opt-out: its rect draws with
+    -- no shader at all.  Nothing sets one without a mod, so a vanilla zone
+    -- list never toggles and issues exactly the calls it always did.
+    local bare = false
     for _, z in ipairs(zoneList) do
-      PaletteFX.sendColors(shader, z.colors)
+      local plain = z.colors == false
+      if plain ~= bare then
+        bare = plain
+        love.graphics.setShader(not plain and shader or nil)
+      end
+      if not plain then PaletteFX.sendColors(shader, z.colors) end
       if scissorClamped(bx + z.x * zoneScale, by + z.y * zoneScale,
                         z.w * zoneScale, z.h * zoneScale,
                         boxX, boxY, boxW, boxH) then
@@ -345,6 +387,7 @@ function Renderer:endFrame(zones, worldZones)
   end
   self.worldActive = false
   self.uprightActive = false
+  PaletteFX.setPass(nil)
 end
 
 return Renderer

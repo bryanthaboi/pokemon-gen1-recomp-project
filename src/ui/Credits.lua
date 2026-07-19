@@ -100,6 +100,7 @@ function Credits.new(game, onDone, onTheEnd)
   local credits = game.data.field and game.data.field.credits or {}
   self.screens = credits.screens or {}
   self.theEnd = credits.theEnd
+  self.music = credits.music or "Music_Credits"
   self.index = 0
   self.screen = nil
   self.phase = "white"
@@ -190,8 +191,8 @@ function Credits:update(dt)
     self.phase = "intro"
     self.timer = 128
     local data = self.game.data
-    if data.audio and data.audio.songs and data.audio.songs.Music_Credits then
-      pcall(Music.play, data, "Music_Credits")
+    if data.audio and data.audio.songs and data.audio.songs[self.music] then
+      pcall(Music.play, data, self.music)
     end
   elseif self.phase == "intro" then
     self:nextScreen()

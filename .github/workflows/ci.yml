@@ -1,0 +1,163 @@
+name: ci
+
+# The ROM-free test run (21-testing-and-ci §CI).
+#
+# CI has no ROM and never will: data/generated/ is produced by a SHA-1
+# verified import of a cartridge dump, and no ROM bytes are ever committed.
+# That is why the suite is tiered -- T1 (primitives), T2 (engine invariants)
+# and T4 (mod SDK) run against the committed tests/fixture_data dataset, so
+# they need no ROM, no display and no assets beyond what is in the repo.
+# The T3 content tier asserts Pokemon Red facts; scripts/test.sh detects
+# data/generated/ is absent and skips it rather than failing.
+#
+# Runs alongside release.yml, which is untouched by this file.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# a force-push while CI is mid-run should cancel the stale run, not queue
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  headless:
+    name: headless suites (no ROM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # LuaJIT, not lua5.4: LOVE 11.x embeds LuaJIT 2.1 and the engine is
+      # written to Lua 5.1 semantics, so CI must run the interpreter the
+      # game actually ships with or it would green-light 5.4-only syntax.
+      - name: install luajit
+        run: sudo apt-get update && sudo apt-get install -y luajit
+
+      - name: interpreter version
+        run: luajit -v
+
+      - name: run every ROM-free tier
+        run: ./scripts/test.sh
+
+  fixture-dataset:
+    name: fixture dataset integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y luajit
+      - run: python3 -m pip install --upgrade pillow
+
+      # the fixture PNGs are committed (they are 8x8 placeholders, not
+      # ROM-derived); assert they are still readable 4-shade images rather
+      # than regenerating them, so a corrupted commit is caught
+      - name: fixture assets are valid PNGs
+        run: |
+          python3 - <<'PY'
+          import glob, sys
+          from PIL import Image
+          paths = sorted(glob.glob("tests/fixture_data/assets/*.png"))
+          if not paths:
+              sys.exit("no fixture assets found")
+          for path in paths:
+              with Image.open(path) as image:
+                  image.load()
+                  print(f"ok {path} {image.size} {image.mode}")
+          print(f"\n{len(paths)} fixture assets valid")
+          PY
+
+      # the fingerprint golden is the parity tripwire; prove it still
+      # matches the dataset on a clean checkout
+      - name: fingerprint gate
+        run: luajit tests/engine/gate_fingerprint.lua
+
+      - name: parity-guarantee meta-test
+        run: luajit tests/engine/gate_meta_coverage.lua
+
+  # Only the differ is under test here, and the job is named for that.  The
+  # capture half of the golden pipeline does not exist: a POKEPORT_DRIVER
+  # chunk runs after main.lua has already booted the game, and
+  # src/core/Data.lua has no POKEPORT_DATA_DIR branch, so no LOVE process
+  # can be pointed at tests/fixture_data.  There is deliberately no step
+  # here that runs scripts/test.sh with WITH_SHOTS: it would have nothing
+  # to capture and nothing to diff, and a job that green-lights on skipped
+  # work is worse than an absent one.
+  shot-differ:
+    name: screenshot differ (capture not yet wired)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m pip install --upgrade pillow
+
+      # 21-testing-and-ci §"Testing & acceptance criteria": compare_shots
+      # flags a deliberately corrupted golden and passes the clean one.
+      # That is the half of the pipeline this repo can actually prove.
+      - name: compare_shots self-test
+        run: |
+          set -e
+          python3 - <<'PY'
+          import os
+          from PIL import Image
+          os.makedirs("/tmp/g", exist_ok=True)
+          os.makedirs("/tmp/s", exist_ok=True)
+          base = Image.new("RGB", (160, 144), (255, 255, 255))
+          for x in range(0, 160, 8):
+              for y in range(0, 144, 8):
+                  base.putpixel((x, y), (0, 0, 0))
+          base.save("/tmp/g/clean.png")
+          base.save("/tmp/s/clean.png")
+          base.save("/tmp/g/broken.png")
+          bad = base.copy()
+          for x in range(40, 60):
+              for y in range(40, 60):
+                  bad.putpixel((x, y), (255, 0, 0))
+          bad.save("/tmp/s/broken.png")
+          PY
+          if python3 tools/compare_shots.py /tmp/g /tmp/s; then
+            echo "compare_shots passed a corrupted golden -- differ is broken"
+            exit 1
+          fi
+          rm /tmp/g/broken.png /tmp/s/broken.png
+          python3 tools/compare_shots.py /tmp/g /tmp/s
+
+      # an empty golden directory must not read as success
+      - name: differ refuses to pass vacuously
+        run: |
+          set -e
+          mkdir -p /tmp/empty-goldens /tmp/empty-shots
+          if python3 tools/compare_shots.py /tmp/empty-goldens /tmp/empty-shots; then
+            echo "compare_shots passed with no goldens"
+            exit 1
+          fi
+
+  lint:
+    name: mod lint (no ROM-derived content)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # the MK305 dump check key-diffs shipped tables through luajit, and
+      # modkit treats a missing interpreter as a fatal MK100 -- without
+      # this install the gate would fail instead of failing open
+      - run: sudo apt-get update && sudo apt-get install -y luajit
+      - run: python3 -m pip install --upgrade pillow
+
+      # constraint 1, enforced automatically: a committed mod that ships
+      # ROM-derived bytes fails the build.  `lint` is the no-ROM-content
+      # check; `validate` is deliberately not run here because it resolves
+      # a mod against the fixture dataset, and a Red-content mod such as
+      # example_mew_starter legitimately does not resolve against it.
+      - name: lint every committed mod
+        run: |
+          set -e
+          found=0
+          for mod in mods/*/; do
+            [ -f "$mod/manifest.json" ] || continue
+            found=1
+            echo "== $mod"
+            python3 tools/modkit.py lint "${mod%/}"
+          done
+          if [ "$found" = "0" ]; then
+            echo "no committed mods to lint"
+          fi

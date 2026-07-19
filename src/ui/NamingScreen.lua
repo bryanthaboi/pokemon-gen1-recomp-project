@@ -8,6 +8,7 @@
 
 local Font = require("src.render.Font")
 local Sound = require("src.core.Sound")
+local Theme = require("src.ui.Theme")
 
 local NamingScreen = {}
 NamingScreen.__index = NamingScreen
@@ -17,8 +18,6 @@ NamingScreen.isOpaque = true
 function NamingScreen:sgbPalettes(game)
   return require("src.render.PaletteFX").wholeNamed(game.data, "MEWMON")
 end
-
-local CURSOR = 0xED
 
 -- both letter pages (wAlphabetCase, data/text/alphabets.asm): row 6 is
 -- the case-switch cell, labelled with the page it flips to
@@ -155,7 +154,7 @@ function NamingScreen:draw()
       Font.draw(cell, c * 16, 32 + r * 16)
     end
   end
-  Font.drawCode(CURSOR, self.col * 16 - 8, 32 + self.row * 16)
+  Font.drawCode(Theme.cursor, self.col * 16 - 8, 32 + self.row * 16)
   love.graphics.setColor(1, 1, 1, 1)
 end
 

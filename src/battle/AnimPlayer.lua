@@ -422,8 +422,16 @@ function AnimPlayer:start(moveId, attackerIsPlayer, opts)
   -- effect runs AFTER each block displays, so block 1 shows normal.
   -- PlayAnimation pushes rOBP0 around every subanimation row (:246-251
   -- / :259-262), so the ambient palette returns when the toss ends.
-  local ballFlicker = opts
-    and (opts.ball == "MASTER_BALL" or opts.ball == "ULTRA_BALL")
+  -- opts.ballFlicker carries the ball record's flicker flag; the id
+  -- check covers callers that only pass the ball item.
+  local wantsFlicker
+  if opts and opts.ballFlicker ~= nil then
+    wantsFlicker = opts.ballFlicker
+  else
+    wantsFlicker = opts
+      and (opts.ball == "MASTER_BALL" or opts.ball == "ULTRA_BALL")
+  end
+  local ballFlicker = wantsFlicker
     and (moveId == "TOSS_ANIM" or moveId == "GREATTOSS_ANIM"
          or moveId == "ULTRATOSS_ANIM")
   local obp0Flip = false

@@ -22,6 +22,9 @@ local function commandOutput(command)
 end
 
 function SaveIO.defaultPath()
+  -- same override conf.lua honors, so a mod-dev profile edits the save it
+  -- actually plays
+  local identity = os.getenv("POKEPORT_IDENTITY") or "pokemon-love2d"
   local home = os.getenv("HOME") or os.getenv("USERPROFILE") or ""
   local uname = io.popen and io.popen("uname -s 2>/dev/null")
   local sys = uname and uname:read("*l") or ""
@@ -29,19 +32,19 @@ function SaveIO.defaultPath()
   if sys == "Darwin" then
     -- LÖVE identity folder lives under Application Support/LOVE/
     return join(join(join(join(home, "Library"), "Application Support"), "LOVE"),
-                join("pokemon-love2d", "save.lua"))
+                join(identity, "save.lua"))
   end
   -- Linux LOVE default
   if home ~= "" and sys ~= "" then
     return join(join(join(home, ".local/share"), "love"),
-                join("pokemon-love2d", "save.lua"))
+                join(identity, "save.lua"))
   end
   -- Windows
   local appdata = os.getenv("APPDATA")
   if appdata then
-    return join(join(appdata, "love"), join("pokemon-love2d", "save.lua"))
+    return join(join(appdata, "love"), join(identity, "save.lua"))
   end
-  return join("pokemon-love2d", "save.lua")
+  return join(identity, "save.lua")
 end
 
 -- Native file picker (same approach as RomImporter). Returns an absolute

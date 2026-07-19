@@ -63,10 +63,63 @@ stub.math = {
 stub.filesystem = {
   write = function(name, content) files[name] = content return true end,
   read = function(name) return files[name] end,
-  getInfo = function(name) return files[name] and { type = "file" } or nil end,
+  -- directories are implied by key prefixes ("mods/x/manifest.json")
+  getInfo = function(name)
+    if files[name] then return { type = "file" } end
+    local prefix = name .. "/"
+    for key in pairs(files) do
+      if key:sub(1, #prefix) == prefix then return { type = "directory" } end
+    end
+    return nil
+  end,
   load = function(name)
     if not files[name] then return nil, "no file" end
     return load(files[name], name)
+  end,
+  getDirectoryItems = function(name)
+    local seen, items = {}, {}
+    local prefix = name .. "/"
+    for key in pairs(files) do
+      if key:sub(1, #prefix) == prefix then
+        local child = key:sub(#prefix + 1):match("^[^/]+")
+        if child and not seen[child] then
+          seen[child] = true
+          items[#items + 1] = child
+        end
+      end
+    end
+    table.sort(items)
+    return items
+  end,
+}
+
+-- table-backed SoundData so ChipAudio's offline render seam
+-- (_renderMusicForTest) runs headless; modkit bounce writes WAVs from it
+local SoundData = {}
+SoundData.__index = SoundData
+local function slot(self, index, channel)
+  return index * self.channels + (channel - 1) + 1
+end
+function SoundData:setSample(index, a, b)
+  if b == nil then
+    self.data[slot(self, index, 1)] = a
+  else
+    self.data[slot(self, index, a)] = b
+  end
+end
+function SoundData:getSample(index, channel)
+  return self.data[slot(self, index, channel or 1)] or 0
+end
+function SoundData:getSampleCount() return self.samples end
+function SoundData:getSampleRate() return self.rate end
+function SoundData:getBitDepth() return self.bits end
+function SoundData:getChannelCount() return self.channels end
+function SoundData:getDuration() return self.samples / self.rate end
+
+stub.sound = {
+  newSoundData = function(samples, rate, bits, channels)
+    return setmetatable({ samples = samples, rate = rate or 44100,
+      bits = bits or 16, channels = channels or 1, data = {} }, SoundData)
   end,
 }
 

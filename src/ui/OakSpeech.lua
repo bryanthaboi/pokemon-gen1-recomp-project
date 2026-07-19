@@ -16,6 +16,15 @@ local OakSpeech = {}
 OakSpeech.__index = OakSpeech
 OakSpeech.isOpaque = true
 
+-- naming presets are boot config (field.boot.namePresets), which a total
+-- conversion replaces; the Red/Blue lists remain the fallback
+local function namePresets(game, who, fallback)
+  local boot = game.data.field and game.data.field.boot
+  local presets = boot and boot.namePresets and boot.namePresets[who]
+  if type(presets) == "table" and #presets > 0 then return presets end
+  return fallback
+end
+
 -- SGB: generic whole-screen palette (SET_PAL_GENERIC)
 function OakSpeech:sgbPalettes(game)
   return require("src.render.PaletteFX").wholeNamed(game.data, "MEWMON")
@@ -50,15 +59,21 @@ function OakSpeech.new(game, onDone)
   local trainers = game.data.trainers or {}
   self.oakPic = tryImage(trainers.OPP_PROF_OAK and trainers.OPP_PROF_OAK.pic)
   self.rivalPic = tryImage(trainers.OPP_RIVAL1 and trainers.OPP_RIVAL1.pic)
-  local nido = game.data.pokemon and game.data.pokemon.NIDORINO
-  self.nidorinoPic = tryImage(nido and nido.spriteFront)
+  local oakGfx = (game.data.field and game.data.field.oakSpeech) or {}
+  self.cfg = oakGfx
+  -- the show-off mon and the name length cap come from data; the vanilla
+  -- literals stay as the fallbacks
+  self.demoSpecies = oakGfx.demoSpecies or "NIDORINO"
+  local demo = game.data.pokemon and game.data.pokemon[self.demoSpecies]
+  self.demoPic = tryImage(demo and demo.spriteFront)
+  local constants = game.data.constants or {}
+  self.nameLen = constants.playerNameLength or 7
   -- RedPicFront (gfx/player/red.png, shared with the trainer card) and
   -- the ShrinkPic1/ShrinkPic2 frames (gfx/player/shrink{1,2}.png)
   self.playerPic = tryImage("assets/generated/trainer_card/red.png")
-  local oakGfx = game.data.field and game.data.field.oakSpeech
-  self.shrinkPic1 = tryImage(oakGfx and oakGfx.shrink1
+  self.shrinkPic1 = tryImage(oakGfx.shrink1
                              or "assets/generated/intro/shrink1.png")
-  self.shrinkPic2 = tryImage(oakGfx and oakGfx.shrink2
+  self.shrinkPic2 = tryImage(oakGfx.shrink2
                              or "assets/generated/intro/shrink2.png")
   -- RedSprite: the walking sprite the pic shrinks into (frame 0 =
   -- standing, facing down)
@@ -69,7 +84,7 @@ end
 
 function OakSpeech:enter()
   -- MUSIC_ROUTES2 plays under the whole speech (oak_speech.asm:43-48)
-  Music.play(self.game.data, "Music_Routes2")
+  Music.play(self.game.data, self.cfg.music or "Music_Routes2")
   self:advance()
 end
 
@@ -85,8 +100,8 @@ local STEPS = {
   end,
   -- 2. NIDORINO show-off, with its cry
   function(self)
-    self.pic = self.nidorinoPic
-    Sound.playCry(self.game.data, "NIDORINO")
+    self.pic = self.demoPic
+    Sound.playCry(self.game.data, self.demoSpecies)
     self:say("_OakSpeechText2A", function() self:advance() end)
   end,
   -- 3. the rest of the world-of-POKéMON spiel
@@ -100,16 +115,15 @@ local STEPS = {
     self:say("_IntroducePlayerText", function() self:advance() end)
   end,
   function(self)
-    local NamingScreen = require("src.ui.NamingScreen")
-    self.game.stack:push(NamingScreen.new(self.game, {
+    require("src.ui.Screens").push(self.game, "NamingScreen", {
       title = "YOUR NAME?",
-      presets = { "RED", "ASH", "JACK" },
-      maxLen = 7,
+      presets = namePresets(self.game, "player", { "RED", "ASH", "JACK" }),
+      maxLen = self.nameLen,
       onDone = function(name)
         self.game.save.player.name = name
         self:advance()
       end,
-    }))
+    })
   end,
   -- 6. the rival introduction and naming
   function(self)
@@ -117,16 +131,15 @@ local STEPS = {
     self:say("_IntroduceRivalText", function() self:advance() end)
   end,
   function(self)
-    local NamingScreen = require("src.ui.NamingScreen")
-    self.game.stack:push(NamingScreen.new(self.game, {
+    require("src.ui.Screens").push(self.game, "NamingScreen", {
       title = "HIS NAME?",
-      presets = { "BLUE", "GARY", "JOHN" },
-      maxLen = 7,
+      presets = namePresets(self.game, "rival", { "BLUE", "GARY", "JOHN" }),
+      maxLen = self.nameLen,
       onDone = function(name)
         self.game.save.player.rival = name
         self:advance()
       end,
-    }))
+    })
   end,
   -- 8. "your very own POKéMON legend is about to unfold!" over the
   --    player pic again (oak_speech.asm:105-113)

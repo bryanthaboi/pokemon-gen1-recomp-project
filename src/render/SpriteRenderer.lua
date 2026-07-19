@@ -3,6 +3,9 @@
 -- Right-facing frames are horizontal flips of the left frames.
 -- Sprites draw 4px above their cell, like the GB engine.
 
+local Assets = require("src.render.Assets")
+local PaletteFX = require("src.render.PaletteFX")
+
 local SpriteRenderer = {}
 SpriteRenderer.__index = SpriteRenderer
 
@@ -10,10 +13,18 @@ local imageCache = {}
 
 local function getImage(path)
   if not imageCache[path] then
-    imageCache[path] = love.graphics.newImage(path)
+    imageCache[path] = Assets.image(path)
   end
   return imageCache[path]
 end
+
+-- hot reload drops the sheets; live instances hold their own image, so
+-- the world rebuilds them (MapLoader.invalidateAll) rather than this
+function SpriteRenderer.invalidate()
+  imageCache = {}
+end
+
+Assets.register(SpriteRenderer.invalidate)
 
 local STAND = { down = 0, up = 1, left = 2, right = 2 }
 local WALK = { down = 3, up = 4, left = 5, right = 5 }
@@ -35,6 +46,8 @@ end
 function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip)
   local x = math.floor(px - camX)
   local y = math.floor(py - camY) - 4
+  -- full-color art claims its 16x16 cell out of the shade-remap pass
+  if self.def.trueColor then PaletteFX.markTrueColor(x, y, 16, 16) end
   -- single-frame sprites (item balls, fossils...) have one fixed pose;
   -- still 3-frame sprites turn to face (the nurse at her machine,
   -- facePlayer on STAY NPCs) but never show walk frames

@@ -1,0 +1,16 @@
+{
+  "id": "example_shiny_palette",
+  "name": "Shiny Palette Example",
+  "version": "1.0.0",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "content",
+  "category": "GRAPHICS",
+  "game_version": ">=1.0.0 <2.0.0",
+  "priority": 100,
+  "assets_transforms": "transforms.lua",
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "description": "Artist gallery entry: a recolored player sheet derived from the player's own cache, plus two palette records."
+}

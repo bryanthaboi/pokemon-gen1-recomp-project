@@ -14,8 +14,11 @@
 -- boosts don't apply on either side (divergence: Gen 1 famously kept
 -- them in link battles).
 
+local Fingerprint = require("src.link.Fingerprint")
+local Handshake = require("src.link.Handshake")
 local Logger = require("src.core.Logger")
 local Protocol = require("src.link.Protocol")
+local Runtime = require("src.mods.Runtime")
 local TurnOrder = require("src.battle.TurnOrder")
 
 local LinkBattle = {}
@@ -47,7 +50,9 @@ local function mkBattler(data, mon, isPlayer)
   }
 end
 
--- canonical (host-side-first) state signature for desync detection
+-- canonical (host-side-first) state hash, unchanged since v1: it stays on
+-- the wire as `value` so a pre-mod peer still compares something it agrees
+-- with, while the components below carry the real coverage
 local function stateHash(self, role)
   local function sig(b)
     return ("%s:%d:%s"):format(b.mon.species, b.mon.hp, tostring(b.mon.status))
@@ -57,29 +62,141 @@ local function stateHash(self, role)
   return sig(hostSide) .. "|" .. sig(guestSide)
 end
 
+-- The signature is split into components so a mismatch can name what
+-- diverged: species:hp:status alone missed stat stages, PP, toxic counters
+-- and bench damage until they happened to move an active's HP, and the
+-- match then ended in a draw that explained nothing.
+local STAGES = { "attack", "defense", "special", "speed", "accuracy", "evasion" }
+local VOLATILE = {
+  "bideDamage", "bideTurns", "boundTurns", "chargeReady", "charging",
+  "confusedTurns", "disabledSlot", "disabledTurns", "flinched", "focusEnergy",
+  "invulnerable", "leechSeeded", "lightScreen", "mist", "mustRecharge",
+  "rageMove", "reflect", "skipMove", "sleepTurns", "substituteHP",
+  "thrashMove", "thrashTurns", "toxicCounter", "trapDamage", "trapMove",
+  "trappingTurns",
+}
+
+-- move instances ride some volatile slots; only their id is comparable
+local function scalar(v)
+  if type(v) == "table" then return tostring(v.id or "?") end
+  if type(v) == "boolean" then return v and "T" or "F" end
+  return tostring(v)
+end
+
+local function stageStr(b)
+  local out = {}
+  for i, stat in ipairs(STAGES) do
+    out[i] = tostring((b.stages or {})[stat] or 0)
+  end
+  return table.concat(out, ",")
+end
+
+local function ppStr(mon)
+  local out = {}
+  for i, mv in ipairs(mon.moves or {}) do
+    out[i] = ("%s=%s"):format(tostring(mv.id), tostring(mv.pp or 0))
+  end
+  return table.concat(out, ",")
+end
+
+local function volStr(b)
+  local out = {}
+  for _, key in ipairs(VOLATILE) do
+    if b[key] ~= nil then
+      out[#out + 1] = key .. "=" .. scalar(b[key])
+    end
+  end
+  return table.concat(out, ",")
+end
+
+local function activeStr(b)
+  return ("%s:%d:%s:%s:%s"):format(b.mon.species, b.mon.hp,
+                                   tostring(b.mon.status), stageStr(b),
+                                   ppStr(b.mon))
+end
+
+local function benchStr(party)
+  local out = {}
+  for i, mon in ipairs(party or {}) do
+    out[i] = ("%s:%d:%s"):format(tostring(mon.species), mon.hp or 0,
+                                 tostring(mon.status))
+  end
+  return table.concat(out, "|")
+end
+
+-- canonical (host-side-first) per-component signature for desync detection
+local function stateSig(self, role, myParty, theirParty)
+  local host = role == "host" and self.player or self.enemy
+  local guest = role == "host" and self.enemy or self.player
+  local hostParty = role == "host" and myParty or theirParty
+  local guestParty = role == "host" and theirParty or myParty
+  return {
+    actives = Fingerprint.digest(activeStr(host) .. "|" .. activeStr(guest)),
+    volatile = Fingerprint.digest(volStr(host) .. "|" .. volStr(guest)),
+    bench = Fingerprint.digest(benchStr(hostParty) .. "|" .. benchStr(guestParty)),
+  }
+end
+
+local PARTS = { "actives", "volatile", "bench" }
+
 -- opts: { myParty = packed, theirParty = packed, theirName, role =
--- "host"/"guest", seed }
+-- "host"/"guest", seed, verdict, strict }.  Returns nil plus a reason when
+-- the handshake says the two link surfaces don't match: a lockstep
+-- simulation of two different rulebooks can only end in a bogus draw.
 function LinkBattle.new(game, net, opts)
   local BattleState = require("src.battle.BattleState")
   local role = opts.role
   local theirName = opts.theirName or "FOE"
 
+  if not Handshake.battleAllowed(opts.verdict) then
+    return nil, "Link battle needs\nthe same mods on\nboth games."
+  end
+
   -- both parties pass through the same pack->unpack clamp on both
   -- machines, so the copies are identical everywhere
+  local unpackOpts = { strict = opts.strict or false }
   local myParty, theirParty = {}, {}
   for _, p in ipairs(opts.myParty or {}) do
-    local mon = Protocol.unpackMon(game.data, p)
-    if mon then table.insert(myParty, mon) end
+    local mon = Protocol.unpackMon(game.data, p, unpackOpts)
+    if mon then
+      table.insert(myParty, mon)
+    elseif unpackOpts.strict then
+      return nil, ("Your %s can't\nbattle on the\nother game."):format(
+        tostring(p.species))
+    end
   end
   for _, p in ipairs(opts.theirParty or {}) do
-    local mon = Protocol.unpackMon(game.data, p)
-    if mon then table.insert(theirParty, mon) end
+    local mon, why = Protocol.unpackMon(game.data, p, unpackOpts)
+    if mon then
+      table.insert(theirParty, mon)
+    elseif unpackOpts.strict then
+      return nil, ("Their %s isn't\nin this game.\n(%s)"):format(
+        tostring(p.species), tostring(why))
+    end
   end
   if #myParty == 0 or #theirParty == 0 then
     Logger.warn("link: empty party on one side")
   end
 
-  -- build on a wild battle and reshape it into the lockstep link battle
+  -- a mod validates its own extra namespace here, the same site the trade
+  -- path gets in TradeSession:apply, before anything simulates with it.
+  -- Both parties go through it on both machines and in the canonical
+  -- host-first order: a validator that strips a field from one side only,
+  -- or in a different order, leaves the two simulations holding different
+  -- mons and desyncs on the first turn the difference matters.
+  local function announceReceived(party)
+    for _, mon in ipairs(party) do
+      Runtime.emit("pokemon.received",
+                   { mon = mon, from = "link", peerName = theirName })
+    end
+  end
+  announceReceived(role == "host" and myParty or theirParty)
+  announceReceived(role == "host" and theirParty or myParty)
+
+  -- build on a wild battle and reshape it into the lockstep link battle.
+  -- The RATTATA scaffold is unreachable on the negotiated path: an empty or
+  -- unrebuildable party is refused above, so it only ever covers a caller
+  -- that skipped the handshake.
   local self = BattleState.newWild(game, theirParty[1] and theirParty[1].species
                                          or "RATTATA", 5)
   self.kind = "link"
@@ -99,6 +216,9 @@ function LinkBattle.new(game, net, opts)
   self.introText = ("%s wants\nto battle!"):format(theirName)
   self.remoteHashes = {}
   self.localHashes = {}
+  self.remoteParts = {}
+  self.localParts = {}
+  self.checkedTurns = {}
 
   local send = function(msg) net:send(msg) end
 
@@ -128,17 +248,40 @@ function LinkBattle.new(game, net, opts)
     return nil
   end
 
+  -- with the handshake guaranteeing both games share a link surface, a
+  -- mismatch here is RNG non-determinism -- almost always a mod rolling
+  -- love.math.random inside battle logic instead of the injected s.rng
+  local function reportDesync(s, turn, component, localH, remoteH)
+    Logger.warn("link: desync turn %s component=%s (%s vs %s)",
+                tostring(turn), component, tostring(localH), tostring(remoteH))
+    Runtime.emit("link.desync", { turn = turn, component = component,
+                                  localHash = localH, remoteHash = remoteH })
+    endAsDraw(s, ("Link desync!\n%s differs.\fAre both games\nrunning the same\nmods?")
+                 :format(component))
+  end
+
+  -- a verified turn stays recorded: consuming it here left a finished
+  -- battle holding 0-1 entries, so the whole-battle sweep the link suite
+  -- runs over localHashes had nothing left to compare
   local function checkHashes(s)
     for turn, localH in pairs(s.localHashes) do
       local remoteH = s.remoteHashes[turn]
-      if remoteH and remoteH ~= localH then
-        Logger.warn("link: desync on turn %d (%s vs %s)", turn, localH, remoteH)
-        endAsDraw(s, "Link error!\nThe battle ends\nin a draw.")
-        return
-      end
-      if remoteH then
-        s.localHashes[turn] = nil
-        s.remoteHashes[turn] = nil
+      if remoteH and not s.checkedTurns[turn] then
+        s.checkedTurns[turn] = true
+        local mine, theirs = s.localParts[turn], s.remoteParts[turn]
+        if mine and theirs then
+          for _, component in ipairs(PARTS) do
+            if mine[component] ~= theirs[component] then
+              reportDesync(s, turn, component, mine[component], theirs[component])
+              return
+            end
+          end
+        end
+        -- a v1 peer sends the combined value only
+        if remoteH ~= localH then
+          reportDesync(s, turn, "state", localH, remoteH)
+          return
+        end
       end
     end
   end
@@ -178,12 +321,25 @@ function LinkBattle.new(game, net, opts)
 
     s:act(function()
       local theirAction = decodeTheirAction(s, theirMsg)
+      Runtime.emit("battle.turn_started", {
+        battle = s, turn = s.turnCount,
+        playerAction = myAction, enemyAction = theirAction,
+      })
       if myAction and theirAction then
         -- the tie-break roll is shared: the guest inverts it so both
-        -- machines agree on who goes first
-        local first = TurnOrder.firstMover(s.player, orderMove(myAction),
-                                           s.enemy, orderMove(theirAction),
-                                           s.rng, role == "guest")
+        -- machines agree on who goes first.  A modded ordering rule has
+        -- to run here too, or the two peers order the turn differently.
+        local first
+        local myMove, theirMove = orderMove(myAction), orderMove(theirAction)
+        if Runtime.wantsHook("battle.turn_order") then
+          first = Runtime.call("battle.turn_order", function(a, aMove, b, bMove, c)
+            return TurnOrder.firstMover(a, aMove, b, bMove, c.rng, c.invertTie)
+          end, s.player, myMove, s.enemy, theirMove,
+             { rng = s.rng, invertTie = role == "guest" })
+        else
+          first = TurnOrder.firstMover(s.player, myMove, s.enemy, theirMove,
+                                       s.rng, role == "guest")
+        end
         local order
         if first then
           order = { { s.player, s.enemy, myAction },
@@ -203,9 +359,11 @@ function LinkBattle.new(game, net, opts)
       s:act(function() s:endOfTurn() end)
       s:act(function()
         if s.linkEnded then return end
+        local parts = stateSig(s, role, myParty, theirParty)
         local h = stateHash(s, role)
         s.localHashes[s.turnCount] = h
-        send({ type = "hash", turn = s.turnCount, value = h })
+        s.localParts[s.turnCount] = parts
+        send({ type = "hash", turn = s.turnCount, value = h, parts = parts })
         checkHashes(s)
       end)
     end)
@@ -260,11 +418,10 @@ function LinkBattle.new(game, net, opts)
 
   -- the party menu must offer the clamped link copies
   self.openParty = function(s)
-    local PartyMenu = require("src.ui.PartyMenu")
     s.phase = "messages"
     s.afterQueue = "menu"
     s:ui(function()
-      return PartyMenu.new(game, {
+      return s:buildScreen("PartyMenu", {
         battle = s,
         party = myParty,
         onSwitch = function(mon)
@@ -333,6 +490,7 @@ function LinkBattle.new(game, net, opts)
         tryResolve(s)
       elseif msg.type == "hash" then
         s.remoteHashes[msg.turn or 0] = msg.value
+        s.remoteParts[msg.turn or 0] = msg.parts
         checkHashes(s)
       elseif msg.type == "bye" then
         -- only a draw if our own simulation hasn't already decided

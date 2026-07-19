@@ -7,9 +7,8 @@ local Data = require("src.core.Data")
 if not (Data.maps and Data.maps.PALLET_TOWN) then Data:load() end
 local Font = require("src.render.Font")
 if not pcall(Font.encode, "A") then Font.load(Data) end
-local fails, total = 0, 0
-local function check(c, m) total = total + 1; if c then print("ok   " .. m) else fails = fails + 1; print("FAIL " .. m) end end
-local function eq(g, w, m) check(g == w, ("%s (got %s, want %s)"):format(m, tostring(g), tostring(w))) end
+local S = require("tests.harness").suite("parity HOF")
+local check, eq = S.check, S.eq
 
 -- === (1) extracted credits data matches CreditsOrder/CreditsMons ===
 
@@ -143,5 +142,4 @@ local Game = require("src.core.Game")
 check(type(Game.makeTitleState) == "function",
       "Game:makeTitleState exists for the intro's title handoff")
 
-print(("parity HOF: %d/%d passed"):format(total - fails, total))
-if fails > 0 then error(fails .. " parity-HOF assertion(s) failed") end
+S.finish()

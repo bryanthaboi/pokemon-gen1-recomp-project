@@ -1,0 +1,15 @@
+{
+  "id": "example_balance_tweaks",
+  "name": "Balance Tweaks Example",
+  "version": "1.0.0",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "content",
+  "category": "BALANCE",
+  "game_version": ">=1.0.0 <2.0.0",
+  "priority": 100,
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "description": "Tweaker gallery entry: patch and each over the merged view, with no whole-record copies."
+}

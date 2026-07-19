@@ -20,6 +20,9 @@ local MonEditor = require("MonEditor")
 
 local App = {}
 local S
+-- one loader per process: registries collide if a second load re-registers
+-- vanilla records over an already-merged Data
+local mods
 local mouseClicked = false
 
 local TABS = {
@@ -73,6 +76,15 @@ local function applyLoaded(path, statusVerb)
   S._openArmed = false
   S.editingMon = nil
   require("src.pokemon.Boxes").ensure(S.save)
+  -- what the running game would quarantine, computed on a copy so the
+  -- editor never mutates the file behind the user's back
+  local SaveData = require("src.core.SaveData")
+  local probe = require("src.mods.Merge").deepCopy(S.save)
+  S.validation = SaveData.validate(probe, Data)
+  if not SaveData.emptyReport(S.validation) then
+    S.status = S.status .. string.format(",  game would quarantine: %d mons, %d items, %d maps",
+      #S.validation.lostMons, #S.validation.lostItems, #S.validation.remappedMaps)
+  end
 end
 
 -- pathOverride lets tests point App.load at a scratch file instead of the
@@ -80,9 +92,23 @@ end
 function App.load(pathOverride)
   S = State.new()
   S.data = Data
-  Data:load()
+  -- the same mod set the game loads, merged into Data before the catalogs
+  -- build, so modded species/items/moves are editable and MonOps stops
+  -- asserting on them
+  if not mods then
+    Data:load()
+    local ModLoader = require("src.mods.Loader")
+    mods = ModLoader.new()
+    mods:load(Data)
+  end
+  S.mods = mods
   S.cat = Catalog.build(Data)
-  S.events = Catalog.scrapeEvents("data/scripts", "data/generated/trainer_headers.lua")
+  local modRoots = {}
+  for _, mod in ipairs(S.mods:status().loaded) do
+    modRoots[#modRoots + 1] = mod.path
+  end
+  S.events = Catalog.scrapeEvents("data/scripts", "data/generated/trainer_headers.lua",
+                                  nil, modRoots)
   applyLoaded(pathOverride or SaveIO.defaultPath(), "Loaded")
 end
 

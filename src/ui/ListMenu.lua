@@ -3,6 +3,7 @@
 -- box and the Pokédex.
 
 local Font = require("src.render.Font")
+local Theme = require("src.ui.Theme")
 
 local ListMenu = {}
 ListMenu.__index = ListMenu
@@ -13,7 +14,6 @@ function ListMenu:sgbPalettes(game)
   return require("src.render.PaletteFX").wholeNamed(game.data, "MEWMON")
 end
 
-local CURSOR = 0xED
 local ROWS = 7
 
 function ListMenu.new(game, title, items, opts)
@@ -124,10 +124,10 @@ function ListMenu:draw()
       -- pokered's PlaceUnfilledArrowMenuCursor (the old man demo's
       -- auto A-press, home/list_menu.asm:89-91)
       Font.drawCode((self.swapIndex == i or self.hollowIndex == i)
-                    and 0xEC or CURSOR, 8, y)
+                    and Theme.cursorHollow or Theme.cursor, 8, y)
     end
     if self.swapIndex == i and i ~= self.index then
-      Font.drawCode(0xEC, 8, y) -- ▷ marks the item being moved
+      Font.drawCode(Theme.cursorHollow, 8, y) -- ▷ marks the item being moved
     end
   end
   if self.dialogue then

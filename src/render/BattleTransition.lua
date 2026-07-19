@@ -9,6 +9,8 @@
 -- enemy is stronger (wBattleTransitionSpiralDirection).
 -- Pushed above the overworld; pops itself and runs onDone at the end.
 
+local Runtime = require("src.mods.Runtime")
+
 local BattleTransition = {}
 BattleTransition.__index = BattleTransition
 BattleTransition.isOpaque = false -- draws over the frozen overworld
@@ -105,21 +107,73 @@ local function sweepOrder(arms)
   return tiles
 end
 
+-- The eight wipes as records: frames is the wipe length, flash marks the
+-- two circle wipes that call BattleTransition_FlashScreen first.  new()
+-- reads them, and the transitions registry serves the same table.
+BattleTransition.STYLES = {
+  doublecircle = { kind = "wipe", frames = 40, flash = true },
+  spiralin     = { kind = "wipe", frames = 40 },
+  circle       = { kind = "wipe", frames = 40, flash = true },
+  spiralout    = { kind = "wipe", frames = 40 },
+  hstripes     = { kind = "wipe", frames = 24 },
+  shrink       = { kind = "wipe", frames = 24 },
+  vstripes     = { kind = "wipe", frames = 24 },
+  split        = { kind = "wipe", frames = 24 },
+}
+
+-- the eight wipes plus Transition's two warp fades: one registrant owns
+-- the whole transitions namespace, so Builtins wires it once
+function BattleTransition.registerInto(registry, data, owner)
+  for id, record in pairs(BattleTransition.STYLES) do
+    registry:register(id, record, owner)
+  end
+  require("src.render.Transition").registerInto(registry, data, owner)
+end
+
+-- the merged record; the built-in table is the fallback for headless
+-- callers and for any state built before Data:load
+local function styleDef(game, style)
+  local data = game and game.data
+  local record = data and data.transitions and data.transitions[style]
+  return record or BattleTransition.STYLES[style]
+end
+
 local ORDERS = {} -- cached per style
 
-local function orderFor(style)
-  if not ORDERS[style] then
-    if style == "spiralout" then
-      ORDERS[style] = outwardSpiralOrder()
-    elseif style == "spiralin" then
-      ORDERS[style] = inwardSpiralOrder()
-    elseif style == "circle" then
-      ORDERS[style] = sweepOrder(1)
-    elseif style == "doublecircle" then
-      ORDERS[style] = sweepOrder(2)
+local BUILTIN_ORDERS = {
+  spiralout = outwardSpiralOrder,
+  spiralin = inwardSpiralOrder,
+  circle = function() return sweepOrder(1) end,
+  doublecircle = function() return sweepOrder(2) end,
+}
+
+-- A registered style may bring its own tile order (a list of {x, y}, or a
+-- function returning one); the four built-in orders are the defaults for
+-- the styles that have always had them.
+local function orderFor(style, def)
+  if ORDERS[style] == nil then
+    local order = def and def.order
+    if type(order) == "function" then
+      local ok, built = pcall(order)
+      order = ok and built or nil
     end
+    if type(order) ~= "table" then
+      local build = BUILTIN_ORDERS[style]
+      order = build and build() or false
+    end
+    ORDERS[style] = order or false
   end
-  return ORDERS[style]
+  return ORDERS[style] or nil
+end
+
+-- the vanilla 3-bit select (battle_transitions.asm), and the default of
+-- the transition.style hook a mod wraps to choose its own wipe
+local BIT_STYLES = { [0] = "doublecircle", "spiralin", "circle", "spiralout",
+                     "hstripes", "shrink", "vstripes", "split" }
+
+local function vanillaStyle(ctx)
+  return BIT_STYLES[(ctx.trainer and 1 or 0) + (ctx.stronger and 2 or 0)
+                    + (ctx.dungeon and 4 or 0)]
 end
 
 -- opts: trainer (bool), stronger (bool), dungeon (bool)
@@ -129,16 +183,20 @@ function BattleTransition.new(game, onDone, opts)
   self.onDone = onDone
   self.t = 0
   opts = opts or {}
-  local bits = (opts.trainer and 1 or 0) + (opts.stronger and 2 or 0)
-             + (opts.dungeon and 4 or 0)
-  self.style = ({ [0] = "doublecircle", "spiralin", "circle", "spiralout",
-                  "hstripes", "shrink", "vstripes", "split" })[bits]
+  local ctx = { trainer = opts.trainer, stronger = opts.stronger,
+                dungeon = opts.dungeon, game = game }
+  local style = Runtime.call("transition.style", vanillaStyle, ctx)
+  local def = styleDef(game, style)
+  -- a hook that names an unregistered style falls back to the vanilla bits
+  if not def then
+    style = vanillaStyle(ctx)
+    def = styleDef(game, style)
+  end
+  self.style = style
+  self.def = def
   -- only the circle wipes flash first (battle_transitions.asm:585,628)
-  self.phase = (self.style == "circle" or self.style == "doublecircle")
-               and "flash" or "wipe"
-  self.wipeLen = (self.style == "spiralin" or self.style == "spiralout"
-                  or self.style == "circle"
-                  or self.style == "doublecircle") and 40 or 24
+  self.phase = def.flash and "flash" or "wipe"
+  self.wipeLen = def.frames
   return self
 end
 
@@ -174,7 +232,14 @@ function BattleTransition:draw()
   local prog = math.min(1, self.t / self.wipeLen)
   local style = self.style
 
-  local order = orderFor(style)
+  -- a registered style may draw itself; the eight built-ins do not
+  if self.def and self.def.draw then
+    self.def.draw(self, prog)
+    love.graphics.setColor(1, 1, 1, 1)
+    return
+  end
+
+  local order = orderFor(style, self.def)
   if order then
     -- tile-order wipes: spiral / circle sweeps
     local n = math.floor(#order * prog)

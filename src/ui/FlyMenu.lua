@@ -2,16 +2,19 @@
 -- spots from data/maps/special_warps.asm.
 
 local ListMenu = require("src.ui.ListMenu")
+local Map = require("src.world.Map")
 
 local FlyMenu = {}
 
 function FlyMenu.new(game)
   local items = {}
   local visited = game.save.visited or {}
-  for _, mapId in ipairs(game.data.field.flyOrder) do
-    -- towns only (dungeon escape spots share the table)
-    if visited[mapId] and game.data.maps[mapId]
-       and game.data.maps[mapId].tileset == "OVERWORLD" then
+  local seen = {}
+  for _, mapId in ipairs(game.data.field.flyOrder or {}) do
+    -- towns only (dungeon escape spots share the table), each listed once
+    local def = game.data.maps[mapId]
+    if visited[mapId] and def and Map.isOutdoor(def) and not seen[mapId] then
+      seen[mapId] = true
       table.insert(items, {
         value = mapId,
         label = mapId:gsub("_", " "),

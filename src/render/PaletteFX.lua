@@ -69,11 +69,55 @@ function PaletteFX.keyedShader()
   return keyedShader or nil
 end
 
--- ATTR_BLK inclusive tile rect -> pixel-space zone
+-- ATTR_BLK inclusive tile rect -> pixel-space zone.  colors == false is
+-- the trueColor opt-out: a real zone whose rect blits with no shader, so
+-- full-color art survives the pass.  nil still means "no zone at all".
 function PaletteFX.zone(colors, tx1, ty1, tx2, ty2)
-  if not colors then return nil end
+  if colors == nil then return nil end
   return { colors = colors, x = tx1 * 8, y = ty1 * 8,
            w = (tx2 - tx1 + 1) * 8, h = (ty2 - ty1 + 1) * 8 }
+end
+
+-- the trueColor zone a sprite/tileset record asks for by name
+function PaletteFX.trueColorZone(tx1, ty1, tx2, ty2)
+  return PaletteFX.zone(false, tx1, ty1, tx2, ty2)
+end
+
+-- ------- trueColor zone collection
+
+-- A sprites/tilesets record carrying trueColor = true must not reach the
+-- shade-remap shader (14 §trueColor propagation), but the states that
+-- build the zone list know nothing about which records the frame drew.
+-- So the renderer that draws one reports its covering rect here, in the
+-- coordinates of the canvas it is filling, and Renderer:endFrame appends
+-- the frame's rects to that pass's zone list as colors == false zones --
+-- the region is then re-blit unshaded on top of the colorized pass.
+-- No vanilla record sets the flag, so both buckets stay empty every frame
+-- and the zone lists are exactly the ones the states returned.
+local trueColorRects = { ui = {}, world = {} }
+local currentPass = nil
+
+-- which canvas the renderer is filling.  nil for a pass that composites
+-- with no zone list of its own (tilt's upright billboards carry their own
+-- per-sprite colorization), which drops its rects on the floor.
+function PaletteFX.setPass(name)
+  currentPass = trueColorRects[name] and name or nil
+end
+
+function PaletteFX.clearTrueColor()
+  for _, rects in pairs(trueColorRects) do
+    for i = #rects, 1, -1 do rects[i] = nil end
+  end
+end
+
+function PaletteFX.markTrueColor(x, y, w, h)
+  local rects = currentPass and trueColorRects[currentPass]
+  if not rects or w <= 0 or h <= 0 then return end
+  rects[#rects + 1] = { colors = false, x = x, y = y, w = w, h = h }
+end
+
+function PaletteFX.trueColorRects(name)
+  return trueColorRects[name] or {}
 end
 
 function PaletteFX.whole(colors)

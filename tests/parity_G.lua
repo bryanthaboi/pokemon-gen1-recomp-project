@@ -11,9 +11,8 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 if not _G.love then _G.love = require("tests.love_stub") end
 local Data = require("src.core.Data")
 if not (Data.maps and Data.maps.PALLET_TOWN) then Data:load() end
-local fails, total = 0, 0
-local function check(c, m) total = total + 1; if c then print("ok   " .. m) else fails = fails + 1; print("FAIL " .. m) end end
-local function eq(g, w, m) check(g == w, ("%s (got %s, want %s)"):format(m, tostring(g), tostring(w))) end
+local S = require("tests.harness").suite("parity G")
+local check, eq = S.check, S.eq
 
 local TileRenderer = require("src.render.TileRenderer")
 
@@ -54,5 +53,4 @@ check(a ~= b, "arrow blur frame toggles every ~8 ticks while spinning")
 TileRenderer.setSpinning(false)
 check(not TileRenderer.spinBlurActive(), "blur frame turns off once the spin ends")
 
-print(("parity G: %d/%d passed"):format(total - fails, total))
-if fails > 0 then error(fails .. " parity-G assertion(s) failed") end
+S.finish()

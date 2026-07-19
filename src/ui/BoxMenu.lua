@@ -24,8 +24,7 @@ local function monSubmenu(game, action, mon, onAction)
       label = "STATS",
       keepOpen = true,
       onSelect = function()
-        local SummaryMenu = require("src.ui.SummaryMenu")
-        game.stack:push(SummaryMenu.new(game, mon))
+        require("src.ui.Screens").push(game, "SummaryMenu", mon)
       end,
     },
     { label = "CANCEL" },

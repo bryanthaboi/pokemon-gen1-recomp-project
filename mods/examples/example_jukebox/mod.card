@@ -1,0 +1,24 @@
+-- Sharing metadata (25-community-and-ecosystem.md 3.2).  Read by tooling
+-- and the manager detail pane; never by the loader's merge.
+return {
+  summary = "An authored chip song for Pallet Town, a new Mew cry, and a jukebox screen.",
+  author = "Pokemon Gen 1 Recompilation Project",
+  contact = "https://github.com/bryanthaboi/pokemon-gen1-recomp-project",
+  tags = { "audio", "chiptune", "ui" },
+  differences = {
+    changed = {
+      "Pallet Town's map theme becomes Music_ExamplePalletRain",
+      "MEW's cry is replaced with an authored chip effect",
+    },
+    added = {
+      "Music_ExamplePalletRain song record",
+      "ExampleJukebox screen, reachable from the OPTIONS menu",
+    },
+    known = { "the jukebox plays looping songs only; jingles stop on their own" },
+  },
+  credits = {
+    { who = "Pokemon Gen 1 Recompilation Project", for_ = "the Pallet Rain arrangement" },
+    { who = "pret/pokered", for_ = "the channel command set ChipAsm assembles to" },
+  },
+  compat = { engine = ">=1.0.0 <2.0.0", modApi = 2 },
+}

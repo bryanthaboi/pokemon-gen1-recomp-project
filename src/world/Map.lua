@@ -10,6 +10,25 @@
 local Map = {}
 Map.__index = Map
 
+-- Stale-cache fallbacks for the tileset properties the importer does not
+-- stamp yet (item_effects.asm IsNextTileShoreOrWater, home/overworld.asm
+-- CollisionCheckOnWater): $14 is water everywhere; the shore tiles $32 and
+-- $48 (Safari Zone) everywhere EXCEPT SHIP_PORT, where $32 is the dock's
+-- boarding platform -- a land tile.  A tileset record that carries
+-- waterTiles/shoreTiles wins outright, which is how a new tileset gets
+-- surfable water without naming Kanto's.
+local WATER_TILES = { 0x14 }
+local SHORE_TILES = { 0x32, 0x48 }
+local NO_SHORE_TILESETS = { SHIP_PORT = true }
+
+-- what counts as "outside" for the wLastMap memory (CheckIfInOutsideMap)
+local OUTSIDE_TILESETS = { "OVERWORLD", "PLATEAU" }
+
+local function hashSet(list, into)
+  for _, t in ipairs(list) do into[t] = true end
+  return into
+end
+
 function Map.new(def, tilesetDef)
   local self = setmetatable({}, Map)
   self.def = def
@@ -24,16 +43,63 @@ function Map.new(def, tilesetDef)
   for _, t in ipairs(tilesetDef.doorTiles or {}) do self.doorTiles[t] = true end
   self.warpTiles = {}
   for _, t in ipairs(tilesetDef.warpTiles or {}) do self.warpTiles[t] = true end
+  -- water and shore share one lookup: both are surfable, only the caller's
+  -- water_tilesets.asm membership check separates them
+  self.waterTiles = hashSet(tilesetDef.waterTiles or WATER_TILES, {})
+  local shore = tilesetDef.shoreTiles
+  if shore == nil and not NO_SHORE_TILESETS[def.tileset] then shore = SHORE_TILES end
+  hashSet(shore or {}, self.waterTiles)
 
   self.warpAt = {}
-  for i, w in ipairs(def.warps) do
+  for i, w in ipairs(def.warps or {}) do
     self.warpAt[w.y * self.widthCells + w.x] = { index = i, def = w }
   end
   self.signAt = {}
-  for _, s in ipairs(def.signs) do
+  for _, s in ipairs(def.signs or {}) do
     self.signAt[s.y * self.widthCells + s.x] = s
   end
   return self
+end
+
+-- ------- map record properties (authored maps set them; vanilla falls back)
+
+-- town/route surface: door SFX, the walk-out step, the Fly menu and the
+-- town map all mean this one
+function Map.isOutdoor(def)
+  if def.outdoor ~= nil then return def.outdoor end
+  return def.tileset == "OVERWORLD"
+end
+
+-- CheckIfInOutsideMap, a strictly wider set: Route 23 / Indigo Plateau are
+-- outside for the wLastMap memory without being outdoor for the door SFX
+function Map.isOutside(def, tilesets)
+  if Map.isOutdoor(def) then return true end
+  for _, ts in ipairs(tilesets or OUTSIDE_TILESETS) do
+    if ts == def.tileset then return true end
+  end
+  return false
+end
+
+-- region groups maps a rule applies to without naming them; the id prefix
+-- is the fallback for caches that predate the property
+function Map.inRegion(def, region, prefix)
+  if def.region ~= nil then return def.region == region end
+  return prefix ~= nil and def.id:find(prefix, 1, true) == 1
+end
+
+-- unidentifiable wild battles on this map unless the player holds an item
+function Map.ghostBattles(def)
+  if def.ghostBattles ~= nil then return def.ghostBattles end
+  if def.id:find("POKEMON_TOWER", 1, true) == 1 then
+    return { unlessItem = "SILPH_SCOPE" }
+  end
+  return nil
+end
+
+-- strength-pushable map objects (engine/overworld/push_boulder.asm)
+function Map.isPushable(objDef)
+  if objDef.pushable ~= nil then return objDef.pushable end
+  return objDef.sprite == "SPRITE_BOULDER"
 end
 
 function Map:blockAt(bx, by)
@@ -69,16 +135,11 @@ function Map:isGrassCell(cx, cy)
   return grass ~= nil and self:cellTile(cx, cy) == grass
 end
 
--- Water and eastern-shore tiles (item_effects.asm IsNextTileShoreOrWater,
--- home/overworld.asm CollisionCheckOnWater): $14 everywhere; the shore
--- tiles $32 and $48 (Safari Zone) everywhere EXCEPT the SHIP_PORT
--- tileset, where $32 is the dock's boarding platform (a land tile).
--- Tileset membership in water_tilesets.asm is checked by the caller.
+-- Water and eastern-shore tiles, from the tileset's waterTiles/shoreTiles
+-- (hash sets built in Map.new).  Tileset membership in water_tilesets.asm
+-- is checked by the caller.
 function Map:isWaterCell(cx, cy)
-  local t = self:cellTile(cx, cy)
-  if t == 0x14 then return true end
-  if self.def.tileset == "SHIP_PORT" then return false end
-  return t == 0x32 or t == 0x48
+  return self.waterTiles[self:cellTile(cx, cy)] or false
 end
 
 -- Replace a block (Cut trees); the caller rebuilds the renderer.

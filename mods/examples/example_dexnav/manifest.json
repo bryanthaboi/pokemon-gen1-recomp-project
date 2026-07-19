@@ -1,0 +1,15 @@
+{
+  "id": "example_dexnav",
+  "name": "DexNav Example",
+  "version": "1.0.0",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "content",
+  "category": "TOOL",
+  "game_version": ">=1.0.0 <2.0.0",
+  "priority": 100,
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "description": "Tool-builder gallery entry: a start-menu overlay over the merged dex, with mod options and a stable inter-mod export."
+}

@@ -1,11 +1,14 @@
 -- Music playback supports compact ROM channel programs synthesized live by
--- ChipAudio and legacy pre-rendered WAV definitions. Songs with split WAVs
--- chain def.file into def.loopFile in Music.update().
+-- ChipAudio, def-local chip programs (ChipAsm), and file definitions.  The
+-- branch is chosen per song definition, never by a global import flag, so a
+-- file-backed song and a chip song coexist in one dataset.  Songs with split
+-- files chain def.file into def.loopFile in Music.update().
 -- Map themes switch on map change; battles override with the battle
 -- theme and restore afterwards; riding the bike overrides outdoor map
--- themes with Music_BikeRiding until dismount.
+-- themes with the bike song until dismount.
 
 local Logger = require("src.core.Logger")
+local Runtime = require("src.mods.Runtime")
 
 local Music = {}
 
@@ -37,8 +40,8 @@ local function applyFilter(src)
 end
 
 local state = {
-  enabled = true,
   current = nil,      -- song label
+  chip = false,       -- the playing song is a synthesized channel program
   source = nil,       -- currently playing source
   loopSource = nil,   -- pre-loaded loop body waiting for the intro to end
   mapSong = nil,      -- song to restore after a battle
@@ -48,6 +51,7 @@ local state = {
   fanfare = nil,      -- fanfare SFX source; the song pauses while it plays
   fanfareResume = false, -- start/resume state.source when the fanfare ends
   fade = nil,         -- active volume-ramp fade-out (see Music.fadeOut)
+  failed = {},        -- labels whose def could not be started; logged once
 }
 
 -- Is a fanfare SFX (Sound.lua's FANFARES) still sounding?
@@ -64,7 +68,7 @@ end
 -- channels on the Game Boy, so the current song halts and resumes when
 -- the jingle ends (see update()).
 function Music.duckForFanfare(src)
-  if not state.enabled or not src then return end
+  if not src then return end
   state.fanfare = src
   if state.source then
     local ok, playing = pcall(state.source.isPlaying, state.source)
@@ -78,6 +82,8 @@ end
 -- Overworld themes where the bike can be ridden (outdoor maps plus the
 -- caves/dungeons where gen-1 allows cycling).  Indoor themes such as
 -- Pokecenter/Gym/SilphCo never get replaced by the bike theme.
+-- data.audio.outdoorSongs supersedes this; the copy stays as the fallback
+-- for caches built before the importer wrote the table.
 local OUTDOOR = {
   Music_PalletTown = true,
   Music_Cities1 = true,
@@ -97,8 +103,50 @@ local OUTDOOR = {
   Music_Dungeon3 = true,
 }
 
+-- Scene themes the engine asks for by role rather than by label, so a total
+-- conversion can rename every song.  data.audio.special supersedes this.
+local SPECIAL = {
+  heal = "Music_PkmnHealed",
+  title = "Music_TitleScreen",
+  credits = "Music_Credits",
+  hallOfFame = "Music_HallOfFame",
+  introBattle = "Music_IntroBattle",
+  oakRoute = "Music_Routes2",
+  bike = "Music_BikeRiding",
+  surf = "Music_Surfing",
+}
+
+-- the label a scene role resolves to; call sites keep their own presence
+-- guard on the resolved label
+function Music.special(data, key)
+  local special = data and data.audio and data.audio.special
+  local label = special and special[key]
+  if label ~= nil then return label end
+  return SPECIAL[key]
+end
+
+local function outdoorSongs(data)
+  return data and data.audio and data.audio.outdoorSongs or OUTDOOR
+end
+
 local function songDef(data, song)
   return data and data.audio and data.audio.songs and data.audio.songs[song]
+end
+
+-- which mod put this label in the registry, for attributed failure logs
+local function songOwner(data, song)
+  local owners = data and data.audio and data.audio._owners
+  local songs = owners and owners.songs
+  return songs and songs[song] or "base"
+end
+
+-- one log line, plus an entry in the loader's error feed when a mod owns the
+-- def, so the manager's errors screen can flag that mod
+local function reportBadDef(data, song, err)
+  local who = songOwner(data, song)
+  Logger.warn("audio: bad song def %q (mod %s): %s", song, who, tostring(err))
+  Runtime.reportError(who,
+    ("audio: bad song def %q: %s"):format(song, tostring(err)))
 end
 
 local function stopSource(src)
@@ -108,50 +156,73 @@ end
 local function newSource(file)
   local ok, src = pcall(love.audio.newSource, file, "stream")
   if ok and src then return src end
-  Logger.warn("music: cannot load %s", tostring(file))
-  return nil
+  return nil, ok and "no source" or tostring(src)
 end
 
-function Music.play(data, song, loop)
-  if not state.enabled or not song or song == state.current then return end
-  if not love.audio then -- headless test stub
-    state.enabled = false
+-- Build the new song's sources; the caller only tears the old song down
+-- once this succeeded, so a broken def costs nothing but a log line.
+-- Returns src, loopSrc, isChip -- or nil plus the reason.
+local function startSong(data, def, wantLoop)
+  if def.chip or (def.address and def.bank) then
+    local ok, src = pcall(
+      require("src.core.ChipAudio").playMusic, data, def, wantLoop)
+    if ok and src then return src, nil, true end
+    return nil, nil, nil, ok and "no source" or tostring(src)
+  elseif def.file then
+    local src, err = newSource(def.file)
+    if not src then return nil, nil, nil, err end
+    -- a missing loop body degrades to the intro file alone
+    local loopSrc = def.loopFile and newSource(def.loopFile) or nil
+    return src, loopSrc, false
+  end
+  return nil, nil, nil, "no chip program and no file"
+end
+
+-- the single choke point every song choice passes through, so one hook
+-- covers map themes, battle themes, jingles and scene music
+local function selectSong(song, ctx)
+  if not Runtime.wantsHook("music.select") then return song end
+  return Runtime.call("music.select", function(chosen) return chosen end, song, {
+    reason = ctx and ctx.reason or "direct",
+    mapId = ctx and ctx.mapId,
+    mapSong = state.mapSong,
+    onBike = state.onBike,
+    surfing = state.surfing,
+    kind = ctx and ctx.kind,
+    battleKind = ctx and ctx.kind,
+    trainerId = ctx and ctx.trainerId,
+  })
+end
+
+function Music.play(data, song, loop, ctx)
+  if not song then return end
+  if not love.audio then return end -- headless test stub
+  song = selectSong(song, ctx)
+  -- a hook may silence the cue outright, or swap in a label the dedupe
+  -- below has to compare against
+  if not song or song == state.current then return end
+  local def = songDef(data, song)
+  if not def or state.failed[song] then return end
+  local wantLoop = loop ~= false
+  local src, loopSrc, isChip, err = startSong(data, def, wantLoop)
+  if not src then
+    state.failed[song] = true
+    reportBadDef(data, song, err)
     return
   end
-  local def = songDef(data, song)
-  local runtime = data and data.audio and data.audio.runtime
-  if not def or (not runtime and not def.file) then return end
   stopSource(state.source)
   stopSource(state.loopSource)
-  if runtime then require("src.core.ChipAudio").stopMusic() end
-  state.source, state.loopSource, state.fade = nil, nil, nil
-  local wantLoop = loop ~= false
-  local src
-  if runtime then
-    local ok, generated = pcall(
-      require("src.core.ChipAudio").playMusic, data, def, wantLoop)
-    if ok then src = generated end
-  else
-    src = newSource(def.file)
-  end
-  if not src then
-    state.enabled = false
-    state.current = nil
-    return
-  end
-  if not runtime and def.loopFile then
-    -- intro file plays once, then update() chains to the loop body
+  -- a chip song holds the streaming source; ChipAudio.playMusic already
+  -- swapped it when the new song is chip-backed too
+  if state.chip and not isChip then require("src.core.ChipAudio").stopMusic() end
+  state.fade = nil
+  if loopSrc then
+    -- intro plays once, then update() chains to the loop body
     -- (for one-shot jingles the body plays once and doesn't repeat)
     pcall(src.setLooping, src, false)
-    local loopSrc = newSource(def.loopFile)
-    if loopSrc then
-      pcall(loopSrc.setLooping, loopSrc, wantLoop)
-      applyVolume(loopSrc)
-      applyFilter(loopSrc)
-      state.loopSource = loopSrc
-    else
-      pcall(src.setLooping, src, wantLoop) -- degrade: intro file only
-    end
+    pcall(loopSrc.setLooping, loopSrc, wantLoop)
+    applyVolume(loopSrc)
+    applyFilter(loopSrc)
   else
     pcall(src.setLooping, src, wantLoop)
   end
@@ -164,15 +235,34 @@ function Music.play(data, song, loop)
   else
     pcall(src.play, src)
   end
-  state.source = src
+  local previous = state.current
+  state.source, state.loopSource, state.chip = src, loopSrc, isChip
   state.current = song
+  if Runtime.wants("music.started") then
+    Runtime.emit("music.started", {
+      song = song, previous = previous, chip = isChip,
+      reason = ctx and ctx.reason or "direct",
+    })
+  end
 end
 
 function Music.stop()
+  local previous = state.current
   stopSource(state.source)
   stopSource(state.loopSource)
   require("src.core.ChipAudio").stopMusic()
   state.current, state.source, state.loopSource, state.fade = nil, nil, nil, nil
+  state.chip = false
+  if previous and Runtime.wants("music.stopped") then
+    Runtime.emit("music.stopped", { song = previous })
+  end
+end
+
+-- hot reload: forget the failed defs and the playing label so the next cue
+-- re-resolves against the freshly merged registries
+function Music.reload()
+  state.failed = {}
+  Music.stop()
 end
 
 -- Ramp the current song's volume to silence, then stop it, mirroring the
@@ -183,7 +273,6 @@ end
 -- writes (oak_speech.asm sets 10 at the shrink beat -> 7*10 = 70 frames
 -- to silence).  Ticked once per frame from Music.update().
 function Music.fadeOut(control)
-  if not state.enabled then return end
   if not state.source then Music.stop() return end
   control = math.max(1, control or 10)
   state.fade = {
@@ -196,13 +285,14 @@ end
 
 -- the song a map should currently play, honoring the bike/surf overrides
 local function effectiveMapSong(data, song)
-  if state.onBike and song and OUTDOOR[song]
-     and songDef(data, "Music_BikeRiding") then
-    return "Music_BikeRiding"
+  if not song or not outdoorSongs(data)[song] then return song end
+  if state.onBike then
+    local bike = Music.special(data, "bike")
+    if bike and songDef(data, bike) then return bike end
   end
-  if state.surfing and song and OUTDOOR[song]
-     and songDef(data, "Music_Surfing") then
-    return "Music_Surfing"
+  if state.surfing then
+    local surf = Music.special(data, "surf")
+    if surf and songDef(data, surf) then return surf end
   end
   return song
 end
@@ -216,20 +306,23 @@ function Music.playMap(data, mapId, onBike, surfing)
   state.onBike = not not onBike
   state.surfing = not not surfing
   local play = effectiveMapSong(data, song)
-  if play then Music.play(data, play) end
+  if play then Music.play(data, play, nil, { reason = "map", mapId = mapId }) end
 end
 
 -- toggle the surf override mid-map (starting/ending a surf)
 function Music.setSurfing(data, surfing)
   state.surfing = not not surfing
   local play = effectiveMapSong(data, state.mapSong)
-  if play then Music.play(data, play) end
+  if play then Music.play(data, play, nil, { reason = "map" }) end
 end
 
 -- battle themes; kind = "wild"|"trainer"|"gym"|"final"
-function Music.playBattle(data, kind)
+function Music.playBattle(data, kind, trainerId)
   local b = data.audio and data.audio.battle
-  if b then Music.play(data, b[kind] or b.wild) end
+  if b then
+    Music.play(data, b[kind] or b.wild, nil,
+      { reason = "battle", kind = kind, trainerId = trainerId })
+  end
 end
 
 -- victory theme (Music_DefeatedWildMon/Trainer/GymLeader): starts the
@@ -237,12 +330,12 @@ end
 -- (each Defeated* song ends in `sound_loop 0, .mainloop`); the battle's
 -- finish() restores the map theme, like the overworld reload's
 -- PlayDefaultMusicFadeOutCurrent.  Returns true if the theme started.
-function Music.playVictory(data, kind)
+function Music.playVictory(data, kind, trainerId)
   local b = data.audio and data.audio.battle
   local jingle = b and b[kind .. "Win"]
-  local def = jingle and songDef(data, jingle)
-  if def and (def.file or (data.audio and data.audio.runtime)) then
-    Music.play(data, jingle)
+  if jingle and songDef(data, jingle) then
+    Music.play(data, jingle, nil,
+      { reason = "victory", kind = kind, trainerId = trainerId })
     return true
   end
   return false
@@ -251,11 +344,8 @@ end
 -- one-shot jingle (PkmnHealed, Jigglypuff's song): the map theme
 -- resumes when it ends, via update()
 function Music.playOnce(data, song)
-  local def = songDef(data, song)
-  if not (def and (def.file or (data.audio and data.audio.runtime))) then
-    return false
-  end
-  Music.play(data, song, false)
+  if not songDef(data, song) then return false end
+  Music.play(data, song, false, { reason = "once" })
   state.pendingRestore = true
   return true
 end
@@ -274,7 +364,7 @@ function Music.restoreMap(data)
   state.current = nil
   state.pendingRestore = nil
   local play = effectiveMapSong(data, state.mapSong)
-  if play then Music.play(data, play) end
+  if play then Music.play(data, play, nil, { reason = "map" }) end
 end
 
 -- 0-7 music volume (0 mutes), applied to the playing song and the
@@ -308,10 +398,7 @@ end
 -- call once per frame: chains a finished intro into its loop body and
 -- restores the map theme after a one-shot jingle
 function Music.update(data)
-  if data and data.audio and data.audio.runtime then
-    require("src.core.ChipAudio").update()
-  end
-  if not state.enabled then return end
+  if state.chip then require("src.core.ChipAudio").update() end
   -- volume ramp (Music.fadeOut): hold the current level for `control`
   -- frames, then drop one level (FadeOutAudio decrements both rAUDVOL
   -- nibbles when its counter reaches 0); at level 0 the music stops.
@@ -344,7 +431,7 @@ function Music.update(data)
     end
     state.fanfareResume = false
   end
-  if data and data.audio and data.audio.runtime and not state.fanfare then
+  if state.chip and not state.fanfare then
     require("src.core.ChipAudio").ensureMusicPlaying()
   end
   if state.loopSource and sourceStopped(state.source) then

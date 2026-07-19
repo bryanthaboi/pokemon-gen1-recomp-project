@@ -5,8 +5,16 @@
 --
 -- Substitutes block status/stat effects and side effects aimed at their
 -- owner, like Gen 1.
+--
+-- The primary/secondary tables keep their v1 signatures; MoveEffects.full
+-- carries the stage callbacks the damaging pipeline consults, and RECORDS
+-- is the registry view of all three -- the merged Data.move_effects a
+-- battle dispatches on serves these same objects.
 
 local Logger = require("src.core.Logger")
+local StatusRegistry = require("src.battle.StatusRegistry")
+local TurnOrder = require("src.battle.TurnOrder")
+local TypeChart = require("src.battle.TypeChart")
 
 local MoveEffects = {}
 
@@ -53,6 +61,7 @@ local function changeStage(battle, who, stat, delta, fromEnemy)
   end
   return { ("%s's\n%s\ngreatly fell!"):format(displayName(who), STAT_LABEL[stat]) }
 end
+MoveEffects.changeStage = changeStage
 
 local function statUp(stat, delta)
   return function(battle, user, target)
@@ -70,54 +79,10 @@ end
 -- status
 -- ---------------------------------------------------------------------
 
-local STATUS_LABEL = {
-  SLP = "fell asleep", PSN = "was poisoned", BRN = "was burned",
-  FRZ = "was frozen solid",
-}
-
--- opts: toxic (start the Toxic counter), moveType (for the type
--- gates), secondary (side-effect of a damaging move).
+-- kept as the module's inflict entry: the registry-backed rules live in
+-- StatusRegistry (per-status canInflict/onInflict on the merged records)
 local function inflictStatus(battle, target, status, opts)
-  opts = opts or {}
-  if target.mon.status then return {} end
-  -- Substitutes block poison (PoisonEffect calls CheckTargetSubstitute)
-  -- and every secondary status, but NOT primary Sleep or Thunder Wave, 
-  -- their handlers never check the substitute in Gen 1.
-  if target.substituteHP and (opts.secondary or status == "PSN") then
-    return {}
-  end
-  for _, t in ipairs(target.curTypes) do
-    -- can't poison Poison-types (primary or secondary)
-    if status == "PSN" and t == "POISON" then return {} end
-    -- ParalyzeEffect_: Electric-type moves can't paralyze Ground-types
-    if status == "PAR" and opts.moveType == "ELECTRIC" and t == "GROUND" then
-      return {}
-    end
-    -- FreezeBurnParalyzeEffect: a secondary status never lands when
-    -- the move's type matches either of the target's types (Body Slam
-    -- can't paralyze Normals, Fire can't burn Fire, Ice can't freeze Ice)
-    if opts.secondary and status ~= "PSN" and opts.moveType == t then
-      return {}
-    end
-    -- keep the canonical immunities for any non-secondary path
-    if (status == "BRN" and t == "FIRE") or (status == "FRZ" and t == "ICE") then
-      return {}
-    end
-  end
-  target.mon.status = status
-  if status == "SLP" then
-    target.sleepTurns = battle.rng(1, 7)
-  end
-  if opts.toxic then
-    target.toxicCounter = 1
-    -- _BadlyPoisonedText
-    return { ("%s's\nbadly poisoned!"):format(displayName(target)) }
-  end
-  if status == "PAR" then
-    -- _ParalyzedMayNotAttackText (primary and secondary paralysis)
-    return { ("%s's\nparalyzed! It may\nnot attack!"):format(displayName(target)) }
-  end
-  return { ("%s\n%s!"):format(displayName(target), STATUS_LABEL[status]) }
+  return StatusRegistry.inflict(battle, target, status, opts)
 end
 
 local function statusMove(status)
@@ -131,6 +96,7 @@ local function statusMove(status)
     local msgs = inflictStatus(battle, target, status, {
       toxic = move and move.id == "TOXIC",
       moveType = move and move.type,
+      source = move and move.id,
     })
     if #msgs == 0 then
       return { "But, it failed!" }
@@ -151,6 +117,7 @@ local function statusSide(status, chance)
     return inflictStatus(battle, target, status, {
       moveType = move and move.type,
       secondary = true,
+      source = move and move.id,
     })
   end
 end
@@ -397,11 +364,326 @@ MoveEffects.secondary = {
     -- the second hit reroutes to PoisonEffect with POISON_SIDE_EFFECT1:
     -- 20 percent + 1 (52/256)
     if battle.rng(0, 255) >= 52 then return {} end
-    return inflictStatus(battle, target, "PSN", { secondary = true })
+    return inflictStatus(battle, target, "PSN",
+                         { secondary = true, source = "TWINEEDLE" })
   end,
 }
 
--- effects fully handled inside BattleState's damage pipeline
+-- ---------------------------------------------------------------------
+-- full records: the damaging pipeline's stage callbacks
+-- ---------------------------------------------------------------------
+
+-- Status-move effects whose pokered handlers call MoveHitTest (sleep/
+-- poison/paralyze/confusion/leech seed/disable and the primary
+-- stat-down moves).  Everything else in MoveEffects.primary is
+-- self-targeting and never rolls accuracy.  Mimic also hit-tests but
+-- runs its own mid-move flow (resolveMimic).
+local ACC_CHECKED = {
+  SLEEP_EFFECT = true, POISON_EFFECT = true, PARALYZE_EFFECT = true,
+  CONFUSION_EFFECT = true, LEECH_SEED_EFFECT = true, DISABLE_EFFECT = true,
+  ATTACK_DOWN1_EFFECT = true, DEFENSE_DOWN1_EFFECT = true,
+  DEFENSE_DOWN2_EFFECT = true, SPEED_DOWN1_EFFECT = true,
+  ACCURACY_DOWN1_EFFECT = true,
+}
+
+-- fixed-damage moves (engine/battle/core.asm SpecialDamage); the move
+-- field wins, previously imported caches fall back to the id table
+local FIXED_DAMAGE = {
+  SONICBOOM = 20, DRAGON_RAGE = 40,
+  SEISMIC_TOSS = "level", NIGHT_SHADE = "level", PSYWAVE = "half_level_rand",
+}
+MoveEffects.FIXED_DAMAGE = FIXED_DAMAGE
+
+local function fixedDamageFor(ctx)
+  local spec = ctx.move.fixedDamage
+  if spec == nil then spec = FIXED_DAMAGE[ctx.move.id] end
+  if type(spec) == "function" then return spec(ctx) end
+  if spec == "level" then return ctx.user.mon.level end
+  if spec == "half_level_rand" then
+    -- PSYWAVE: rand(1, floor(level*3/2) - 1)
+    local max = math.max(1, math.floor(ctx.user.mon.level * 3 / 2) - 1)
+    return ctx.rng(1, max)
+  end
+  return spec
+end
+
+local function plainInfo()
+  return { crit = false, typeMult = 10 }
+end
+
+-- multi-hit count: the move's multiHit field (a count or a distribution)
+-- with the effect's classic distribution as the fallback
+local function hitsFrom(dist, ctx)
+  if type(dist) == "number" then return dist end
+  local r = ctx.rng(0, #dist - 1)
+  return dist[r + 1]
+end
+
+-- drain_hp.asm halves the RAW wDamage IN PLACE (minimum 1) and heals
+-- that amount, so Counter would see the halved value
+local function drainHalf(text)
+  return function(ctx)
+    local heal = math.max(1, math.floor(ctx.rawDamage / 2))
+    ctx.battle.lastDamage = heal
+    local mon = ctx.user.mon
+    mon.hp = math.min(mon.stats.hp, mon.hp + heal)
+    ctx.drain()
+    ctx.say(text:format(displayName(ctx.target)))
+  end
+end
+
+-- fixed damage still respects type immunity (AdjustDamageForMoveType
+-- flags the miss before the special-damage override)
+local function immuneMsg(ctx)
+  if TypeChart.effectiveness(ctx.move.type, ctx.target.curTypes) == 0 then
+    return ("It doesn't affect\n%s!"):format(displayName(ctx.target))
+  end
+  return nil
+end
+
+MoveEffects.full = {
+  NO_ADDITIONAL_EFFECT = {},
+
+  TWO_TO_FIVE_ATTACKS_EFFECT = {
+    hitCount = function(ctx)
+      return hitsFrom(ctx.move.multiHit or { 2, 2, 2, 3, 3, 3, 4, 5 }, ctx)
+    end,
+  },
+  ATTACK_TWICE_EFFECT = {
+    hitCount = function(ctx)
+      return hitsFrom(ctx.move.multiHit or 2, ctx)
+    end,
+  },
+  -- hits twice AND keeps its secondary poison run (registered below)
+  TWINEEDLE_EFFECT = {
+    hitCount = function(ctx)
+      return hitsFrom(ctx.move.multiHit or 2, ctx)
+    end,
+  },
+
+  SPECIAL_DAMAGE_EFFECT = {
+    chooseDamage = function(ctx)
+      local blocked = immuneMsg(ctx)
+      if blocked then return nil, blocked end
+      local dmg = fixedDamageFor(ctx)
+      if not dmg then return nil, "But, it failed!" end
+      return dmg, plainInfo()
+    end,
+  },
+  SUPER_FANG_EFFECT = {
+    chooseDamage = function(ctx)
+      local blocked = immuneMsg(ctx)
+      if blocked then return nil, blocked end
+      return math.max(1, math.floor(ctx.target.mon.hp / 2)), plainInfo()
+    end,
+  },
+  OHKO_EFFECT = {
+    -- fails against faster opponents (Gen 1 rule) and immune types
+    gate = function(ctx)
+      local blocked = immuneMsg(ctx)
+      if blocked then return false, blocked end
+      if TurnOrder.effectiveSpeed(ctx.user) < TurnOrder.effectiveSpeed(ctx.target) then
+        return false, "But, it failed!"
+      end
+      return true
+    end,
+    chooseDamage = function()
+      return 65535, { crit = false, typeMult = 10, ohko = true }
+    end,
+  },
+
+  RECOIL_EFFECT = {
+    afterDamage = function(ctx)
+      -- recoil.asm reads the RAW computed wDamage (not the HP actually
+      -- removed): overkill and substitute hits recoil at full strength
+      local recoil = math.max(1, math.floor(ctx.rawDamage
+                                            / (ctx.moveInst.struggle and 2 or 4)))
+      ctx.say(("%s's\nhit with recoil!"):format(displayName(ctx.user)))
+      ctx.battle:applyDamage(ctx.user, recoil)
+    end,
+  },
+  DRAIN_HP_EFFECT = {
+    afterDamage = drainHalf("Sucked health from\n%s!"),
+  },
+  DREAM_EATER_EFFECT = {
+    -- only works on sleeping targets (checked before damage)
+    gate = function(ctx)
+      if ctx.target.mon.status ~= "SLP" then return false, "But, it failed!" end
+      return true
+    end,
+    afterDamage = drainHalf("%s's\ndream was eaten!"),
+  },
+
+  -- charge moves: first turn just charges; Fly AND Dig go
+  -- semi-invulnerable (ChargeEffect sets INVULNERABLE for both)
+  CHARGE_EFFECT = { charge = {} },
+  FLY_EFFECT = { charge = { invulnerable = true } },
+
+  TRAPPING_EFFECT = {
+    -- TrappingEffect runs BEFORE the hit test and clears the target's
+    -- Hyper Beam recharge, even if the trapping move then misses
+    -- (effects.asm:1091-1092 ClearHyperBeam)
+    beforeAccuracy = function(ctx)
+      if not ctx.user.trappingTurns then
+        ctx.target.mustRecharge = nil
+      end
+    end,
+    afterDamage = function(ctx)
+      local user = ctx.user
+      if not user.trappingTurns then
+        -- TrappingEffect (effects.asm:1080-1103) rolls wNumAttacksLeft
+        -- as 1-4 (weights 3/8 3/8 1/8 1/8): that many CONTINUATION
+        -- attacks follow this first hit, 2-5 attacks total.  The victim
+        -- is held while the counter runs (live mirror in lockedAction).
+        local r = ctx.rng(0, 7)
+        user.trappingTurns = ({ 1, 1, 1, 2, 2, 2, 3, 4 })[r + 1]
+        user.trapDamage = ctx.rawDamage
+        -- remember the move so its animation can replay on each locked
+        -- continuation (core.asm:3554-3566 -> GetPlayerAnimationType)
+        user.trapMove = ctx.move.id
+      end
+    end,
+  },
+  THRASH_PETAL_DANCE_EFFECT = {
+    afterDamage = function(ctx)
+      local user = ctx.user
+      if not user.thrashTurns then
+        user.thrashTurns = ctx.rng(2, 3) -- 3-4 attacks total, then confusion
+        user.thrashMove = ctx.moveInst
+        user.thrashAnnounced = true
+      else
+        user.thrashTurns = user.thrashTurns - 1
+        if user.thrashTurns <= 0 then
+          user.thrashTurns, user.thrashMove, user.thrashAnnounced = nil, nil, nil
+          if not user.confusedTurns then
+            user.confusedTurns = ctx.rng(2, 5)
+            ctx.say(("%s\nbecame confused!"):format(displayName(user)))
+          end
+        end
+      end
+    end,
+  },
+  JUMP_KICK_EFFECT = {
+    onMiss = function(ctx, reason)
+      if reason ~= "accuracy" then return end
+      ctx.say(("%s\nkept going and\ncrashed!"):format(displayName(ctx.user)))
+      ctx.damage(ctx.user, 1)
+    end,
+  },
+  EXPLODE_EFFECT = {
+    explode = true, -- Damage.compute halves the defense
+    onMiss = function(ctx)
+      ctx.battle:selfDestruct(ctx.user)
+    end,
+    afterDamage = function(ctx)
+      ctx.battle:selfDestruct(ctx.user)
+    end,
+  },
+  HYPER_BEAM_EFFECT = {
+    afterDamage = function(ctx)
+      -- no recharge when the target faints OR its substitute breaks
+      if ctx.target.mon.hp > 0 and not ctx.brokeSub then
+        ctx.user.mustRecharge = true
+      end
+    end,
+  },
+  PAY_DAY_EFFECT = {
+    afterDamage = function(ctx)
+      local battle = ctx.battle
+      battle.payDay = (battle.payDay or 0) + 2 * ctx.user.mon.level
+      ctx.say("Coins scattered\neverywhere!")
+    end,
+  },
+  SWIFT_EFFECT = { neverMiss = true },
+  RAGE_EFFECT = {
+    afterDamage = function(ctx)
+      ctx.user.rageMove = ctx.moveInst
+    end,
+  },
+
+  BIDE_EFFECT = {
+    perform = function(ctx)
+      local user = ctx.user
+      user.bideTurns = ctx.rng(2, 3)
+      user.bideDamage = 0
+      ctx.say(("%s\nis storing energy!"):format(displayName(user)))
+    end,
+  },
+  SWITCH_AND_TELEPORT_EFFECT = {
+    -- SwitchAndTeleportEffect (effects.asm:810-909): in a wild battle
+    -- it auto-succeeds when the user's level >= the opponent's;
+    -- otherwise roll rand[0, userLevel+enemyLevel] and FAIL when the
+    -- roll is below opponentLevel/4.  Teleport's failure text is "But
+    -- it failed!", Roar/Whirlwind's is DidntAffectText; in trainer
+    -- battles Teleport fails and Roar/Whirlwind are "unaffected".
+    perform = function(ctx)
+      local battle, user, target, move = ctx.battle, ctx.user, ctx.target, ctx.move
+      if battle.kind == "wild" then
+        local uLvl, tLvl = user.mon.level, target.mon.level
+        local ok = uLvl >= tLvl
+        if not ok then
+          ok = ctx.rng(0, uLvl + tLvl) >= math.floor(tLvl / 4)
+        end
+        if ok then
+          if move.id == "ROAR" then
+            ctx.say(("%s\nran away scared!"):format(displayName(target)))
+          elseif move.id == "WHIRLWIND" then
+            ctx.say(("%s\nwas blown away!"):format(displayName(target)))
+          else
+            ctx.say(("%s\nran from battle!"):format(displayName(user)))
+          end
+          battle.result = "run"
+          battle.afterQueue = "finish"
+        elseif move.id == "TELEPORT" then
+          ctx.say("But, it failed!")
+        else
+          ctx.say(("It didn't affect\n%s!"):format(displayName(target)))
+        end
+      elseif move.id == "TELEPORT" then
+        ctx.say("But, it failed!")
+      else
+        ctx.say(("%s\nis unaffected!"):format(displayName(target)))
+      end
+    end,
+  },
+  METRONOME_EFFECT = {
+    callsMove = function(ctx)
+      local order = ctx.data.constants.moveOrder
+      local pick
+      repeat
+        pick = order[ctx.rng(1, #order)]
+      until pick ~= "METRONOME" and pick ~= "STRUGGLE" and ctx.data.moves[pick]
+      return pick
+    end,
+  },
+  MIRROR_MOVE_EFFECT = {
+    callsMove = function(ctx)
+      local last = ctx.target.lastMove
+      if not last then
+        ctx.say("The MIRROR MOVE\nfailed!")
+        return nil
+      end
+      return last
+    end,
+  },
+  -- Mimic runs its own mid-move flow: hit test, then the copy menu
+  -- (player) or a random roll (enemy / link), all on the queue.
+  -- PlayCurrentMoveAnimation runs only after a successful copy
+  -- (effects.asm:1268), never on a miss -- so no announcement anim row.
+  MIMIC_EFFECT = {
+    announceAnim = false,
+    perform = function(ctx)
+      ctx.battle:resolveMimic(ctx.user, ctx.target, ctx.move, ctx.moveInst)
+    end,
+  },
+}
+
+-- ---------------------------------------------------------------------
+-- the registry view
+-- ---------------------------------------------------------------------
+
+-- effects fully handled inside the damaging pipeline; kept as the v1
+-- compat set (BattleState dispatched on it before the records existed)
 MoveEffects.special = {
   NO_ADDITIONAL_EFFECT = true, TWO_TO_FIVE_ATTACKS_EFFECT = true,
   ATTACK_TWICE_EFFECT = true, SPECIAL_DAMAGE_EFFECT = true,
@@ -414,6 +696,40 @@ MoveEffects.special = {
   METRONOME_EFFECT = true, MIRROR_MOVE_EFFECT = true,
   TWINEEDLE_EFFECT = true, MIMIC_EFFECT = true,
 }
+
+-- the (battle, user, target, move, moveInst) handlers adapted to the ctx
+-- facade the registry records expose
+local function shim(fn)
+  return function(ctx)
+    return fn(ctx.battle, ctx.user, ctx.target, ctx.move, ctx.moveInst)
+  end
+end
+
+local RECORDS = {}
+MoveEffects.RECORDS = RECORDS
+for id, fn in pairs(MoveEffects.primary) do
+  RECORDS[id] = { kind = "primary", run = shim(fn),
+                  accuracyChecked = ACC_CHECKED[id] or nil }
+end
+for id, fn in pairs(MoveEffects.secondary) do
+  RECORDS[id] = { kind = "secondary", run = shim(fn) }
+end
+for id, spec in pairs(MoveEffects.full) do
+  local record = { kind = "full" }
+  for key, value in pairs(spec) do record[key] = value end
+  -- TWINEEDLE: full record with its secondary run honored post-damage
+  local secondary = MoveEffects.secondary[id]
+  if secondary then record.run = shim(secondary) end
+  RECORDS[id] = record
+end
+
+-- One record per effect, the same objects performMove dispatches on: the
+-- merged Data.move_effects and this table agree by construction.
+function MoveEffects.registerInto(registry, _, owner)
+  for id, record in pairs(RECORDS) do
+    registry:register(id, record, owner)
+  end
+end
 
 local warned = {}
 

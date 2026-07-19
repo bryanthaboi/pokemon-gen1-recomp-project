@@ -5,9 +5,8 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 if not _G.love then _G.love = require("tests.love_stub") end
 local Data = require("src.core.Data")
 if not (Data.maps and Data.maps.PALLET_TOWN) then Data:load() end
-local fails, total = 0, 0
-local function check(c, m) total = total + 1; if c then print("ok   " .. m) else fails = fails + 1; print("FAIL " .. m) end end
-local function eq(g, w, m) check(g == w, ("%s (got %s, want %s)"):format(m, tostring(g), tostring(w))) end
+local S = require("tests.harness").suite("parity D")
+local check, eq = S.check, S.eq
 
 -- === assertions per your spec test plan ===
 -- Gap: SAFARI_STEP_MAPS (OverworldController.lua ~2106-2109) only decremented
@@ -83,5 +82,4 @@ check(fired, "safariStep reports the game-over trigger at 0 steps")
 check(fakeGame.save.safari == nil,
       "safari session clears (safariGameOver fired) when steps hit 0 in the secret house")
 
-print(("parity D: %d/%d passed"):format(total - fails, total))
-if fails > 0 then error(fails .. " parity-D assertion(s) failed") end
+S.finish()

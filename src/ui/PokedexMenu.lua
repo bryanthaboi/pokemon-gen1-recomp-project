@@ -17,19 +17,23 @@ function PokedexMenu.new(game)
   end
   local items = {}
   local seen, owned = 0, 0
-  for n = 1, 151 do
+  -- dex bound and number width come from constants; the fallbacks keep a
+  -- cache imported before those keys existed on the Kanto numbering
+  local constants = game.data.constants or {}
+  local numFmt = ("%%0%dd"):format(constants.dexDigits or 3)
+  for n = 1, constants.dexSize or 151 do
     local def = byDex[n]
     if def then
       local label
       if dex.owned[def.id] then
-        label = ("%03d %s"):format(n, def.name)
+        label = (numFmt .. " %s"):format(n, def.name)
         owned = owned + 1
         seen = seen + 1
       elseif dex.seen[def.id] then
-        label = ("%03d %s"):format(n, def.name)
+        label = (numFmt .. " %s"):format(n, def.name)
         seen = seen + 1
       else
-        label = ("%03d -----"):format(n)
+        label = (numFmt .. " -----"):format(n)
       end
       table.insert(items, {
         label = label,
@@ -49,17 +53,16 @@ function PokedexMenu.new(game)
       -- PokedexMenuItemsText); CRY keeps the side menu open like the
       -- original, QUIT returns to the list
       local Menu = require("src.ui.Menu")
+      local Screens = require("src.ui.Screens")
       game.stack:push(Menu.new(game, {
         { label = "DATA", onSelect = function()
-            local DexEntryMenu = require("src.ui.DexEntryMenu")
-            game.stack:push(DexEntryMenu.new(game, item.value))
+            Screens.push(game, "DexEntryMenu", item.value)
           end },
         { label = "CRY", keepOpen = true, onSelect = function()
             require("src.core.Sound").playCry(game.data, item.value)
           end },
         { label = "AREA", onSelect = function()
-            local TownMap = require("src.ui.TownMap")
-            game.stack:push(TownMap.new(game, { nestSpecies = item.value }))
+            Screens.push(game, "TownMap", { nestSpecies = item.value })
           end },
         { label = "QUIT" },
       }, { tx = 12, ty = 8, tw = 8, th = 10 }))

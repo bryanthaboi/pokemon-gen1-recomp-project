@@ -23,7 +23,8 @@ function TitleState:sgbPalettes(game)
 end
 
 -- the Red-version TitleMons list (data/pokemon/title_mons.asm):
--- TitleScreenPickNewMon draws a random, never-repeating pick from it
+-- TitleScreenPickNewMon draws a random, never-repeating pick from it;
+-- field.title.cycleSpecies replaces it wholesale
 local CYCLE_SPECIES = {
   "CHARMANDER", "SQUIRTLE", "BULBASAUR", "WEEDLE", "NIDORAN_M", "SCYTHER",
   "PIKACHU", "CLEFAIRY", "RHYDON", "ABRA", "GASTLY", "DITTO",
@@ -37,15 +38,32 @@ local function tryImage(path)
   return ok and img or nil
 end
 
+-- the importer seeds field.title with {path,width,height} descriptors
+-- (the shape IntroMovie unwraps); mod patches may use plain path strings
+local function imagePath(entry)
+  if type(entry) == "table" then return entry.path end
+  return entry
+end
+
 function TitleState.new(game, opts)
   opts = opts or {}
   local self = setmetatable({}, TitleState)
   self.game = game
   self.onNewGame = opts.onNewGame
   self.onContinue = opts.onContinue
-  self.logo = tryImage("assets/logo/pokemon_logo.png")
-  self.version = tryImage("assets/generated/title/red_version.png")
+  -- branding comes from field.title with the shipped art as fallback, so
+  -- a total conversion rebrands the title without replacing the screen
+  local title = (game.data.field and game.data.field.title) or {}
+  self.title = title
+  self.logo = tryImage(imagePath(title.logo)
+                       or "assets/logo/pokemon_logo.png")
+  -- versionRibbon is the file-12 key; version is the importer's
+  self.version = tryImage(imagePath(title.versionRibbon or title.version)
+                          or "assets/generated/title/red_version.png")
   self.player = tryImage("assets/generated/title/player.png")
+  self.cycleSpecies = (type(title.cycleSpecies) == "table"
+                       and #title.cycleSpecies > 0)
+                      and title.cycleSpecies or CYCLE_SPECIES
   self.sprites = {} -- species -> image or false (load failed)
   self.cycleIndex = 1
   self.timer = 0
@@ -55,13 +73,14 @@ end
 
 function TitleState:enter()
   local data = self.game.data
-  if data.audio and data.audio.songs and data.audio.songs.Music_TitleScreen then
-    pcall(Music.play, data, "Music_TitleScreen")
+  local song = self.title.music or "Music_TitleScreen"
+  if data.audio and data.audio.songs and data.audio.songs[song] then
+    pcall(Music.play, data, song)
   end
 end
 
 function TitleState:currentSprite()
-  local species = CYCLE_SPECIES[self.cycleIndex]
+  local species = self.cycleSpecies[self.cycleIndex]
   local cached = self.sprites[species]
   if cached == nil then
     local def = self.game.data.pokemon[species]
@@ -108,12 +127,7 @@ function ContinueInfo:draw()
   love.graphics.setColor(0, 0, 0, 1)
   Font.draw("PLAYER", 40, 72)
   Font.draw((save.player and save.player.name) or "RED", 96, 72)
-  local badges = 0
-  for _, b in ipairs({ "BOULDERBADGE", "CASCADEBADGE", "THUNDERBADGE",
-                       "RAINBOWBADGE", "SOULBADGE", "MARSHBADGE",
-                       "VOLCANOBADGE", "EARTHBADGE" }) do
-    if save.inventory and save.inventory[b] then badges = badges + 1 end
-  end
+  local badges = require("src.inventory.Badges").count(self.game.data, save)
   Font.draw("BADGES", 40, 88)
   Font.draw(("%2d"):format(badges), 128, 88)
   local owned = 0
@@ -149,7 +163,7 @@ function TitleState:openMenu()
     if self.onNewGame then self.onNewGame() end
   end })
   table.insert(items, { label = "OPTION", onSelect = function()
-    game.stack:push(require("src.ui.OptionsMenu").new(game))
+    require("src.ui.Screens").push(game, "OptionsMenu")
   end })
   game.stack:push(Menu.new(game, items,
                            { tx = 0, ty = 0, tw = 13, th = #items * 2 + 2 }))
@@ -161,11 +175,13 @@ function TitleState:update(dt)
   if self.timer >= CYCLE_FRAMES then
     self.timer = 0
     -- random pick that never repeats the current one
-    local pick = self.cycleIndex
-    while pick == self.cycleIndex do
-      pick = love.math.random(1, #CYCLE_SPECIES)
+    if #self.cycleSpecies > 1 then
+      local pick = self.cycleIndex
+      while pick == self.cycleIndex do
+        pick = love.math.random(1, #self.cycleSpecies)
+      end
+      self.cycleIndex = pick
     end
-    self.cycleIndex = pick
     self.slideIn = 20 -- TitleScreenScrollInMon slides the pic in
   end
   if self.slideIn and self.slideIn > 0 then
@@ -175,7 +191,7 @@ function TitleState:update(dt)
   if input:wasPressed("start") or input:wasPressed("a") then
     -- the title mon cries when you leave the title (.finishedWaiting)
     require("src.core.Sound").playCry(self.game.data,
-                                      CYCLE_SPECIES[self.cycleIndex])
+                                      self.cycleSpecies[self.cycleIndex])
     self:openMenu()
   end
 end
@@ -215,8 +231,9 @@ function TitleState:draw()
     love.graphics.draw(self.player, 82, 80)
   end
   love.graphics.setColor(0, 0, 0, 1)
-  -- the copyright row (tile 2,17); 
-  Font.draw("2026 bois club games", 1, 136)
+  -- the copyright row (tile 2,17); copyrightText because field.title's
+  -- copyright key already names the extracted image strip
+  Font.draw(self.title.copyrightText or "2026 bois club games", 1, 136)
   love.graphics.setColor(1, 1, 1, 1)
 end
 

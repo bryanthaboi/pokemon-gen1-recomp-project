@@ -1,10 +1,17 @@
 -- The START menu (engine/menus/start_menu.asm): entries appear as they
 -- become usable -- POKéDEX once Oak gives it, POKéMON once you have any,
--- SAVE with a confirmation, plus ITEM / OPTION / LINK / QUIT.
+-- SAVE with a confirmation, plus ITEM / OPTION / LINK / QUIT.  The built
+-- item list runs through the ui.start_menu.items hook before the menu
+-- opens, so mods insert or remove rows without patching this file.
 
+local Logger = require("src.core.Logger")
 local Menu = require("src.ui.Menu")
+local Runtime = require("src.mods.Runtime")
+local Screens = require("src.ui.Screens")
 
 local StartMenu = {}
+
+local function sameItems(_, items) return items end
 
 function StartMenu.new(game)
   local flags = game.save.flags or {}
@@ -13,8 +20,7 @@ function StartMenu.new(game)
   -- POKéDEX: only after Oak hands it over
   if flags.EVENT_GOT_POKEDEX then
     table.insert(items, { label = "POKéDEX", onSelect = function()
-      local PokedexMenu = require("src.ui.PokedexMenu")
-      game.stack:push(PokedexMenu.new(game))
+      Screens.push(game, "PokedexMenu")
     end })
   end
 
@@ -22,20 +28,17 @@ function StartMenu.new(game)
   -- an empty party; selecting it then just no-ops)
   table.insert(items, { label = "POKéMON", onSelect = function()
     if #game.save.party == 0 then return end
-    local PartyMenu = require("src.ui.PartyMenu")
-    game.stack:push(PartyMenu.new(game))
+    Screens.push(game, "PartyMenu")
   end })
 
   table.insert(items, { label = "ITEM", onSelect = function()
-    local BagMenu = require("src.ui.BagMenu")
-    game.stack:push(BagMenu.new(game))
+    Screens.push(game, "BagMenu")
   end })
 
   -- the player's name opens the trainer card (StartMenu_TrainerInfo)
   table.insert(items, { label = game.save.player.name or "RED",
     onSelect = function()
-      local TrainerCard = require("src.ui.TrainerCard")
-      game.stack:push(TrainerCard.new(game))
+      Screens.push(game, "TrainerCard")
     end })
 
   -- SAVE shows the player/badges/dex/time panel then asks to confirm
@@ -43,12 +46,7 @@ function StartMenu.new(game)
   table.insert(items, { label = "SAVE", onSelect = function()
     local TextBox = require("src.render.TextBox")
     local ChoiceBox = require("src.ui.ChoiceBox")
-    local badges = 0
-    for _, b in ipairs({ "BOULDERBADGE", "CASCADEBADGE", "THUNDERBADGE",
-                         "RAINBOWBADGE", "SOULBADGE", "MARSHBADGE",
-                         "VOLCANOBADGE", "EARTHBADGE" }) do
-      if game.save.inventory[b] then badges = badges + 1 end
-    end
+    local badges = require("src.inventory.Badges").count(game.data, game.save)
     local owned = 0
     for _ in pairs(game.save.pokedex and game.save.pokedex.owned or {}) do
       owned = owned + 1
@@ -74,8 +72,7 @@ function StartMenu.new(game)
   end })
 
   table.insert(items, { label = "OPTION", onSelect = function()
-    local OptionsMenu = require("src.ui.OptionsMenu")
-    game.stack:push(OptionsMenu.new(game))
+    Screens.push(game, "OptionsMenu")
   end })
 
   -- LINK needs a party
@@ -83,6 +80,15 @@ function StartMenu.new(game)
     table.insert(items, { label = "LINK", onSelect = function()
       local LinkState = require("src.link.LinkState")
       game.stack:push(LinkState.new(game))
+    end })
+  end
+
+  -- the manager's pause-menu entry (18-mod-manager-ux): gated on at least
+  -- one discovered mod so a vanilla install's menu is unchanged
+  local status = game.modStatus
+  if status and #(status.available or {}) > 0 then
+    table.insert(items, { label = "MODS", onSelect = function()
+      Screens.push(game, "ManagerState")
     end })
   end
 
@@ -98,6 +104,15 @@ function StartMenu.new(game)
       end, { defaultNo = true }))
     end))
   end })
+
+  local hooked = Runtime.call("ui.start_menu.items", sameItems, game, items)
+  if type(hooked) == "table" then
+    items = hooked
+  else
+    Logger.error("ui.start_menu.items returned %s; keeping the vanilla items",
+                 type(hooked))
+  end
+
   -- the start menu's mask is PAD_DOWN | PAD_UP | PAD_START | PAD_B | PAD_A
   -- (engine/menus/draw_start_menu.asm), so START closes it back to the
   -- overworld -- unlike most menus, whose masks omit PAD_START.

@@ -4,6 +4,7 @@
 -- are built from the real trainer_info.png frame tiles (the patterned
 -- band + line style).
 
+local Badges = require("src.inventory.Badges")
 local Font = require("src.render.Font")
 
 local TrainerCard = {}
@@ -14,12 +15,6 @@ TrainerCard.isOpaque = true
 function TrainerCard:sgbPalettes(game)
   return require("src.render.PaletteFX").wholeNamed(game.data, "MEWMON")
 end
-
--- gym order (data/scripts/victories.lua badge order)
-local BADGES = {
-  "BOULDERBADGE", "CASCADEBADGE", "THUNDERBADGE", "RAINBOWBADGE",
-  "SOULBADGE", "MARSHBADGE", "VOLCANOBADGE", "EARTHBADGE",
-}
 
 local function tryImage(path)
   local ok, img = pcall(love.graphics.newImage, path)
@@ -131,14 +126,18 @@ function TrainerCard:draw()
 
   -- numbered badge grid (rows 11-17): earned solid, unearned dimmed
   self:frameBox(0, 11, 20, 7)
-  for i = 1, 8 do
+  local badges = Badges.list(self.game.data)
+  for i = 1, #badges do
     local col, row = (i - 1) % 4, math.floor((i - 1) / 4)
     local tx, ty = 16 + col * 32, 94 + row * 24
-    if self.nums then
+    -- the extracted sheets cover the eight Kanto slots; a longer badge
+    -- list draws its extra entries unnumbered rather than crashing
+    if self.nums and self.nums.quads[i - 1] then
       love.graphics.setColor(1, 1, 1, 1)
       love.graphics.draw(self.nums.img, self.nums.quads[i - 1], tx, ty)
     end
-    if self.badges and save.inventory[BADGES[i]] then
+    if self.badges and self.badges.quads[i - 1]
+        and save.inventory[Badges.itemFor(badges[i])] then
       -- unearned badge slots stay blank (DrawBadges)
       love.graphics.setColor(1, 1, 1, 1)
       love.graphics.draw(self.badges.img, self.badges.quads[i - 1],
