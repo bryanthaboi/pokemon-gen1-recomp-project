@@ -719,6 +719,30 @@ do
   eq(x, 8, "south gate lands on Route 22 gate warp x")
   eq(y, 5, "south gate lands on Route 22 gate warp y")
 end
+-- UndergroundPathRoute{5,6,7,8}_Script force wLastMap to their own route on
+-- map load, so crossing the tunnel and taking the far building's LAST_MAP exit
+-- lands you on that route rather than the one you entered from (issue #1)
+do
+  local OW = require("src.world.OverworldController")
+  local FieldDefaults = require("src.world.FieldDefaults")
+  local rewrites = FieldDefaults.field(Data, "lastMapRewrites")
+  local cases = {
+    { map = "UNDERGROUND_PATH_ROUTE_5", route = "ROUTE_5", x = 17, y = 27 },
+    { map = "UNDERGROUND_PATH_ROUTE_6", route = "ROUTE_6", x = 17, y = 13 },
+    { map = "UNDERGROUND_PATH_ROUTE_7", route = "ROUTE_7", x = 5, y = 13 },
+    { map = "UNDERGROUND_PATH_ROUTE_8", route = "ROUTE_8", x = 13, y = 3 },
+  }
+  for _, c in ipairs(cases) do
+    local rewrite = rewrites[c.map]
+    check(rewrite ~= nil, c.map .. " rewrites wLastMap to its own route")
+    eq(OW.rewrittenLastMap(rewrite, 0, 0), c.route, c.map .. " -> " .. c.route)
+    local door = Data.maps[c.map].warps[1]
+    local m, x, y = Warp.destination(Data, door, { id = c.route, x = 0, y = 0 })
+    eq(m, c.route, c.map .. " door exits onto " .. c.route)
+    eq(x, c.x, c.map .. " door lands on the " .. c.route .. " entrance x")
+    eq(y, c.y, c.map .. " door lands on the " .. c.route .. " entrance y")
+  end
+end
 eq(Data.field.forcedMovement.slopeMaps[1], "ROUTE_17", "Cycling Road slope map")
 check(Data.field.seafoam.SEAFOAM_ISLANDS_B3F.currents[1].moves[1] ~= nil,
       "Seafoam B3F current movement extracted")

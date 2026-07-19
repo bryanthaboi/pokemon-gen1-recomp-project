@@ -85,6 +85,13 @@ local PLAYER_SPRITES = {
 local LAST_MAP_REWRITES = {
   ROUTE_22_GATE = { axis = "y", rules = { { below = 4, map = "ROUTE_23" },
                                           { map = "ROUTE_22" } } },
+  -- UndergroundPathRoute{5,6,7,8}_Script force wLastMap to their own route on
+  -- map load, so crossing the tunnel and taking the far building's LAST_MAP
+  -- exit lands you on that route instead of the one you entered from.
+  UNDERGROUND_PATH_ROUTE_5 = { rules = { { map = "ROUTE_5" } } },
+  UNDERGROUND_PATH_ROUTE_6 = { rules = { { map = "ROUTE_6" } } },
+  UNDERGROUND_PATH_ROUTE_7 = { rules = { { map = "ROUTE_7" } } },
+  UNDERGROUND_PATH_ROUTE_8 = { rules = { { map = "ROUTE_8" } } },
 }
 
 FieldDefaults.FIELD = {
