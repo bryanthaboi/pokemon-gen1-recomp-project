@@ -6,18 +6,23 @@
 local Camera = require("src.render.Camera")
 local Collision = require("src.world.Collision")
 local Encounter = require("src.world.Encounter")
+local FieldDefaults = require("src.world.FieldDefaults")
 local Logger = require("src.core.Logger")
+local Map = require("src.world.Map")
 local MapLoader = require("src.world.MapLoader")
 local NPC = require("src.world.NPC")
 local PaletteFX = require("src.render.PaletteFX")
 local Player = require("src.world.Player")
+local Runtime = require("src.mods.Runtime")
+local Screens = require("src.ui.Screens")
 local ScriptRunner = require("src.script.ScriptRunner")
 local Tilt = require("src.render.Tilt")
 local TextBox = require("src.render.TextBox")
 local Transition = require("src.render.Transition")
 local Warp = require("src.world.Warp")
 
-local OverworldState = { isOpaque = true }
+-- isOverworld marks the live world state for WorldAPI's stack scan
+local OverworldState = { isOpaque = true, isOverworld = true }
 
 local Game -- set on enter (avoids circular require at load time)
 
@@ -65,6 +70,10 @@ local function pooledNPC(pool, data, mapId, obj)
   if not npc then
     npc = NPC.new(data, mapId, obj)
     pool[key] = npc
+    if Runtime.wants("world.npc_spawned") then
+      Runtime.emit("world.npc_spawned",
+        { mapId = mapId, npcId = key, runtime = obj.runtime == true })
+    end
   end
   return npc
 end
@@ -72,7 +81,7 @@ OverworldState.pooledNPC = pooledNPC -- exposed for tests
 
 -- connection hops rendered around the current map: two, so
 -- corner-adjacent maps (connections of connections) don't pop in and
--- out of the survey zoom at the seams
+-- out of the survey zoom at the seams (constants.world.neighborHops)
 local NEIGHBOR_HOPS = 2
 
 -- Neighbor placement (pure; exposed for tests): walk the connection
@@ -121,10 +130,16 @@ function OverworldState:enter(mapId, x, y, facing)
   Game = require("src.core.Game")
   Game.overworld = self
   Collision.load(Game.data) -- tile-pair (elevation) collisions
+  Encounter.load(Game.data) -- constants.encounterBuckets
   mapScripts = require("data.scripts.init")
   self.camera = Camera.new()
   self.runner = ScriptRunner.new(Game, self)
   self.scriptMoves = {}
+  self.pendingScripts = {}
+  self.parallelRunners = {}
+  self.parallelQueue = {}
+  self.npcMoveLocks = {}
+  self.marchers = {}
   -- one-shot trainer-engagement state: must not survive a save/load or
   -- a fresh entry, or a stale flag can freeze player input forever
   self.engaging = false
@@ -133,10 +148,39 @@ function OverworldState:enter(mapId, x, y, facing)
   -- exit mat is a LAST_MAP warp
   self.lastOutdoor = Game.save.lastOutdoor
   self.justWarped = false
-  self:setMap(mapId, x, y, facing)
+  self:setMap(mapId, x, y, facing, { via = "boot" })
 end
 
 function OverworldState:setMap(mapId, x, y, facing, opts)
+  local fromMapId = self.map and self.map.id
+  if fromMapId then
+    Runtime.emit("map.exited", { mapId = fromMapId, toMapId = mapId })
+  end
+  -- ambient choreography is per-map: parallel runners die here, and the
+  -- departing map's queued scripts go with them unless the enqueuer
+  -- asked to persist across the warp
+  if self.parallelRunners then
+    for i = #self.parallelRunners, 1, -1 do
+      self:killParallel(self.parallelRunners[i])
+    end
+    self.parallelQueue = {}
+  end
+  self.marchers = {}
+  local queue = self.pendingScripts
+  if queue then
+    for i = #queue, 1, -1 do
+      local entry = queue[i]
+      if entry.mapId ~= mapId
+         and not (entry.extra and entry.extra.persistAcrossWarp) then
+        table.remove(queue, i)
+      end
+    end
+  end
+  -- a scripted tile-anim override lasts until map change
+  if self.tileAnimOverride then
+    self.tileAnimOverride.tileset.animation = self.tileAnimOverride.animation
+    self.tileAnimOverride = nil
+  end
   self.map = MapLoader.load(Game.data, mapId)
   -- STRENGTH deactivates on every real map load (home/overworld.asm
   -- EnterMap -> ResetUsingStrengthOutOfBattleBit clears BIT_STRENGTH_ACTIVE
@@ -166,11 +210,12 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   -- BIT_ALWAYS_ON_BIKE every frame (scripts/Route16Gate1F.asm /
   -- Route18Gate1F.asm `res BIT_ALWAYS_ON_BIKE`); entering the gate is
   -- the walking exit from the forced-bike stretch
-  if mapId == "ROUTE_16_GATE_1F" or mapId == "ROUTE_18_GATE_1F" then
-    Game.save.forcedBike = nil
+  for _, m in ipairs(FieldDefaults.fieldValue(Game.data, "forcedMovement",
+                                              "clearMaps") or {}) do
+    if m == mapId then Game.save.forcedBike = nil break end
   end
   -- leaving the Safari Zone maps ends any running Safari game
-  if Game.save.safari and mapId:find("SAFARI_ZONE", 1, true) ~= 1 then
+  if Game.save.safari and not Map.inRegion(self.map.def, "SAFARI", "SAFARI_ZONE") then
     Game.save.safari = nil
   end
   -- Rock Tunnel darkness (wMapPalOffset, home/overworld.asm): dark
@@ -204,7 +249,7 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
     self.npcPool = {}
   end
   self.npcs = {}
-  for _, obj in ipairs(self.map.def.objects) do
+  for _, obj in ipairs(self.map.def.objects or {}) do
     if objectVisible(Game.save, mapId, obj) then
       local npc = pooledNPC(self.npcPool, Game.data, mapId, obj)
       npc.frozen = false
@@ -224,8 +269,11 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   for _, n in ipairs(self.npcs) do table.insert(self.entities, n) end
 
   -- opts.keepMusic: the Oak-escort warp keeps MUSIC_MEET_PROF_OAK
-  -- playing into the lab (BIT_NO_MAP_MUSIC in wStatusFlags7)
-  if not (opts and opts.keepMusic) then
+  -- playing into the lab (BIT_NO_MAP_MUSIC in wStatusFlags7);
+  -- keepMusicOnce is the play_music opts.keep one-shot of the same bit
+  local keepMusic = (opts and opts.keepMusic) or self.keepMusicOnce
+  self.keepMusicOnce = nil
+  if not keepMusic then
     require("src.core.Music").playMap(Game.data, mapId, Game.save.onBike,
                                       self.player.surfing)
   end
@@ -235,6 +283,15 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   -- the old scroll position for the whole fade-in
   self.camera:follow(self.player.px, self.player.py,
                      Game.renderer:worldViewSize())
+
+  -- fires before the onEnter chain so a listener sees the map in the same
+  -- state the map script does
+  Runtime.emit("map.entered", {
+    mapId = mapId, map = self.map, fromMapId = fromMapId,
+    via = (opts and opts.via)
+          or (opts and opts.seamless and "connection")
+          or (fromMapId and "warp" or "boot"),
+  })
 
   -- map-enter hooks (hand-ported map scripts, e.g. Victory Road barriers)
   local hooks = mapScripts.get(mapId)
@@ -246,8 +303,9 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   -- out (the GB only ever streamed a 32px strip of the single
   -- directly connected map -- home/overworld.asm .loadNewMap)
   self.neighbors = {}
+  local hops = FieldDefaults.world(Game.data, "neighborHops") or NEIGHBOR_HOPS
   for _, n in ipairs(OverworldState.computeNeighbors(Game.data.maps,
-                                                     mapId, NEIGHBOR_HOPS)) do
+                                                     mapId, hops)) do
     table.insert(self.neighbors,
                  { map = MapLoader.load(Game.data, n.id),
                    ox = n.ox, oy = n.oy })
@@ -260,7 +318,7 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   self.ghosts = {}
   for _, nb in ipairs(self.neighbors) do
     local peers = {}
-    for _, obj in ipairs(nb.map.def.objects) do
+    for _, obj in ipairs(nb.map.def.objects or {}) do
       if objectVisible(Game.save, nb.map.id, obj) then
         local npc = pooledNPC(self.npcPool, Game.data, nb.map.id, obj)
         table.insert(peers, npc)
@@ -273,38 +331,45 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   Logger.info("map: %s at (%d,%d)", mapId, x, y)
   -- Route22Gate_Script rewrites wLastMap from the player's Y on entry
   -- too (not only on step), so a save/load mid-gate keeps exits correct
-  self:syncRoute22GateLastMap()
+  self:syncLastMapRewrite()
 end
 
 -- SGB overworld palette (engine/gfx/palettes.asm SetPal_Overworld):
 -- towns use their own palette, routes PAL_ROUTE, interiors the town or
 -- route they are in (wLastMap = our lastOutdoor), with tileset and
--- Elite Four special cases.
-local TOWN_PALS = {
-  PALLET_TOWN = "PALLET", VIRIDIAN_CITY = "VIRIDIAN",
-  PEWTER_CITY = "PEWTER", CERULEAN_CITY = "CERULEAN",
-  LAVENDER_TOWN = "LAVENDER", VERMILION_CITY = "VERMILION",
-  CELADON_CITY = "CELADON", FUCHSIA_CITY = "FUCHSIA",
-  CINNABAR_ISLAND = "CINNABAR", INDIGO_PLATEAU = "INDIGO",
-  SAFFRON_CITY = "SAFFRON",
-}
+-- Elite Four special cases -- all of it field.palettes now.
+
+-- one rung of the cascade: byMap, then byTileset, then byPrefix.  Returns
+-- nil when the map matches nothing, which is what sends the lookup on to
+-- the last-outdoor memory.
+local function paletteLookup(palettes, mapId, tileset)
+  local byMap = palettes.byMap
+  if byMap and byMap[mapId] then return byMap[mapId] end
+  local byTileset = palettes.byTileset
+  if byTileset and tileset and byTileset[tileset] then return byTileset[tileset] end
+  for _, row in ipairs(palettes.byPrefix or {}) do
+    if row.prefix and mapId:find(row.prefix, 1, true) == 1 then return row.palette end
+  end
+  return nil
+end
+
+-- name -> name so the map.palette chain has a vanilla link to wrap
+local function samePalette(name) return name end
 
 function OverworldState:paletteNameFor(map)
-  local ts = map.def.tileset
-  local id = map.id
-  if ts == "CEMETERY" then
-    return "GRAYMON" -- Pokemon Tower / Agatha
-  elseif ts == "CAVERN" then
-    return "CAVE"
-  elseif id == "LORELEIS_ROOM" then
-    return "PALLET"
-  elseif id == "BRUNOS_ROOM" then
-    return "CAVE"
-  elseif TOWN_PALS[id] or id:match("^ROUTE_") then
-    return TOWN_PALS[id] or "ROUTE"
+  local palettes = FieldDefaults.field(Game.data, "palettes")
+  local name = map.def.palette or paletteLookup(palettes, map.id, map.def.tileset)
+  if not name then
+    -- interiors inherit the outdoor map they sit in; before the player has
+    -- been outdoors at all that is wherever the game starts
+    local last = self.lastOutdoor and self.lastOutdoor.id
+                 or FieldDefaults.fieldValue(Game.data, "boot", "startMap")
+    local lastDef = last and Game.data.maps[last]
+    name = (last and paletteLookup(palettes, last, lastDef and lastDef.tileset))
+           or palettes.default
   end
-  local last = self.lastOutdoor and self.lastOutdoor.id or "PALLET_TOWN"
-  return TOWN_PALS[last] or "ROUTE"
+  if not Runtime.wantsHook("map.palette") then return name end
+  return Runtime.call("map.palette", samePalette, name, map)
 end
 
 -- UI-pass palette (text boxes and menus tint with the current map)
@@ -350,7 +415,7 @@ end
 -- the same table.
 function OverworldState:bikeAllowed(mapId)
   local br = Game.data.field.bikeRiding
-  if not br then return self.map.def.tileset == "OVERWORLD" end
+  if not br then return Map.isOutdoor(self.map.def) end
   for _, m in ipairs(br.maps) do
     if m == mapId then return true end
   end
@@ -412,9 +477,101 @@ end
 -- map load (setMap -> onEnter) can happen mid-warp, while the triggering
 -- warp command's runner is still suspended-alive; starting a runner there
 -- would trip ScriptRunner:run's assert(not isRunning()).  So onEnter stashes
--- the script here and update() drains it once the world is idle.
+-- the script here and update() drains the FIFO head once the world is
+-- idle, one script per idle frame.
 function OverworldState:queueScript(script, extra)
-  self.pendingScript = { script = script, extra = extra }
+  local queue = self.pendingScripts
+  if not queue then
+    queue = {}
+    self.pendingScripts = queue
+  end
+  queue[#queue + 1] = { script = script, extra = extra,
+                        mapId = self.map and self.map.id }
+  -- a runaway-loop tripwire, not a hard cap
+  if #queue > 16 then
+    Logger.warn("queueScript: %d scripts pending on %s",
+                #queue, tostring(self.map and self.map.id))
+  end
+end
+
+function OverworldState:drainPendingScripts()
+  local queue = self.pendingScripts
+  if queue and queue[1] and not self.transitioning
+     and not self.runner:isRunning() and #self.scriptMoves == 0 then
+    local pending = table.remove(queue, 1)
+    self.runner:run(pending.script, pending.extra)
+  end
+end
+
+-- Start a background script in one of the bounded parallel slots (09
+-- §4.6); overflow waits FIFO-style behind the slots.  rowsOrRef is a row
+-- array or "MAP_ID/name" naming a map_scripts `scripts` entry.
+local PARALLEL_SLOTS = 4
+
+function OverworldState:startParallel(rowsOrRef, extra)
+  local rows = rowsOrRef
+  if type(rowsOrRef) == "string" then
+    local MapScripts = require("src.script.MapScripts")
+    local mapId, name = rowsOrRef:match("^([^/]+)/(.+)$")
+    rows = mapId and MapScripts.namedScript(mapId, name)
+    if not rows then
+      Logger.warn("run_parallel: no script '%s'", tostring(rowsOrRef))
+      return
+    end
+    -- a named entry belongs to its contribution: a caller with no
+    -- attribution of its own runs it as the owner
+    if not (extra and extra.source) then
+      local source = MapScripts.namedSource(mapId, name)
+      if source then
+        extra = extra or {}
+        extra.source = source
+      end
+    end
+  end
+  local queue = self.parallelQueue
+  if not queue then
+    queue = {}
+    self.parallelQueue = queue
+  end
+  queue[#queue + 1] = { rows = rows, extra = extra }
+  if #queue > 16 then
+    Logger.warn("run_parallel: %d scripts waiting for a slot", #queue)
+  end
+end
+
+function OverworldState:killParallel(runner)
+  runner.co = nil
+  for i, live in ipairs(self.parallelRunners or {}) do
+    if live == runner then
+      table.remove(self.parallelRunners, i)
+      break
+    end
+  end
+  for entity, holder in pairs(self.npcMoveLocks or {}) do
+    if holder == runner then self.npcMoveLocks[entity] = nil end
+  end
+end
+
+-- Parallel runners tick after the main runner and never touch the input
+-- lockout: isRunning() checks consult only self.runner, exactly as
+-- before.  Dead runners free their slot and their NPC move locks.
+function OverworldState:updateParallel()
+  local pool = self.parallelRunners
+  if not pool then return end
+  for i = #pool, 1, -1 do
+    if not pool[i]:isRunning() then
+      self:killParallel(pool[i])
+    end
+  end
+  local queue = self.parallelQueue
+  while queue and queue[1] and #pool < PARALLEL_SLOTS do
+    local next_ = table.remove(queue, 1)
+    local runner = ScriptRunner.new(Game, self)
+    runner.parallel = true
+    pool[#pool + 1] = runner
+    runner:run(next_.rows, next_.extra)
+  end
+  for _, runner in ipairs(pool) do runner:update() end
 end
 
 function OverworldState:update(dt)
@@ -422,13 +579,9 @@ function OverworldState:update(dt)
   -- once the triggering warp's transition has finished, its runner has gone
   -- dead, and no scripted walk is mid-step.  This is how the HALL_OF_FAME
   -- room cutscene starts a frame after the Champions Room warp completes.
-  if self.pendingScript and not self.transitioning
-     and not self.runner:isRunning() and #self.scriptMoves == 0 then
-    local pending = self.pendingScript
-    self.pendingScript = nil
-    self.runner:run(pending.script, pending.extra)
-  end
+  self:drainPendingScripts()
   self.runner:update()
+  self:updateParallel()
   -- keep the player sprite in sync with the bike state (the drawer
   -- picks the red_bike sheet while riding)
   self.player.onBike = Game.save.onBike
@@ -470,7 +623,7 @@ function OverworldState:update(dt)
         -- the bird carries the player in on landing, with its own
         -- SFX_FLY (EnterMapAnim .flyAnimation)
         self.arriveWarp = "fly"
-        self:startWarpTo(d.map, d.x, d.y, "down")
+        self:startWarpTo(d.map, d.x, d.y, "down", nil, { via = "fly" })
       end
       return
     end
@@ -535,6 +688,26 @@ function OverworldState:update(dt)
 
   self.camera:follow(self.player.px, self.player.py,
                      Game.renderer:worldViewSize())
+
+  -- pan_camera offset rides on top of the follow; the ramp resumes its
+  -- runner when it lands
+  local pan = self.cameraPan
+  if pan then
+    if pan.frames then
+      pan.t = pan.t + 1
+      local k = math.min(1, pan.t / pan.frames)
+      pan.ox = pan.fromX + (pan.toX - pan.fromX) * k
+      pan.oy = pan.fromY + (pan.toY - pan.fromY) * k
+      if pan.t >= pan.frames then
+        pan.frames = nil
+        local done = pan.onDone
+        pan.onDone = nil
+        if done then done() end
+      end
+    end
+    self.camera.x = self.camera.x + pan.ox
+    self.camera.y = self.camera.y + pan.oy
+  end
 end
 
 -- any direction currently held (hJoyHeld & PAD_CTRL_PAD)
@@ -553,8 +726,7 @@ function OverworldState:handleInput()
   end
   if input:wasPressed("start") then
     require("src.core.Sound").play(Game.data, "Start_Menu")
-    local StartMenu = require("src.ui.StartMenu")
-    Game.stack:push(StartMenu.new(Game))
+    Screens.push(Game, "StartMenu")
     return
   end
 
@@ -610,7 +782,7 @@ function OverworldState:checkBoulderPush(dir)
   local p = self.player
   local fx, fy = Collision.target(p.cellX, p.cellY, dir)
   local npc = self:npcAtCell(fx, fy)
-  if not npc or npc.def.sprite ~= "SPRITE_BOULDER" or npc.moving then
+  if not npc or not Map.isPushable(npc.def) or npc.moving then
     self.boulderTried = nil -- pokered resets when no boulder is in front
     return false
   end
@@ -646,6 +818,8 @@ function OverworldState:checkBoulderPush(dir)
       require("src.core.Sound").play(Game.data, "Cut")
     end)
     if self:boulderIntoHole(npc) then return end
+    Runtime.emit("world.boulder_moved", { mapId = self.map.id, npcId = npc.id,
+                                          x = npc.cellX, y = npc.cellY })
     local hooks = mapScripts.get(self.map.id)
     if hooks and hooks.onBoulderMoved then
       hooks.onBoulderMoved(Game, self, npc)
@@ -664,14 +838,17 @@ end
 -- Ledge hops (data/tilesets/ledge_tiles.asm): standing tile + ledge tile
 -- in front + matching input direction -> jump two cells.
 function OverworldState:checkLedgeHop(dir)
-  if self.map.def.tileset ~= "OVERWORLD" then return false end
   local p = self.player
+  local tileset = self.map.def.tileset
   local standing = self.map:cellTile(p.cellX, p.cellY)
   local fx, fy = Collision.target(p.cellX, p.cellY, dir)
   if not self.map:inBounds(fx, fy) then return false end
   local front = self.map:cellTile(fx, fy)
+  -- a row without a tileset applies everywhere; the vanilla rows are all
+  -- OVERWORLD, which is what the deleted hard gate used to say
   for _, ledge in ipairs(Game.data.field.ledges) do
-    if ledge.facing == dir and ledge.input == dir
+    if (ledge.tileset or "OVERWORLD") == tileset
+       and ledge.facing == dir and ledge.input == dir
        and ledge.standingTile == standing and ledge.ledgeTile == front then
       local lx, ly = Collision.target(fx, fy, dir)
       if self.map:inBounds(lx, ly)
@@ -746,7 +923,9 @@ function OverworldState:crossConnection(dir, conn)
   p.targetX, p.targetY = x, y
   p.moving = true
   p.progress = 0
-  p.stepFramesCur = (Game.save.onBike) and 8 or 16
+  p.stepFramesCur = Game.save.onBike
+    and (FieldDefaults.world(Game.data, "bikeStepFrames") or 8)
+    or (FieldDefaults.world(Game.data, "stepFrames") or 16)
 end
 
 -- -------------------------------------------------------------------------
@@ -754,13 +933,10 @@ end
 -- -------------------------------------------------------------------------
 
 -- HM field moves are gated by badges like the original
-local HM_BADGE = {
-  CUT = "CASCADEBADGE", SURF = "SOULBADGE", STRENGTH = "RAINBOWBADGE",
-  FLY = "THUNDERBADGE", FLASH = "BOULDERBADGE",
-}
-
+-- (constants.hmBadges; distinct from constants.hmMoves, the forget gate)
 function OverworldState:partyKnows(moveId)
-  local badge = HM_BADGE[moveId]
+  local gate = (FieldDefaults.constant(Game.data, "hmBadges") or {})[moveId]
+  local badge = gate and gate.badge
   if badge and not Game.save.inventory[badge] then
     return nil
   end
@@ -791,26 +967,40 @@ local function rollFishingGroup(group)
   end
 end
 
-local GOOD_ROD_MONS = { -- data/wild/good_rod.asm
-  { species = "GOLDEEN", level = 10 },
-  { species = "POLIWAG", level = 10 },
-}
+-- field.fishing: `always` hooks that catch every time (the Old Rod),
+-- `pool` a fixed candidate list, `perMap` the field key holding per-map
+-- groups.  The rejection-loop odds above stay engine behavior.
+local function fishingPool(data, rod, mapId)
+  local def = (FieldDefaults.field(data, "fishing") or {})[rod]
+  if not def then return nil end
+  if def.pool then return def.pool end
+  if def.perMap then
+    local groups = data.field[def.perMap]
+    return groups and groups[mapId]
+  end
+  return nil, def.always
+end
+
+local function catchFrom(pool, always)
+  if always then return { species = always.species, level = always.level } end
+  if pool and #pool > 0 then return rollFishingGroup(pool) end
+  return nil
+end
 
 -- Fishing (engine/items/item_effects.asm FishingInit + engine/overworld):
 -- Old Rod always hooks a L5 Magikarp; Good Rod bites ~1/3 for
 -- Goldeen/Poliwag L10; Super Rod uses the map's extracted fishing group
 -- (no group means "Not even a nibble!").
 function OverworldState:goFishing(rod)
+  local pool, always = fishingPool(Game.data, rod, self.map.id)
   local enc
-  if rod == "OLD_ROD" then
-    enc = { species = "MAGIKARP", level = 5 }
-  elseif rod == "GOOD_ROD" then
-    enc = rollFishingGroup(GOOD_ROD_MONS)
+  if Runtime.wantsHook("encounter.fishing") then
+    -- the chain may inspect or replace the candidate list before the roll
+    enc = Runtime.call("encounter.fishing", function(_, _, candidates)
+      return catchFrom(candidates, always)
+    end, rod, self.map.id, pool)
   else
-    local group = Game.data.field.superRod[self.map.id]
-    if group and #group > 0 then
-      enc = rollFishingGroup(group)
-    end
+    enc = catchFrom(pool, always)
   end
   -- the bobber waits a beat before the verdict (the original's
   -- FishingInit dot animation); the rod pose draws in the meantime
@@ -824,7 +1014,7 @@ function OverworldState:goFishing(rod)
     Game.stack:push(TextBox.new(Game, "Oh!\nIt's a bite!", function()
       local BattleState = require("src.battle.BattleState")
       local battle = BattleState.newWild(Game, enc.species, enc.level, { hooked = true })
-      if Game.save.safari and self.map.id:find("SAFARI_ZONE", 1, true) == 1 then
+      if Game.save.safari and Map.inRegion(self.map.def, "SAFARI", "SAFARI_ZONE") then
         battle:makeSafari(Game.save.safari)
       end
       battle.onFinish = function(result) self:afterBattle(result) end
@@ -858,6 +1048,12 @@ function OverworldState:npcAtCell(cx, cy)
   return nil
 end
 
+-- what the A press resolved to, for world.interacted's listeners
+local function interacted(self, fx, fy, kind, target)
+  Runtime.emit("world.interacted", { mapId = self.map.id, x = fx, y = fy,
+                                     kind = kind, target = target })
+end
+
 function OverworldState:interact()
   local p = self.player
   local fx, fy = p:facingCell()
@@ -873,21 +1069,29 @@ function OverworldState:interact()
     if not npc.moving then
       self:talkTo(npc)
     end
+    interacted(self, fx, fy, "npc", npc)
     return
   end
 
   local sign = self.map:signAtCell(fx, fy)
   if sign then
     self:showMapText(sign.text, nil)
+    interacted(self, fx, fy, "sign", sign)
     return
   end
 
   -- Silph Co card key doors (engine/events/card_key.asm)
-  if self:tryCardKeyDoor(fx, fy) then return end
+  if self:tryCardKeyDoor(fx, fy) then
+    interacted(self, fx, fy, "door")
+    return
+  end
 
   -- hidden items / coins / slot machines / PC tiles / bench guys /
   -- gym statues / trash cans (data/events/hidden_events.asm)
-  if self:tryHiddenObject(fx, fy) then return end
+  if self:tryHiddenObject(fx, fy) then
+    interacted(self, fx, fy, "hidden")
+    return
+  end
 
   -- No overworld A-press hook for field moves: pokered has no such hook
   -- anywhere -- CUT and SURF (like FLY/FLASH/DIG/TELEPORT/STRENGTH) are
@@ -901,39 +1105,42 @@ function OverworldState:interact()
   -- museum fossil exhibits)
   local hooks = mapScripts.get(self.map.id)
   if hooks and hooks.onInteract and hooks.onInteract(Game, self, fx, fy) then
+    interacted(self, fx, fy, "script")
     return
   end
 
   -- tileset-generic reads (PrintBookshelfText): facing up into a
   -- bookshelf/statue/shelf tile prints its stock line
-  if self:tryBookshelf(fx, fy) then return end
+  if self:tryBookshelf(fx, fy) then
+    interacted(self, fx, fy, "bookshelf")
+    return
+  end
+  interacted(self, fx, fy, "none")
 end
 
--- data/tilesets/bookshelf_tile_ids.asm: tileset id + collision tile ->
--- text.  Only fires facing up, like the original.
-local BOOKSHELVES = {
-  PLATEAU = { [0x30] = "statues" },
-  HOUSE = { [0x3D] = "townmap", [0x1E] = "books" },
-  MANSION = { [0x32] = "books" },
-  REDS_HOUSE_1 = { [0x32] = "books" },
-  LAB = { [0x28] = "books" },
-  LOBBY = { [0x16] = "elevator", [0x50] = "stuff", [0x52] = "stuff" },
-  GYM = { [0x1D] = "books" },
-  DOJO = { [0x1D] = "books" },
-  GATE = { [0x22] = "books" },
-  MART = { [0x54] = "stuff", [0x55] = "stuff" },
-  POKECENTER = { [0x54] = "stuff", [0x55] = "stuff" },
-  SHIP = { [0x36] = "books" },
-}
-
+-- field.bookshelves (data/tilesets/bookshelf_tile_ids.asm): tileset id +
+-- collision tile -> what to show.  Only fires facing up, like the
+-- original.  An entry carries `kind` (one of the five vanilla flavors),
+-- `text` (a data.text key) or `screen` (a state module to push).
 function OverworldState:tryBookshelf(fx, fy)
   if self.player.facing ~= "up" then return false end
   if not self.map:inBounds(fx, fy) then return false end
-  local table_ = BOOKSHELVES[self.map.def.tileset]
+  local shelves = FieldDefaults.field(Game.data, "bookshelves")
+  local table_ = shelves and shelves[self.map.def.tileset]
   if not table_ then return false end
-  local kind = table_[self.map:cellTile(fx, fy)]
-  if not kind then return false end
+  local entry = table_[self.map:cellTile(fx, fy)]
+  if not entry then return false end
   local t = Game.data.text
+  if entry.text then
+    Game.stack:push(TextBox.new(Game, t[entry.text] or entry.text))
+    return true
+  end
+  if entry.screen then
+    -- Blue's house shelf opens the TOWN MAP (TownMapText)
+    pcall(Screens.push, Game, entry.screen)
+    return true
+  end
+  local kind = entry.kind
   if kind == "books" then
     -- Celadon Mansion's Diglett sculpture (book_or_sculpture.asm):
     -- MANSION tileset + faced cell's top-left tile $38
@@ -959,12 +1166,6 @@ function OverworldState:tryBookshelf(fx, fy)
     Game.stack:push(TextBox.new(Game,
       (t._IndigoPlateauStatuesText1 or "INDIGO PLATEAU") .. "\f"
       .. (line or "POKéMON LEAGUE HQ")))
-  elseif kind == "townmap" then
-    -- Blue's house shelf opens the TOWN MAP (TownMapText)
-    local ok, TownMap = pcall(require, "src.ui.TownMap")
-    if ok then
-      Game.stack:push(TownMap.new(Game))
-    end
   end
   return true
 end
@@ -1034,8 +1235,7 @@ function OverworldState:tryHiddenObject(fx, fy)
       else
         -- one machine per visit is secretly lucky
         -- (wLuckySlotHiddenEventIndex, engine/slots/game_corner_slots.asm)
-        local SlotMachine = require("src.ui.SlotMachine")
-        Game.stack:push(SlotMachine.new(Game, seatIndex == self.luckySlot))
+        Screens.push(Game, "SlotMachine", seatIndex == self.luckySlot)
       end
       return true
     end
@@ -1200,7 +1400,10 @@ function OverworldState:trashCanSwitch(canIndex)
     -- .openSecondLock: only VermilionGymTrashSuccessText3 prints
     -- (SuccessText2 is unused in pokered)
     save.flags.EVENT_2ND_LOCK_OPENED = true
-    self:replaceBlock(2, 2, 5) -- clear floor block opens the doors
+    -- the clear floor block opens the doors (VermilionGymSetDoorTile)
+    local door = FieldDefaults.fieldValue(Game.data, "hiddenExtras",
+                                          "trashCans", "doorBlock")
+    self:replaceBlock(door.bx, door.by, door.block)
     -- SuccessText3's text_asm tail plays SFX_GO_INSIDE after the text
     -- prints, so the beep fires as the box closes, not as it opens.
     Game.stack:push(TextBox.new(Game,
@@ -1246,6 +1449,25 @@ end
 function OverworldState:tilesetHasWater()
   for _, t in ipairs(Game.data.field.waterTilesets) do
     if t == self.map.def.tileset then return true end
+  end
+  return false
+end
+
+-- field.seafoam[map].surfBlocked: cells where SURF is refused until the
+-- listed events fire (IsSurfingAllowed's SEAFOAM_ISLANDS_B4F stairs case)
+function OverworldState:surfBlockedHere()
+  local blocked = FieldDefaults.fieldValue(Game.data, "seafoam", self.map.id,
+                                           "surfBlocked")
+  if not blocked then return false end
+  local p = self.player
+  for _, cell in ipairs(blocked) do
+    if p.cellX == cell.x and p.cellY == cell.y then
+      local cleared = true
+      for _, e in ipairs(cell.untilEvents or {}) do
+        if not Game.save.flags[e] then cleared = false break end
+      end
+      if not cleared then return true end
+    end
   end
   return false
 end
@@ -1331,12 +1553,7 @@ function OverworldState:useSurfFieldMove()
   -- SEAFOAM_ISLANDS_B4F standing on the stairs square (dbmapcoord 7,11)
   -- until both EVENT_SEAFOAM4_BOULDER*_DOWN_HOLE events are set.
   if Game.save.forcedBike then return "forced_bike" end
-  if self.map.id == "SEAFOAM_ISLANDS_B4F"
-     and not (Game.save.flags["EVENT_SEAFOAM4_BOULDER1_DOWN_HOLE"]
-              and Game.save.flags["EVENT_SEAFOAM4_BOULDER2_DOWN_HOLE"])
-     and p.cellX == 7 and p.cellY == 11 then
-    return "current"
-  end
+  if self:surfBlockedHere() then return "current" end
   local fx, fy = p:facingCell()
   if p.surfing then
     -- ItemUseSurfboard .tryToStopSurfing: blocked by a sprite in front
@@ -1461,9 +1678,8 @@ function OverworldState:talkTo(npc)
   if entry then
     if entry.mart then
       npc:facePlayer(self.player)
-      local ShopMenu = require("src.ui.ShopMenu")
       Game.stack:push(TextBox.new(Game, "Hi there!\nMay I help you?", function()
-        Game.stack:push(ShopMenu.new(Game, entry.mart))
+        Screens.push(Game, "ShopMenu", entry.mart)
         unfreeze()
       end))
       return
@@ -1487,9 +1703,13 @@ function OverworldState:talkTo(npc)
   self:showMapText(d.text, npc, unfreeze)
 end
 
+local function sameItems(_, items) return items end
+
 -- The Pokémon Center PC: BILL's PC (boxes), the player's item storage,
 -- and PROF.OAK's dex rating (engine/menus/players_pc.asm,
--- engine/events/pokedex_rating.asm).
+-- engine/events/pokedex_rating.asm).  The assembled entries run through
+-- the ui.pc.items hook; LOG OFF is appended after it so a mod cannot
+-- orphan the exit.
 function OverworldState:openPC(onDone)
   require("src.core.Sound").play(Game.data, "Turn_On_PC")
   local Menu = require("src.ui.Menu")
@@ -1505,8 +1725,7 @@ function OverworldState:openPC(onDone)
     label = metBill and "BILL'S PC" or "SOMEONE'S PC",
     onSelect = function()
       require("src.core.Sound").play(Game.data, "Enter_PC")
-      local BoxMenu = require("src.ui.BoxMenu")
-      Game.stack:push(BoxMenu.new(Game))
+      Screens.push(Game, "BoxMenu")
       done()
     end,
   })
@@ -1515,8 +1734,7 @@ function OverworldState:openPC(onDone)
   table.insert(items, {
     label = (Game.save.player.name or "RED") .. "'s PC",
     onSelect = function()
-      local PlayerPC = require("src.ui.PlayerPC")
-      Game.stack:push(PlayerPC.new(Game))
+      Screens.push(Game, "PlayerPC")
       done()
     end,
   })
@@ -1530,6 +1748,14 @@ function OverworldState:openPC(onDone)
         done()
       end,
     })
+  end
+
+  local hooked = Runtime.call("ui.pc.items", sameItems, Game, items)
+  if type(hooked) == "table" then
+    items = hooked
+  else
+    Logger.error("ui.pc.items returned %s; keeping the vanilla items",
+                 type(hooked))
   end
 
   local logOff = function()
@@ -1720,6 +1946,8 @@ end
 -- Run the pre-battle text -> battle -> won text -> flags sequence.
 function OverworldState:engageTrainer(npc, onDone)
   local d = npc.def
+  Runtime.emit("world.trainer_engaged", { npc = npc, trainerClass = d.trainerClass,
+                                          partyIndex = d.trainerParty })
   local header = Game.data:trainerHeader(self.map.def.label, d.index)
   local battleText = header and header.battle and Game.data.text[header.battle]
   if not battleText then
@@ -1886,7 +2114,10 @@ function OverworldState:showMapText(textConst, npc, onDone)
       script(Game, self, npc, onDone or function() end)
       return
     end
-    self.runner:run(script, { npc = npc, onDone = onDone })
+    -- the winning contribution's rows run as their owner (09 §4.4): mod:
+    -- field routing, strict dispatch and error reports all read the source
+    self.runner:run(script, { npc = npc, onDone = onDone,
+      source = mapScripts.talkSource(self.map.id, textConst) })
     return
   end
   local text, needsAsm = Game.data:resolveText(mapLabel, textConst)
@@ -1912,13 +2143,15 @@ end
 -- stop (a text box is up).
 function OverworldState:applyFieldPoison()
   local save = Game.save
-  save.poisonSteps = ((save.poisonSteps or 0) + 1) % 4
+  local interval = FieldDefaults.world(Game.data, "poisonStepInterval") or 4
+  save.poisonSteps = ((save.poisonSteps or 0) + 1) % interval
   if save.poisonSteps ~= 0 then return false end
+  local damage = FieldDefaults.world(Game.data, "poisonDamage") or 1
   local anyPoisoned, fainted = false, {}
   for _, mon in ipairs(save.party) do
     if mon.status == "PSN" and mon.hp > 0 then
       anyPoisoned = true
-      mon.hp = mon.hp - 1
+      mon.hp = mon.hp - damage
       if mon.hp <= 0 then
         mon.hp = 0
         mon.status = nil -- the original clears status on the faint
@@ -1949,7 +2182,10 @@ function OverworldState:applyFieldPoison()
         ("%s blacked\nout!"):format(save.player.name), function()
         local Pokemon = require("src.pokemon.Pokemon")
         for _, mon in ipairs(save.party) do Pokemon.heal(mon) end
-        save.money = math.floor(save.money / 2)
+        save.money = math.floor(save.money
+          / (FieldDefaults.world(Game.data, "blackoutMoneyDivisor") or 2))
+        Runtime.emit("world.blacked_out",
+          { save = save, healTarget = self:healPoint() })
         self:warpToHealPoint()
       end))
     end
@@ -1963,8 +2199,36 @@ end
 
 -- -------------------------------------------------------------------------
 
+-- the two vanilla links the encounter chains wrap, hoisted so an empty
+-- chain allocates no closure
+local function rollVanilla(encDef, ctx) return Encounter.roll(encDef, ctx.rng) end
+local function sameEncounter(enc) return enc end
+
+-- The wild pick, wrapped in encounter.roll (returns nil to suppress, a
+-- table without calling next to force) and then encounter.species (which
+-- transforms a non-nil roll before repel filtering).  With no wrapper on
+-- either name this is the bare Encounter.roll, same RNG draws and all.
+function OverworldState:rollEncounter(encDef, terrain)
+  if not (Runtime.wantsHook("encounter.roll")
+          or Runtime.wantsHook("encounter.species")) then
+    return Encounter.roll(encDef)
+  end
+  local ctx = { mapId = self.map.id, terrain = terrain, rng = love.math.random }
+  local enc = Runtime.call("encounter.roll", rollVanilla, encDef, ctx)
+  if enc then
+    enc = Runtime.call("encounter.species", sameEncounter, enc, ctx)
+  end
+  return enc
+end
+
 function OverworldState:onStepComplete()
   local p = self.player
+
+  -- hot path: the payload is only built when something is listening
+  if Runtime.wants("world.stepped") then
+    Runtime.emit("world.stepped", { mapId = self.map.id, x = p.cellX, y = p.cellY,
+                                    tile = self.map:cellTile(p.cellX, p.cellY) })
+  end
 
   -- dismounting a surf: landing on a walkable cell ends it
   if p.surfing and self.map:isWalkableCell(p.cellX, p.cellY) then
@@ -1973,7 +2237,7 @@ function OverworldState:onStepComplete()
   end
 
   -- Route 22 Gate rewrites LAST_MAP by Y before warps/guards fire
-  self:syncRoute22GateLastMap()
+  self:syncLastMapRewrite()
 
   -- hand-ported step triggers (Pallet intro, Saffron gate guards, ...)
   local hooks = mapScripts.get(self.map.id)
@@ -1998,7 +2262,8 @@ function OverworldState:onStepComplete()
 
   -- day-care: the boarded Pokémon gains 1 exp per step (like the original)
   if Game.save.daycare and Game.save.daycare.mon then
-    Game.save.daycare.steps = (Game.save.daycare.steps or 0) + 1
+    Game.save.daycare.steps = (Game.save.daycare.steps or 0)
+      + (FieldDefaults.world(Game.data, "daycareExpPerStep") or 1)
   end
 
   -- out-of-battle poison (engine/events/poison.asm): every 4th step
@@ -2041,12 +2306,12 @@ function OverworldState:onStepComplete()
   local enc
   local indoor = Game.data.field.indoorEncounters
   if p.surfing and encDef and encDef.water and self.map:isWaterCell(p.cellX, p.cellY) then
-    enc = Encounter.roll({ grass = encDef.water })
+    enc = self:rollEncounter({ grass = encDef.water }, "water")
   elseif self.map:isGrassCell(p.cellX, p.cellY) then
-    enc = Encounter.roll(encDef)
+    enc = self:rollEncounter(encDef, "grass")
   elseif indoor and self.map.def.index >= indoor.firstIndoorMap
          and self.map.def.tileset ~= indoor.excludedTileset then
-    enc = Encounter.roll(encDef)
+    enc = self:rollEncounter(encDef, "indoor")
   end
   if enc then
     -- REPEL blocks wild mons weaker than the lead
@@ -2057,13 +2322,14 @@ function OverworldState:onStepComplete()
     end
     local BattleState = require("src.battle.BattleState")
     local battle = BattleState.newWild(Game, enc.species, enc.level)
-    -- Pokémon Tower ghosts are unidentifiable without the Silph Scope
-    if self.map.id:find("POKEMON_TOWER", 1, true) == 1
-       and not Game.save.inventory.SILPH_SCOPE then
+    -- map.ghostBattles: unidentifiable without the named item (the
+    -- Pokemon Tower's Silph Scope)
+    local ghost = Map.ghostBattles(self.map.def)
+    if ghost and not (ghost.unlessItem and Game.save.inventory[ghost.unlessItem]) then
       battle:makeGhost()
     end
     -- Safari game encounters use the BALL/BAIT/ROCK/RUN menu
-    if Game.save.safari and self.map.id:find("SAFARI_ZONE", 1, true) == 1 then
+    if Game.save.safari and Map.inRegion(self.map.def, "SAFARI", "SAFARI_ZONE") then
       battle:makeSafari(Game.save.safari)
     end
     battle.onFinish = function(result) self:afterBattle(result) end
@@ -2109,35 +2375,54 @@ end
 -- field.badgeGates): stepping on a guard row without the badge turns
 -- you back; with it, the guard waves you through once.
 
--- pokered Route22Gate_Script: every frame, Y < 4 -> wLastMap = ROUTE_23,
--- else ROUTE_22.  All four gate door warps are LAST_MAP, so this is what
--- makes the north exit leave onto Route 23 (and the south onto Route 22).
-function OverworldState.route22GateOutdoor(cellY)
-  return cellY < 4 and "ROUTE_23" or "ROUTE_22"
+-- field.lastMapRewrites: maps that rewrite wLastMap from the player's
+-- position every frame.  Rules are ordered, first match wins, the last row
+-- is the default -- pokered Route22Gate_Script is Y < 4 -> ROUTE_23, else
+-- ROUTE_22, which is what makes the gate's north exit leave onto Route 23.
+-- All four of its door warps are LAST_MAP.
+function OverworldState.rewrittenLastMap(rewrite, cellX, cellY)
+  local value = rewrite.axis == "x" and cellX or cellY
+  for _, rule in ipairs(rewrite.rules or {}) do
+    if (rule.below == nil or value < rule.below)
+       and (rule.atLeast == nil or value >= rule.atLeast) then
+      return rule.map
+    end
+  end
+  return nil
 end
 
-function OverworldState:syncRoute22GateLastMap()
-  if not self.map or self.map.id ~= "ROUTE_22_GATE" then return end
-  local id = OverworldState.route22GateOutdoor(self.player.cellY)
-  if self.lastOutdoor and self.lastOutdoor.id == id then return end
+function OverworldState:syncLastMapRewrite()
+  if not self.map then return end
+  local rewrites = FieldDefaults.field(Game.data, "lastMapRewrites")
+  local rewrite = rewrites and rewrites[self.map.id]
+  if not rewrite then return end
+  local id = OverworldState.rewrittenLastMap(rewrite, self.player.cellX,
+                                             self.player.cellY)
+  if not id or (self.lastOutdoor and self.lastOutdoor.id == id) then return end
   local warps = Game.data.maps[id] and Game.data.maps[id].warps
   local w = warps and warps[1]
   self:rememberOutdoor(id, w and w.x or 0, w and w.y or 0)
 end
 
+-- field.badgeGates is keyed by map; the record's shape picks the rule.
+-- `coords` is the Route 22 gate's single checkpoint (one-shot pass text),
+-- `guards` the Route 23 ladder of per-row guards.
 function OverworldState:checkBadgeGate()
   local gates = Game.data.field.badgeGates
-  if not gates then return false end
+  local g = gates and gates[self.map.id]
+  if not g then return false end
   local p = self.player
   local t = Game.data.text
 
-  if self.map.id == "ROUTE_22_GATE" then
-    local g = gates.ROUTE_22_GATE
+  if g.coords then
+    local passedFlag = FieldDefaults.fieldValue(Game.data, "badgeGates",
+                                                self.map.id, "passedFlag")
+                       or ("PASSED_" .. self.map.id)
     for _, c in ipairs(g.coords) do
       if p.cellX == c.x and p.cellY == c.y then
         if Game.save.inventory[g.badge] then
-          if not Game.save.flags.PASSED_ROUTE22_GATE then
-            Game.save.flags.PASSED_ROUTE22_GATE = true
+          if not Game.save.flags[passedFlag] then
+            Game.save.flags[passedFlag] = true
             -- Route22GateGuardGoRightAheadText plays sound_get_item_1
             require("src.core.Sound").play(Game.data, "Get_Item1")
             Game.stack:push(TextBox.new(Game,
@@ -2158,24 +2443,24 @@ function OverworldState:checkBadgeGate()
     return false
   end
 
-  if self.map.id == "ROUTE_23" then
-    for _, g in ipairs(gates.ROUTE_23.guards) do
-      if p.cellY == g.y and (not g.maxX or p.cellX <= g.maxX)
-         and not Game.save.flags[g.event] then
-        local badgeName = Game.data.items[g.badge] and Game.data.items[g.badge].name
-                          or g.badge
-        if Game.save.inventory[g.badge] then
-          Game.save.flags[g.event] = true
+  if g.guards then
+    for _, guard in ipairs(g.guards) do
+      if p.cellY == guard.y and (not guard.maxX or p.cellX <= guard.maxX)
+         and not Game.save.flags[guard.event] then
+        local badgeName = Game.data.items[guard.badge]
+                          and Game.data.items[guard.badge].name or guard.badge
+        if Game.save.inventory[guard.badge] then
+          Game.save.flags[guard.event] = true
           -- Route23OhThatIsTheBadgeText plays sound_get_item_1
           require("src.core.Sound").play(Game.data, "Get_Item1")
-          local text = (t["_" .. gates.ROUTE_23.passText] or
+          local text = (t["_" .. g.passText] or
                         "Oh! That is the\n{RAM}!"):gsub("{RAM:wNameBuffer}", badgeName)
           Game.stack:push(TextBox.new(Game, text))
           return false
         end
         -- Route23YouDontHaveTheBadgeYetText plays SFX_DENIED
         require("src.core.Sound").play(Game.data, "Denied")
-        local text = (t["_" .. gates.ROUTE_23.failText] or
+        local text = (t["_" .. g.failText] or
                       "You don't have the\n{RAM} yet!"):gsub("{RAM:wNameBuffer}", badgeName)
         Game.stack:push(TextBox.new(Game, text, function()
           self:scriptMove(p, "down", 1)
@@ -2183,7 +2468,6 @@ function OverworldState:checkBadgeGate()
         return true
       end
     end
-    return false
   end
   return false
 end
@@ -2351,17 +2635,17 @@ end
 -- interior Safari Zone map -- the 4 zone quadrants plus the 4 rest
 -- houses plus the secret house -- counts, and the gate itself never
 -- does.
-local SAFARI_STEP_MAPS = {
-  SAFARI_ZONE_CENTER = true, SAFARI_ZONE_EAST = true,
-  SAFARI_ZONE_NORTH = true, SAFARI_ZONE_WEST = true,
-  SAFARI_ZONE_CENTER_REST_HOUSE = true, SAFARI_ZONE_EAST_REST_HOUSE = true,
-  SAFARI_ZONE_NORTH_REST_HOUSE = true, SAFARI_ZONE_WEST_REST_HOUSE = true,
-  SAFARI_ZONE_SECRET_HOUSE = true,
-}
+-- field.safari.stepMaps
+function OverworldState:inSafariStepZone()
+  for _, m in ipairs(FieldDefaults.fieldValue(Game.data, "safari", "stepMaps") or {}) do
+    if m == self.map.id then return true end
+  end
+  return false
+end
 
 function OverworldState:safariStep()
   local st = Game.save.safari
-  if not st or not SAFARI_STEP_MAPS[self.map.id] then return false end
+  if not st or not self:inSafariStepZone() then return false end
   st.steps = st.steps - 1
   if st.steps > 0 then return false end
   self:safariGameOver("PA: Ding-dong!\nTime's up!")
@@ -2375,7 +2659,8 @@ function OverworldState:safariGameOver(text)
   Game.stack:push(TextBox.new(Game,
     (text or "") .. "\f" .. (t._GameOverText or "PA: Your SAFARI\nGAME is over!"),
     function()
-      self:startWarpTo("SAFARI_ZONE_GATE", 4, 3, "down")
+      local exit_ = FieldDefaults.fieldValue(Game.data, "safari", "exitWarp")
+      self:startWarpTo(exit_.map, exit_.x, exit_.y, exit_.facing or "down")
     end))
 end
 
@@ -2396,7 +2681,10 @@ function OverworldState:afterBattle(result)
     for _, mon in ipairs(Game.save.party) do
       Pokemon.heal(mon)
     end
-    Game.save.money = math.floor(Game.save.money / 2)
+    Game.save.money = math.floor(Game.save.money
+      / (FieldDefaults.world(Game.data, "blackoutMoneyDivisor") or 2))
+    Runtime.emit("world.blacked_out",
+      { save = Game.save, healTarget = self:healPoint() })
     self:warpToHealPoint(evolutions)
   else
     -- throwing the last SAFARI BALL ends the game
@@ -2411,16 +2699,27 @@ end
 -- warps
 -- -------------------------------------------------------------------------
 
+-- field.boot: where a save with no heal point of its own returns to.  The
+-- lastHeal record wins; otherwise the new game's own spawn cell.
+function OverworldState:healPoint()
+  local boot = Game.data.field.boot or {}
+  return Game.save.lastHeal or boot.lastHeal
+    or { map = boot.startMap, x = boot.startX, y = boot.startY }
+end
+
 function OverworldState:takeWarp(warpDef)
   local last = self.lastOutdoor
   if warpDef.destMap == "LAST_MAP" and not last then
     -- old saves / unexpected states: never crash on an exit mat, fall
-    -- back to the heal point's town door (or Pallet)
+    -- back to the heal point's town door (or the boot spawn)
     Logger.warn("LAST_MAP warp with no remembered outdoor map; using heal point")
-    local heal = Game.save.lastHeal
-    last = heal and heal.outdoor or { id = "PALLET_TOWN", x = 5, y = 6 }
+    local heal = self:healPoint()
+    last = heal.outdoor or { id = heal.map, x = heal.x, y = heal.y }
   end
+  local fromMap = self.map.id
   local destMap, x, y = Warp.destination(Game.data, warpDef, last)
+  Runtime.emit("player.warped", { fromMap = fromMap, toMap = destMap,
+                                  x = x, y = y, warp = warpDef })
   -- facing carries across the warp (leaving a gate sideways keeps you
   -- walking sideways; house exit mats are stepped onto facing down)
   local facing = self.player.facing
@@ -2438,7 +2737,7 @@ end
 -- The heal point is usually an interior, so LAST_MAP exits are re-pointed
 -- at its remembered town door rather than wherever the player left from.
 function OverworldState:warpToHealPoint(onDone)
-  local heal = Game.save.lastHeal or { map = "PALLET_TOWN", x = 5, y = 6 }
+  local heal = self:healPoint()
   self.player.surfing = false
   -- HandleFlyWarpOrDungeonWarp + DisplayPlayerBlackedOutText both clear
   -- BIT_ALWAYS_ON_BIKE (home/overworld.asm / home/text_script.asm)
@@ -2466,8 +2765,8 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
   -- LAST_MAP exits taken off Route 23/Indigo Plateau (the Route 22 Gate
   -- back door, the Indigo Plateau lobby doors) resolve against a stale
   -- remembered map instead.
-  local outsideTilesets = { OVERWORLD = true, PLATEAU = true }
-  if outsideTilesets[self.map.def.tileset] and mapId ~= self.map.id then
+  if Map.isOutside(self.map.def, FieldDefaults.field(Game.data, "outsideTilesets"))
+     and mapId ~= self.map.id then
     self:rememberOutdoor(self.map.id, self.player.cellX, self.player.cellY)
   end
   self.transitioning = true
@@ -2489,7 +2788,7 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
       self.delaySfx = { frames = 40, key = "Teleport_Enter2" }
     end
     if doorWarp then
-      local outdoor = self.map.def.tileset == "OVERWORLD"
+      local outdoor = Map.isOutdoor(self.map.def)
       require("src.core.Sound").play(Game.data,
                                      outdoor and "Go_Outside" or "Go_Inside")
       -- stepping out of an outdoor door mat (the original's walk-out)
@@ -2504,10 +2803,83 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
   end))
 end
 
+-- Re-read a map record after its data changed (WorldAPI:invalidateMap,
+-- dev-mode hot reload).  The neighbors go too: their strips render the
+-- same tileset.  When the active map is the one that changed, the player
+-- is clamped back in bounds, the NPC pool is reused so runtime handles
+-- survive, and the tile-pair table is re-read.
+function OverworldState:reloadMap(mapId, reason)
+  MapLoader.invalidate(mapId)
+  for _, nb in ipairs(self.neighbors or {}) do MapLoader.invalidate(nb.map.id) end
+  if self.map and self.map.id == mapId then
+    local p = self.player
+    local x, y, facing = p.cellX, p.cellY, p.facing
+    Collision.load(Game.data)
+    self:setMap(mapId, x, y, facing, { seamless = true, via = "reload" })
+    if not self.map:inBounds(x, y) then
+      local heal = self:healPoint()
+      Logger.warn("map %s reloaded out from under the player; sending to %s",
+                  mapId, tostring(heal.map))
+      self:setMap(heal.map, heal.x, heal.y, "down", { via = "reload" })
+    end
+  end
+  Runtime.emit("map.reloaded", { mapId = mapId, reason = reason or "invalidate" })
+end
+
+-- Append a runtime object to a map record and, when that map is live,
+-- instantiate it through the shared pool so it crosses seams like an
+-- imported object.  Runtime objects are never serialized into map data.
+function OverworldState:addRuntimeObject(mapId, objDef, owner)
+  local def = Game.data.maps[mapId]
+  if not def then return nil, "unknown map: " .. tostring(mapId) end
+  def.objects = def.objects or {}
+  local index = 0
+  for _, obj in ipairs(def.objects) do
+    if (obj.index or 0) > index then index = obj.index end
+  end
+  objDef.index = index + 1
+  objDef.runtime = true
+  objDef.owner = owner
+  table.insert(def.objects, objDef)
+  local npcId = mapId .. "_obj_" .. objDef.index
+  if self.map and self.map.id == mapId and self.npcPool then
+    local npc = pooledNPC(self.npcPool, Game.data, mapId, objDef)
+    npc.frozen = false
+    table.insert(self.npcs, npc)
+    table.insert(self.entities, npc)
+  end
+  return npcId
+end
+
+-- Drop a runtime object again; imported objects are refused, and so is
+-- another mod's.
+function OverworldState:removeRuntimeObject(npcId, owner)
+  for mapId, def in pairs(Game.data.maps) do
+    for i, obj in ipairs(def.objects or {}) do
+      if obj.runtime and mapId .. "_obj_" .. obj.index == npcId then
+        if owner ~= nil and obj.owner ~= owner then
+          return nil, "not owned by " .. tostring(owner)
+        end
+        table.remove(def.objects, i)
+        if self.npcPool then self.npcPool[npcId] = nil end
+        for _, list in ipairs({ self.npcs or {}, self.entities or {} }) do
+          for j = #list, 1, -1 do
+            if list[j].id == npcId then table.remove(list, j) end
+          end
+        end
+        return true
+      end
+    end
+  end
+  return nil, "no runtime object " .. tostring(npcId)
+end
+
 -- Replace a map block (Victory Road barriers, Cut trees) and redraw.
 function OverworldState:replaceBlock(bx, by, block)
   self.map:setBlock(bx, by, block)
   self.map.renderer:rebuild()
+  Runtime.emit("world.block_replaced",
+    { mapId = self.map.id, bx = bx, by = by, block = block })
 end
 
 -- -------------------------------------------------------------------------
@@ -2564,6 +2936,15 @@ function OverworldState:updateScriptMoves()
         e.progress = 0
       end
       mv.remaining = mv.remaining - 1
+    end
+  end
+  -- march_in_place toggles: re-arm the in-place cycle each time it ends.
+  -- Not a scriptMove, so an ambient marcher never trips the input lockout.
+  for entity in pairs(self.marchers or {}) do
+    if not entity.moving then
+      entity.moving = true
+      entity.marching = true
+      entity.progress = 0
     end
   end
 end
@@ -2750,8 +3131,9 @@ function OverworldState:drawWorld()
         self.emoteImg = self.emoteImg or love.graphics.newImage(bubble.path)
         return self.emoteImg
       end)
-      -- EXCLAMATION_BUBBLE is index 0 -> first crop
-      local rect = bubble.bubbles and bubble.bubbles[1]
+      -- EXCLAMATION_BUBBLE is index 0 -> first crop; the emote command
+      -- picks question/happy crops instead
+      local rect = bubble.bubbles and bubble.bubbles[self.emote.bubble or 1]
       if ok and img and rect then
         love.graphics.setColor(1, 1, 1, 1)
         love.graphics.draw(img, love.graphics.newQuad(rect.x, rect.y,
@@ -2789,9 +3171,10 @@ function OverworldState:drawWorld()
   -- the FLY bird sweeping off with the player
   local function fxBird()
     if not self.flyAnim then return end
-    if not self.birdSprite and Game.data.sprites.SPRITE_BIRD then
+    local birdId = FieldDefaults.fieldValue(Game.data, "playerSprites", "fly")
+    if not self.birdSprite and birdId and Game.data.sprites[birdId] then
       local SR = require("src.render.SpriteRenderer")
-      self.birdSprite = SR.new(Game.data.sprites.SPRITE_BIRD)
+      self.birdSprite = SR.new(Game.data.sprites[birdId])
     end
     if self.birdSprite then
       local t = 48 - self.flyAnim.frames

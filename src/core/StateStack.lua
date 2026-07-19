@@ -2,20 +2,31 @@
 -- (so a text box can overlay the overworld, a battle replaces it, etc).
 -- States are tables with optional enter/exit/update/draw/isOpaque.
 
+local Runtime = require("src.mods.Runtime")
+
 local StateStack = {}
 
 function StateStack:init()
   self.states = {}
 end
 
+-- screen.pushed/popped fire after enter/exit so listeners observe the
+-- settled state; the wants guard keeps the no-listener path allocation-free
+
 function StateStack:push(state, ...)
   table.insert(self.states, state)
   if state.enter then state:enter(...) end
+  if Runtime.wants("screen.pushed") then
+    Runtime.emit("screen.pushed", { state = state })
+  end
 end
 
 function StateStack:pop()
   local state = table.remove(self.states)
   if state and state.exit then state:exit() end
+  if state and Runtime.wants("screen.popped") then
+    Runtime.emit("screen.popped", { state = state })
+  end
   return state
 end
 

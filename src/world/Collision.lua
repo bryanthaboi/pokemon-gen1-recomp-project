@@ -1,6 +1,8 @@
 -- Movement permission checks: tile passability (from generated collision
 -- data), map bounds, and entity occupancy.
 
+local Runtime = require("src.mods.Runtime")
+
 local Collision = {}
 
 local DELTA = { up = { 0, -1 }, down = { 0, 1 }, left = { -1, 0 }, right = { 1, 0 } }
@@ -49,11 +51,7 @@ local function pairBlocked(map, mover, sx, sy, tx, ty)
   return false
 end
 
--- Returns true when the mover may step from (cx,cy) toward dir.
--- Out-of-bounds is blocked here; the OverworldController handles map
--- connections and edge warps before asking.
-function Collision.canMove(map, entities, mover, dir)
-  local tx, ty = Collision.target(mover.cellX, mover.cellY, dir)
+local function verdict(map, entities, mover, dir, tx, ty)
   if not map:inBounds(tx, ty) then
     return false, "bounds"
   end
@@ -70,6 +68,29 @@ function Collision.canMove(map, entities, mover, dir)
     return false, "entity"
   end
   return true
+end
+
+-- the movement.collision chain sees the boolean; a wrapper that flips it
+-- rewrites ctx.reason to say why (the engine's own reasons are bounds /
+-- tile / entity), so the hook stays a single-value middleware
+local function passthrough(allowed) return allowed end
+
+-- Returns true when the mover may step from (cx,cy) toward dir.
+-- Out-of-bounds is blocked here; the OverworldController handles map
+-- connections and edge warps before asking.  Per-step hot path: with an
+-- empty chain this costs one table lookup and no ctx allocation.
+function Collision.canMove(map, entities, mover, dir)
+  local tx, ty = Collision.target(mover.cellX, mover.cellY, dir)
+  local allowed, why = verdict(map, entities, mover, dir, tx, ty)
+  if Runtime.wantsHook("movement.collision") then
+    local ctx = { map = map, mover = mover, dir = dir,
+                  fromX = mover.cellX, fromY = mover.cellY,
+                  toX = tx, toY = ty, reason = why }
+    allowed = Runtime.call("movement.collision", passthrough, allowed, ctx)
+    why = ctx.reason
+  end
+  if allowed then return true end
+  return false, why
 end
 
 return Collision

@@ -1,0 +1,15 @@
+{
+  "id": "example_mini_conversion",
+  "name": "Sable Cove (Mini Conversion)",
+  "version": "1.0.0",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "total_conversion",
+  "category": "TOTAL_CONVERSION",
+  "game_version": ">=1.0.0 <2.0.0",
+  "priority": 900,
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "description": "Total-conversion gallery entry: a one-town game with its own boot, title, three-species dex and one badge."
+}

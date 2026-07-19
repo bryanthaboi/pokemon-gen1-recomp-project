@@ -138,6 +138,11 @@ function IntroMovie.new(game, onDone)
   self.finished = false
 
   local intro = game.data.field and game.data.field.intro or {}
+  self.introCfg = intro
+  -- brand-level knobs (12 4.7): studio strings and the skip a total
+  -- conversion or dev profile sets to jump straight to the title
+  self.studio = intro.studio or {}
+  self.skipAll = intro.skip and true or false
   local function img(e) return tryImage(e and e.path) end
   self.copyright = tryImage("assets/generated/title/copyright.png")
   self.logo = img(intro.gamefreakLogo)
@@ -177,8 +182,9 @@ function IntroMovie:startPhase(phase)
     -- intro.asm:333-338
     local data = self.game.data
     local songs = data.audio and data.audio.songs
-    if songs and songs.Music_IntroBattle then
-      pcall(Music.play, data, "Music_IntroBattle", false)
+    local song = self.introCfg.music or "Music_IntroBattle"
+    if songs and songs[song] then
+      pcall(Music.play, data, song, false)
     end
   end
 end
@@ -233,6 +239,10 @@ function IntroMovie:fightStep()
 end
 
 function IntroMovie:update(dt)
+  if self.skipAll then
+    self:finish()
+    return
+  end
   local input = self.game.input
   if input:wasPressed("a") or input:wasPressed("b")
      or input:wasPressed("start") then
@@ -277,7 +287,8 @@ function IntroMovie:drawSplash()
     end
     -- custom studio name (replaces the GAME FREAK splash text)
     love.graphics.setColor(0, 0, 0, dim and 0.35 or 1)
-    Font.draw("bois club games", (160 - 15 * 8) / 2, TEXT_Y)
+    local card = self.studio.card or "bois club games"
+    Font.draw(card, (160 - #card * 8) / 2, TEXT_Y)
     love.graphics.setColor(1, 1, 1, 1)
   end
   if t >= STAR_START and t < FLASH_START then
@@ -355,8 +366,9 @@ function IntroMovie:draw()
     -- custom boot card (replaces the Nintendo / GAME FREAK copyright
     -- card; no (c) glyph in the charmap, keep it ASCII-safe)
     love.graphics.setColor(0, 0, 0, 1)
+    local credit = self.studio.credit or "bois club"
     Font.draw("2026", (160 - 4 * 8) / 2, 48)
-    Font.draw("bois club", (160 - 9 * 8) / 2, 64)
+    Font.draw(credit, (160 - #credit * 8) / 2, 64)
     Font.draw("bryanthaboi", (160 - 11 * 8) / 2, 80)
   elseif self.phase == 2 then
     self:drawSplash()

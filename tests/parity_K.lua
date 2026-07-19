@@ -8,9 +8,8 @@ if not (Data.maps and Data.maps.PALLET_TOWN) then Data:load() end
 local TypeChart = require("src.battle.TypeChart")
 TypeChart.load(Data)
 local TrainerAI = require("src.battle.TrainerAI")
-local fails, total = 0, 0
-local function check(c, m) total = total + 1; if c then print("ok   " .. m) else fails = fails + 1; print("FAIL " .. m) end end
-local function eq(g, w, m) check(g == w, ("%s (got %s, want %s)"):format(m, tostring(g), tostring(w))) end
+local S = require("tests.harness").suite("parity K")
+local check, eq = S.check, S.eq
 
 local rngLo = function(a, b) return a end  -- picks first minimum
 local rngHi = function(a, b) return b end  -- picks last minimum
@@ -136,5 +135,4 @@ do
      "switchAction: no switch when no backup is unfainted")
 end
 
-print(("parity K: %d/%d passed"):format(total - fails, total))
-if fails > 0 then error(fails .. " parity-K assertion(s) failed") end
+S.finish()

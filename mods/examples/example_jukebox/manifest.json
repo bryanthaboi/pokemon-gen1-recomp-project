@@ -1,0 +1,16 @@
+{
+  "id": "example_jukebox",
+  "name": "Jukebox Example",
+  "version": "1.0.0",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "content",
+  "category": "AUDIO",
+  "game_version": ">=1.0.0 <2.0.0",
+  "priority": 100,
+  "permissions": ["engine_internals"],
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "description": "Musician gallery entry: an authored ChipAsm song, a music.select hook, a new cry and a jukebox screen."
+}

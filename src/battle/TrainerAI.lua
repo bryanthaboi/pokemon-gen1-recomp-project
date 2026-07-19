@@ -24,13 +24,25 @@ local TrainerAI = {}
 local HEAL_AMOUNT = { POTION = 20, SUPER_POTION = 50, HYPER_POTION = 200 }
 local X_STAT = { X_ATTACK = "attack", X_DEFEND = "defense", X_SPEED = "speed" }
 
+-- The trainer's ai_classes record from the merged registry; the direct
+-- require covers battles built without a loader.  A trainer record's
+-- aiClass field picks a record other than its own id.
+function TrainerAI.classFor(battle)
+  local trainer = battle and battle.trainer
+  if not trainer then return nil end
+  local id = trainer.aiClass or trainer.id
+  local classes = battle.data and battle.data.ai_classes
+  if classes then return classes[id] end
+  return require("data.scripts.ai_classes")[id]
+end
+
 -- Item use / switching per trainer class (engine/battle/trainer_ai.asm
--- via data/scripts/ai_classes.lua).  Runs before move choice each enemy
+-- via the ai_classes registry).  Runs before move choice each enemy
 -- turn; returns an action { special = "aiItem"/"aiSwitch", ... } or nil.
 -- battle.aiUses is initialized per enemy Pokémon (wAICount).
 function TrainerAI.classAction(battle)
   if battle.kind ~= "trainer" or not battle.trainer then return nil end
-  local class = require("data.scripts.ai_classes")[battle.trainer.id]
+  local class = TrainerAI.classFor(battle)
   if not class then return nil end
   if (battle.aiUses or 0) <= 0 then return nil end
   local rng = battle.rng
@@ -154,6 +166,50 @@ local function hasBetterMove(battler, judged, battle)
   return false
 end
 
+-- The three vanilla passes as ai_classes layer records: vanilla is just the
+-- first registrant, so a mod patches one instead of reimplementing trainer
+-- AI.  src/mods/Builtins.lua registers them; chooseMove dispatches through
+-- whatever the registry holds and falls back here when a battle was built
+-- without a loader.  view.encourageTurn is wAILayer2Encouragement == 1.
+TrainerAI.LAYERS = {
+  LAYER_1 = { kind = "layer", score = function(view, def, score)
+    -- `add $5`: heavily discourage a zero-power status move that would
+    -- fail because the player is already statused
+    if def and view.target.mon.status and def.power == 0
+       and STATUS_EFFECTS[def.effect] then
+      return score + 5
+    end
+    return score
+  end },
+  LAYER_2 = { kind = "layer", score = function(view, def, score)
+    if def and view.encourageTurn and ENCOURAGE_EFFECTS[def.effect] then
+      return score - 1 -- `dec [hl]`: slightly encourage
+    end
+    return score
+  end },
+  -- AIGetTypeEffectiveness only reads the FIRST matching TypeEffects row for
+  -- (move type vs either defender type) -- no dual-type product -- and runs
+  -- for non-damaging moves too.  The table holds no value-10 rows, so
+  -- >10 / <10 reproduces the oracle's compare against $10.
+  LAYER_3 = { kind = "layer", score = function(view, def, score)
+    if not def then return score end
+    local row = TypeChart.rows(def.type, view.target.curTypes)[1]
+    if row and row > 10 then
+      return score - 1 -- `dec [hl]`: encourage a super-effective move
+    elseif row and row < 10 and hasBetterMove(view.user, def, view.battle) then
+      return score + 1 -- `inc [hl]`: discourage when a better move is known
+    end
+    return score
+  end },
+}
+
+-- vanilla registrations, kept beside the other Builtins delegations
+function TrainerAI.registerInto(registry, _, owner)
+  for id, record in pairs(TrainerAI.LAYERS) do
+    registry:register(id, record, owner)
+  end
+end
+
 function TrainerAI.chooseMove(battler, rng, battle)
   rng = rng or love.math.random
   local usable = {}
@@ -179,40 +235,36 @@ function TrainerAI.chooseMove(battler, rng, battle)
     return usable[rng(1, #usable)]
   end
 
+  -- aiMods entries may name registered ai_classes layer records; a number n
+  -- resolves through "LAYER_<n>", which is how the vanilla three are keyed.
+  -- A battle built without a loader has no merged registry, so the built-in
+  -- records answer directly.
+  local classes = battle.data and battle.data.ai_classes
+  local layers, view = {}, nil
+  for _, mod in ipairs(mods) do
+    local id = type(mod) == "string" and mod or ("LAYER_" .. tostring(mod))
+    local record = classes and classes[id]
+    if not (record and record.score) then record = TrainerAI.LAYERS[id] end
+    if record and record.score then
+      layers[#layers + 1] = record.score
+      view = view or { battle = battle, user = battler, target = battle.player,
+                       data = battle.data, rng = rng,
+                       encourageTurn = encourageTurn }
+    end
+  end
+
   -- AIEnemyTrainerChooseMoves (engine/battle/trainer_ai.asm:3-257): every
   -- usable move starts at a base score of 10; the class's modification
   -- functions adjust it additively, then the MINIMUM-scored move is chosen
   -- with ties broken uniformly among the minima (core.asm:2971-3002 rolls a
   -- fresh byte among the value-1 slots).  A non-minimal move is never
   -- selectable.
-  local target = battle.player
   local scores = {}
   for i, mv in ipairs(usable) do
     local def = battle.data.moves[mv.id]
     local s = 10
-    for _, mod in ipairs(mods) do
-      if mod == 1 and def and target.mon.status
-         and def.power == 0 and STATUS_EFFECTS[def.effect] then
-        -- AIMoveChoiceModification1: `add $5` -- heavily discourage a
-        -- zero-power status move that would fail (player already statused)
-        s = s + 5
-      elseif mod == 2 and def and encourageTurn
-         and ENCOURAGE_EFFECTS[def.effect] then
-        -- AIMoveChoiceModification2: `dec [hl]` -- slightly encourage
-        s = s - 1
-      elseif mod == 3 and def then
-        -- AIMoveChoiceModification3 via AIGetTypeEffectiveness only reads
-        -- the FIRST matching TypeEffects row for (move type vs either
-        -- defender type) -- no dual-type product -- and runs for
-        -- non-damaging moves too.  The table holds no value-10 rows, so
-        -- >10 / <10 reproduces the oracle's compare against $10.
-        local row = TypeChart.rows(def.type, target.curTypes)[1]
-        if row and row > 10 then
-          s = s - 1 -- `dec [hl]`: encourage a super-effective move
-        elseif row and row < 10 and hasBetterMove(battler, def, battle) then
-          s = s + 1 -- `inc [hl]`: discourage when a better move is known
-        end
-      end
+    for _, score in ipairs(layers) do
+      s = score(view, def, s) or s
     end
     scores[i] = s
   end

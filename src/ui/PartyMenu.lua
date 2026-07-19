@@ -7,6 +7,10 @@
 -- Pops itself on B.
 
 local Font = require("src.render.Font")
+local Logger = require("src.core.Logger")
+local Runtime = require("src.mods.Runtime")
+local Screens = require("src.ui.Screens")
+local Theme = require("src.ui.Theme")
 
 local PartyMenu = {}
 PartyMenu.__index = PartyMenu
@@ -17,7 +21,7 @@ function PartyMenu:sgbPalettes(game)
   return require("src.render.PaletteFX").wholeNamed(game.data, "MEWMON")
 end
 
-local CURSOR = 0xED
+local function sameItems(_, items) return items end
 
 -- where DIG escapes work: escape_rope_tilesets.asm (Agatha's room is
 -- excluded by map id in ItemUseEscapeRope)
@@ -65,7 +69,9 @@ local function drawIcon(game, mon, x, y, selected, counter)
   local icons = game.data.icons
   if not icons then return end
   local def = game.data.pokemon[mon.species]
-  local name = def and def.dex and icons.byDex[def.dex]
+  -- byDex is the vanilla lookup, but the icons registry can bring the table
+  -- into existence on its own, so it may be the only key present
+  local name = def and def.dex and icons.byDex and icons.byDex[def.dex]
   local path = name and icons.icons[name]
   if not path then return end
   if iconImages[path] == nil then
@@ -126,16 +132,18 @@ function PartyMenu:update(dt)
       self.submenu = nil
     elseif input:wasPressed("a") then
       local mon = party[self.index]
-      local action = self.subItems[self.subIndex].action
-      if action == "stats" then
-        local SummaryMenu = require("src.ui.SummaryMenu")
-        self.game.stack:push(SummaryMenu.new(self.game, mon))
+      local entry = self.subItems[self.subIndex]
+      local action = entry.action
+      if not action and entry.onSelect then
+        -- hook-injected entries carry a callback instead of an action id
+        entry.onSelect(mon, self.game)
+      elseif action == "stats" then
+        Screens.push(self.game, "SummaryMenu", mon)
       elseif action == "switch" then
         self.swapFrom = self.index
       elseif action == "fly" then
-        local FlyMenu = require("src.ui.FlyMenu")
         self.game.stack:pop() -- close the party menu
-        self.game.stack:push(FlyMenu.new(self.game))
+        Screens.push(self.game, "FlyMenu")
         return
       elseif action == "flash" then -- FLASH lights dark tunnels
         -- start_sub_menus.asm .flash: PrintText _FlashLightsAreaText, then
@@ -320,45 +328,55 @@ function PartyMenu:update(dt)
       self.subIndex = 1
       -- STATS/SWITCH plus this mon's field moves (start_sub_menus.asm
       -- builds the same dynamic list)
-      self.subItems = { { label = "STATS", action = "stats" },
-                        { label = "SWITCH", action = "switch" } }
+      local items = { { label = "STATS", action = "stats" },
+                      { label = "SWITCH", action = "switch" } }
       local ow = self.game.overworld
       if not self.battle and ow and mon.hp > 0 then
         for _, mv in ipairs(mon.moves) do
           if mv.id == "FLY" and ow.map.def.tileset == "OVERWORLD"
              and self.game.save.inventory.THUNDERBADGE then
-            table.insert(self.subItems, { label = "FLY", action = "fly" })
+            table.insert(items, { label = "FLY", action = "fly" })
           elseif mv.id == "FLASH" and ow.dark
              and self.game.save.inventory.BOULDERBADGE then
-            table.insert(self.subItems, { label = "FLASH", action = "flash" })
+            table.insert(items, { label = "FLASH", action = "flash" })
           elseif mv.id == "CUT" and self.game.save.inventory.CASCADEBADGE then
             -- CUT/SURF/STRENGTH are party-menu field moves too
             -- (start_sub_menus.asm .outOfBattleMovePointers); listed here
             -- with the same list-time badge filter this file already uses
             -- for FLY/FLASH.  The facing-tile/activation check happens on
             -- selection (useCutFieldMove/useSurfFieldMove).
-            table.insert(self.subItems, { label = "CUT", action = "cut" })
+            table.insert(items, { label = "CUT", action = "cut" })
           elseif mv.id == "SURF" and self.game.save.inventory.SOULBADGE then
-            table.insert(self.subItems, { label = "SURF", action = "surf" })
+            table.insert(items, { label = "SURF", action = "surf" })
           elseif mv.id == "STRENGTH" and self.game.save.inventory.RAINBOWBADGE then
-            table.insert(self.subItems, { label = "STRENGTH", action = "strength" })
+            table.insert(items, { label = "STRENGTH", action = "strength" })
           elseif mv.id == "SOFTBOILED" then
-            table.insert(self.subItems, { label = "SOFTBOILED", action = "softboiled" })
+            table.insert(items, { label = "SOFTBOILED", action = "softboiled" })
           elseif mv.id == "TELEPORT" and ow.map.def.tileset == "OVERWORLD" then
             -- TELEPORT works only OUTDOORS (start_sub_menus.asm
             -- .teleport -> CheckIfInOutsideMap); dark maps don't
             -- block it
-            table.insert(self.subItems, { label = "TELEPORT", action = "escape" })
+            table.insert(items, { label = "TELEPORT", action = "escape" })
           elseif mv.id == "DIG" and DIG_TILESETS[ow.map.def.tileset]
              and ow.map.id ~= "AGATHAS_ROOM" then
             -- DIG runs ItemUseEscapeRope (.dig sets wCurItem =
             -- ESCAPE_ROPE): usable in the dungeon tilesets of
             -- escape_rope_tilesets.asm minus Agatha's room, even in
             -- the dark (Rock Tunnel)
-            table.insert(self.subItems, { label = "DIG", action = "escape" })
+            table.insert(items, { label = "DIG", action = "escape" })
           end
         end
       end
+      local ctx = { battle = self.battle, overworld = ow }
+      local hooked = Runtime.call("ui.party.submenu", sameItems,
+                                  self.game, items, mon, ctx)
+      if type(hooked) == "table" then
+        items = hooked
+      else
+        Logger.error("ui.party.submenu returned %s; keeping the vanilla list",
+                     type(hooked))
+      end
+      self.subItems = items
     end
   end
 end
@@ -400,10 +418,10 @@ function PartyMenu:draw()
     love.graphics.setColor(0, 0, 0, 1)
     Font.draw(("%3d/%3d"):format(mon.hp, mon.stats.hp), 104, y + 8)
     if i == self.index then
-      Font.drawCode(CURSOR, 0, y)
+      Font.drawCode(Theme.cursor, 0, y)
     end
     if i == self.swapFrom or i == self.softboiledFrom then
-      Font.drawCode(0xEC, 0, y) -- the unfilled swap arrow
+      Font.drawCode(Theme.cursorHollow, 0, y) -- the unfilled swap arrow
     end
   end
   if self.swapFrom then
@@ -420,7 +438,7 @@ function PartyMenu:draw()
     for si, entry in ipairs(self.subItems) do
       Font.draw(entry.label, 88, y0 + (si - 1) * 16)
     end
-    Font.drawCode(CURSOR, 80, y0 + (self.subIndex - 1) * 16)
+    Font.drawCode(Theme.cursor, 80, y0 + (self.subIndex - 1) * 16)
   end
   love.graphics.setColor(1, 1, 1, 1)
 end

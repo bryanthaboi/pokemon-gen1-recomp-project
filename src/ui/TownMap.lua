@@ -76,10 +76,11 @@ local function buildLocations(game)
     end
   end
   -- fallback: towns from the fly order (deduped, outdoor maps only)
+  local Map = require("src.world.Map")
   local seen = {}
   for _, mapId in ipairs(field.flyOrder or {}) do
     local def = game.data.maps and game.data.maps[mapId]
-    if not seen[mapId] and def and def.tileset == "OVERWORLD" then
+    if not seen[mapId] and def and Map.isOutdoor(def) then
       seen[mapId] = true
       local loc = { name = mapId:gsub("_", " ") }
       table.insert(locs, loc)
@@ -144,8 +145,11 @@ function TownMap.new(game, opts)
         table.insert(self.nests, loc)
       end
     end
+    -- field.townMap.nest lifts the icon path out of the engine
+    local nest = ((game.data.field or {}).townMap or {}).nest
     local ok, img = pcall(love.graphics.newImage,
-                          "assets/generated/townmap/nest.png")
+                          (nest and nest.path)
+                          or "assets/generated/townmap/nest.png")
     self.nestIcon = ok and img or nil
   end
   -- the player's current location (guard: overworld may not be running)

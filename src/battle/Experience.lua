@@ -5,6 +5,7 @@
 -- participant's stat exp.
 
 local Growth = require("src.pokemon.Growth")
+local Runtime = require("src.mods.Runtime")
 local Stats = require("src.pokemon.Stats")
 
 local Experience = {}
@@ -21,14 +22,26 @@ local Experience = {}
 -- Sequential floor divisions equal one floor division by the product,
 -- so callers pass numParticipants = 2*participants for the first pass
 -- and 2*participants*partyCount for the whole-party pass.
-function Experience.gainFor(defeatedDef, level, isTrainer, numParticipants, traded)
+--
+-- consts is Data.constants; a constants.exp record can retune the
+-- divisor and the traded/trainer multipliers, with the values above as
+-- the defaults.
+function Experience.gainFor(defeatedDef, level, isTrainer, numParticipants,
+                            traded, consts)
+  local divisor, tradedMult, trainerMult = 7, nil, nil
+  local tuning = consts and consts.exp
+  if tuning then
+    divisor = tuning.divisor or divisor
+    tradedMult = tuning.tradedMult
+    trainerMult = tuning.trainerMult
+  end
   local base = math.floor(defeatedDef.baseExp / math.max(1, numParticipants or 1))
-  local exp = math.floor(base * level / 7)
+  local exp = math.floor(base * level / divisor)
   if traded then
-    exp = math.floor(exp * 3 / 2)
+    exp = math.floor(exp * (tradedMult or 1.5))
   end
   if isTrainer then
-    exp = math.floor(exp * 3 / 2)
+    exp = math.floor(exp * (trainerMult or 1.5))
   end
   return math.max(1, exp)
 end
@@ -46,18 +59,36 @@ function Experience.apply(data, mon, defeatedDef, level, isTrainer,
     local gain = math.floor(defeatedDef.baseStats[key] / statShare)
     mon.statExp[key] = math.min(65535, (mon.statExp[key] or 0) + gain)
   end
-  local gained = Experience.gainFor(defeatedDef, level, isTrainer,
-                                    numParticipants, traded)
+  local consts = data.constants
+  local gained
+  if Runtime.wantsHook("exp.gain") then
+    gained = Runtime.call("exp.gain", function(c)
+      return Experience.gainFor(c.defeatedDef, c.level, c.isTrainer,
+                                c.participants, c.traded, consts)
+    end, { defeatedDef = defeatedDef, level = level, isTrainer = isTrainer,
+           participants = numParticipants, traded = traded, mon = mon })
+  else
+    gained = Experience.gainFor(defeatedDef, level, isTrainer,
+                                numParticipants, traded, consts)
+  end
   mon.exp = mon.exp + gained
 
+  local cap = consts and consts.levelCap or 100
   local levels = {}
-  local newLevel = Growth.levelForExp(speciesDef.growthRate, mon.exp)
-  while mon.level < math.min(newLevel, 100) do
+  local newLevel = Growth.levelForExp(speciesDef.growthRate, mon.exp, cap,
+                                      data.growth_rates)
+  while mon.level < math.min(newLevel, cap) do
     mon.level = mon.level + 1
     local old = mon.stats
     mon.stats = Stats.calc(speciesDef, mon.level, mon.dvs, mon.statExp)
     mon.hp = math.min(mon.stats.hp, mon.hp + (mon.stats.hp - old.hp))
     table.insert(levels, mon.level)
+    if Runtime.wants("pokemon.level_up") then
+      Runtime.emit("pokemon.level_up", {
+        mon = mon, level = mon.level, prevLevel = mon.level - 1,
+        learnable = Experience.movesLearnedAt(speciesDef, mon.level),
+      })
+    end
   end
   return levels, gained
 end

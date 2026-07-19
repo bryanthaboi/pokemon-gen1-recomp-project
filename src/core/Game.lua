@@ -10,8 +10,21 @@ local SaveData = require("src.core.SaveData")
 local StateStack = require("src.core.StateStack")
 local TouchInput = require("src.core.TouchInput")
 local ModLoader = require("src.mods.Loader")
+local ModRuntime = require("src.mods.Runtime")
+local Screens = require("src.ui.Screens")
 
 local Game = {}
+
+-- dev-mode gate for the F5/backtick hotkeys; false keeps every src/dev
+-- module unloaded, so a player boot never touches a byte of dev code
+local devMode = os.getenv("POKEPORT_DEV") == "1"
+
+-- the boot screen ids (field.boot.screens); a plain function so the
+-- headless harness can borrow makeTitleState onto a stub game
+local function bootScreens(game)
+  local boot = game.data and game.data.field and game.data.field.boot
+  return (boot and boot.screens) or {}
+end
 
 function Game:load()
   self.data = Data
@@ -35,11 +48,17 @@ function Game:load()
   Renderer:init()
 
   require("src.render.Font").load(Data)
+  -- menu cursor/border/geometry constants; field.theme restyles them
+  require("src.ui.Theme").load(Data)
 
   self.stack = StateStack
   StateStack:init()
 
-  self.save = SaveData.newGame()
+  self.save = SaveData.newGame(self:bootConfig())
+  -- seed=true keeps what entry chunks wrote through mod.save before any
+  -- save existed; the skeleton fires save.created exactly once
+  self:adoptSave(self.save, true)
+  ModRuntime.emit("save.created", { save = self.save })
   -- apply the persisted audio + display options before anything plays
   self:applyOptions(self.save.options)
 
@@ -48,6 +67,10 @@ function Game:load()
 
   local OverworldState = require("src.world.OverworldController")
   self.overworld = OverworldState
+
+  -- every service is up but nothing is on the stack yet; this payload is
+  -- the sanctioned way for a mod to obtain the Game object
+  ModRuntime.emit("game.ready", { game = self })
 
   -- boot into the title screen (engine/movie/title.asm); NEW GAME runs
   -- the Oak speech + naming, CONTINUE restores the save.  The headless
@@ -58,37 +81,48 @@ function Game:load()
   else
     local titleState = self:makeTitleState()
     -- the copyright splash + Nidorino-vs-Gengar attract movie plays
-    -- before the title (engine/movie/splash.asm + intro.asm)
-    local IntroMovie = require("src.ui.IntroMovie")
-    StateStack:push(IntroMovie.new(self, function()
+    -- before the title (engine/movie/splash.asm + intro.asm); the ids come
+    -- from field.boot.screens so a total conversion owns the whole boot
+    Screens.push(self, bootScreens(self).splash or "IntroMovie", function()
       StateStack:push(titleState)
-    end))
+    end)
   end
 
   Logger.info("game loaded")
 end
 
+-- the merged field.boot: spawn, names, money and the naming presets a
+-- total conversion overrides.  Threaded into SaveData so persistence stays
+-- free of a Data dependency.
+function Game:bootConfig()
+  return self.data and self.data.field and self.data.field.boot
+end
+
 -- the title screen with its NEW GAME / CONTINUE wiring; used at boot
 -- and by the START-menu QUIT confirmation
 function Game:makeTitleState()
-  local TitleState = require("src.ui.TitleState")
   local OverworldState = require("src.world.OverworldController")
-  return TitleState.new(self, {
+  local factory = Screens.get(self, bootScreens(self).title or "TitleState")
+  return factory.new(self, {
     onNewGame = function()
       while self.stack:top() do self.stack:pop() end
       -- New Game keeps the standalone options.lua preferences
-      self.save = SaveData.newGame()
+      self.save = SaveData.newGame(self:bootConfig())
+      -- no bucket carry-over: mod state from an abandoned session must
+      -- not leak into a fresh slot; mods seed via save.created instead
+      self:adoptSave(self.save)
+      ModRuntime.emit("save.created", { save = self.save })
       self:applyOptions(self.save.options)
       self.stack:push(OverworldState, self.save.player.map,
                       self.save.player.x, self.save.player.y,
                       self.save.player.facing)
-      local OakSpeech = require("src.ui.OakSpeech")
-      self.stack:push(OakSpeech.new(self, function() end))
+      Screens.push(self, bootScreens(self).newGame or "OakSpeech",
+                   function() end)
     end,
     onContinue = function()
-      local loaded = SaveData.load()
+      local loaded, recovered = SaveData.load()
       if loaded then
-        self:restoreSave(loaded)
+        self:restoreSave(loaded, recovered)
       end
     end,
   })
@@ -127,6 +161,10 @@ function Game:update(dt)
   require("src.render.Tilt").update(dt)
 end
 
+-- render.zones' identity default: unhooked, the zone list reaches the blit
+-- exactly as the owning state computed it
+local function sameZones(_, zones) return zones end
+
 function Game:draw()
   -- the UI canvas clears transparent when the overworld's world pass
   -- shows through beneath it; opaque full-screen states get the classic
@@ -145,6 +183,11 @@ function Game:draw()
       zones = s:sgbPalettes(self)
       break
     end
+  end
+  -- 14's render.zones: weather/lighting overlays and custom colorization
+  -- recolor or add zones before the blit
+  if ModRuntime.wantsHook("render.zones") then
+    zones = ModRuntime.call("render.zones", sameZones, self, zones)
   end
   if worldBelow and self.overworld.sgbWorldZones then
     worldZones = self.overworld:sgbWorldZones()
@@ -172,17 +215,31 @@ function Game:keypressed(key)
     self.stack:top():onKeyPressed(key)
     return
   end
+  if devMode and key == "f5" then
+    require("src.dev.HotReload").run(self)
+    return
+  end
+  if devMode and key == "`" then
+    self.stack:push(require("src.dev.Console").new(self))
+    return
+  end
   if key == "f10" then
-    local ManagerState = require("src.mods.ManagerState")
-    self.stack:push(ManagerState.new(self))
+    -- toggle: the manager no longer swallows the keyboard, so a second
+    -- press reaches this branch and closes it instead of stacking another
+    local top = self.stack:top()
+    if top and top.screenId == "ManagerState" then
+      self.stack:pop()
+    else
+      Screens.push(self, "ManagerState")
+    end
     return
   end
   if key == "f1" then
     self:writeSave()
     return
   elseif key == "f2" then
-    local loaded = SaveData.load()
-    if loaded then self:restoreSave(loaded) end
+    local loaded, recovered = SaveData.load()
+    if loaded then self:restoreSave(loaded, recovered) end
     return
   elseif key == "-" then
     self:zoomStep(-1)
@@ -228,6 +285,12 @@ function Game:keyreleased(key)
 end
 
 function Game:gamepadpressed(joystick, button)
+  -- BindingsMenu's pad capture rides the same top-state routing as keys
+  local top = self.stack and self.stack:top()
+  if top and top.onGamepadPressed then
+    top:onGamepadPressed(button)
+    return
+  end
   Input:gamepadpressed(joystick, button)
 end
 
@@ -251,11 +314,34 @@ function Game:touchreleased(id, x, y)
   TouchInput:touchreleased(id, x, y)
 end
 
+-- Point the loader's mod.save backing at this save's modData so per-mod
+-- state persists with the slot.  seedBuckets is boot-only: it keeps what
+-- entry chunks wrote before any save existed, while NEW GAME and
+-- CONTINUE replace the backing outright.
+function Game:adoptSave(save, seedBuckets)
+  save.modData = save.modData or {}
+  local loader = self.mods
+  if not loader then return end
+  if seedBuckets then
+    for id, bucket in pairs(loader.modSave or {}) do
+      if save.modData[id] == nil then save.modData[id] = bucket end
+    end
+  end
+  loader.modSave = save.modData
+end
+
 -- Capture the live world state into the save table and persist it.
 -- Options are flushed to options.lua as part of SaveData.save.
 function Game:writeSave()
   if self.overworld and self.overworld.captureSave then
     self.overworld:captureSave(self.save)
+  end
+  -- stamp here so the save.writing payload carries the exact meta the
+  -- file gets; mods snapshot runtime state into their namespace now
+  self.save.meta = SaveData.buildMeta(
+    self.modStatus and self.modStatus.loaded, self.save.meta)
+  if ModRuntime.wants("save.writing") then
+    ModRuntime.emit("save.writing", { save = self.save, meta = self.save.meta })
   end
   SaveData.save(self.save)
 end
@@ -279,11 +365,25 @@ function Game:applyOptions(opts)
   require("src.render.GBCFX").applyOptions(opts)
 end
 
-function Game:restoreSave(loaded)
+function Game:restoreSave(loaded, recovered)
+  if ModRuntime.wants("save.loading") then
+    ModRuntime.emit("save.loading", { raw = loaded })
+  end
+  -- mod chains replay before validation so a mod repairs its own data
+  -- instead of watching it get quarantined; core steps already ran in
+  -- SaveData.load and skip on the format guard
+  local activeMods = self.modStatus and self.modStatus.loaded
+  SaveData.runMigrations(loaded, self.mods and self.mods.migrations, activeMods)
+  local modsDiff = SaveData.modsDiff(loaded, activeMods)
+  local report = SaveData.validate(loaded, self.data)
+  report.recovered = recovered
+  report.modsDiff = modsDiff
   self.save = loaded
+  self:adoptSave(loaded)
   -- SaveData.load already attached the standalone options.lua table
   self:applyOptions(loaded.options)
-  -- saves from before OT/ID stamping: backfill with the player's
+  -- saves from before OT/ID stamping: backfill with the player's (after
+  -- the scrub, so every mon the stamp loop sees is known)
   local stamp = require("src.battle.BattleState").stampOT
   for _, mon in ipairs(loaded.party or {}) do stamp(loaded, mon) end
   for _, box in ipairs(loaded.boxes or {}) do
@@ -293,6 +393,24 @@ function Game:restoreSave(loaded)
   while self.stack:top() do self.stack:pop() end
   self.stack:push(self.overworld, loaded.player.map,
                   loaded.player.x, loaded.player.y, loaded.player.facing)
+  self.saveReport = report
+  if not SaveData.emptyReport(report) then
+    -- the report screen is a Screens id so mods (or the ui milestone) own
+    -- its looks; until one exists the log keeps a quarantine from being
+    -- silent
+    local ok = pcall(Screens.push, self, "QuarantineReport", report)
+    if not ok then
+      Logger.warn("load report: %d mons quarantined, %d items removed, %d maps remapped%s",
+        #report.lostMons, #report.lostItems, #report.remappedMaps,
+        recovered and (", recovered from " .. recovered) or "")
+      local notice = SaveData.modsDiffNotice(modsDiff, loaded.meta)
+      if notice then Logger.warn("%s", notice) end
+    end
+  end
+  if ModRuntime.wants("save.loaded") then
+    ModRuntime.emit("save.loaded",
+      { save = loaded, meta = loaded.meta, modsDiff = modsDiff })
+  end
 end
 
 return Game

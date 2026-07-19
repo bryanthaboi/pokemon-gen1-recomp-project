@@ -1,11 +1,17 @@
--- Sound effects and cries synthesized from compact ROM channel programs or
--- loaded from legacy static audio definitions. Sources are cached; headless
+-- Sound effects and cries synthesized from compact ROM channel programs,
+-- from def-local chip programs (ChipAsm), or loaded from file definitions --
+-- the branch is chosen per definition, not by a global import flag. Sources
+-- are cached; a definition that fails to load caches as `false` so it is
+-- logged once and skipped, never disabling the rest of the audio. Headless
 -- use is a safe no-op.
+
+local Assets = require("src.render.Assets")
+local Logger = require("src.core.Logger")
+local Runtime = require("src.mods.Runtime")
 
 local Sound = {}
 
 local cache = {}
-local enabled = true
 -- port addition: 0-7 SFX volume from save.options.sfxVol (OptionsMenu),
 -- scaling the 0.8 base every source gets
 local BASE_VOLUME = 0.8
@@ -19,6 +25,9 @@ local volumeScale = 1
 -- (engine/items/item_effects.asm).  Music.lua pauses the current song
 -- while one of these plays and resumes it afterwards.  Ordinary short
 -- SFX (menu beeps, hits, cries) stay overlaid.
+-- data.audio.fanfares supersedes this; the copy stays as the fallback for
+-- caches built before the importer wrote the table, and a def may claim the
+-- behavior for itself with fanfare = true.
 local FANFARES = {
   Level_Up = true,
   Caught_Mon = true,
@@ -30,20 +39,56 @@ local FANFARES = {
   Pokeflute = true,
 }
 
-local function playPath(data, key, path, pitch, tempo)
-  if not enabled or not love.audio or not path then return nil end
+-- which mod put this key in the registry, for attributed failure logs
+local function owner(data, kind, key)
+  local owners = data and data.audio and data.audio._owners
+  local map = owners and owners[kind]
+  return map and map[key] or "base"
+end
+
+-- one log line, plus an entry in the loader's error feed when a mod owns the
+-- def, so the manager's errors screen can flag that mod
+local function reportBadDef(kind, key, who, err)
+  Logger.warn("audio: bad %s def %q (mod %s): %s", kind, key, who, tostring(err))
+  Runtime.reportError(who,
+    ("audio: bad %s def %q: %s"):format(kind, key, tostring(err)))
+end
+
+local function isChipDef(def)
+  return type(def) == "table" and (def.chip ~= nil or def.address ~= nil)
+end
+
+-- a file def carries an optional playback rate; a bare string is shorthand
+-- for { file = <string> }
+local function newFileSource(def)
+  local file = type(def) == "table" and def.file or def
+  if type(file) ~= "string" then return nil, "no chip program and no file" end
+  local ok, s = pcall(love.audio.newSource, file, "static")
+  if not ok or not s then return nil, ok and "no source" or tostring(s) end
+  if type(def) == "table" and def.pitch then pcall(s.setPitch, s, def.pitch) end
+  return s
+end
+
+local function newSfxSource(data, key, def, pitch, tempo)
+  if isChipDef(def) then
+    local ok, s = pcall(require("src.core.ChipAudio").newSfx,
+      data, key:match("^([^@]+)") or key, pitch, tempo, def)
+    if not ok then return nil, tostring(s) end
+    if not s then return nil, "no source" end
+    return s
+  end
+  return newFileSource(def)
+end
+
+local function playPath(data, key, def, pitch, tempo)
+  if not love.audio or not def then return nil end
   local src = cache[key]
+  if src == false then return nil end -- known bad, already logged
   if not src then
-    local ok, s
-    if data.audio and data.audio.runtime and type(path) == "table" then
-      ok, s = pcall(
-        require("src.core.ChipAudio").newSfx,
-        data, key:match("^([^@]+)") or key, pitch, tempo, path)
-    else
-      ok, s = pcall(love.audio.newSource, path, "static")
-    end
-    if not ok or not s then
-      enabled = false
+    local s, err = newSfxSource(data, key, def, pitch, tempo)
+    if not s then
+      cache[key] = false
+      reportBadDef("sfx", key, owner(data, "sfx", key), err)
       return nil
     end
     s:setVolume(BASE_VOLUME * volumeScale)
@@ -55,12 +100,26 @@ local function playPath(data, key, path, pitch, tempo)
   return src
 end
 
+local function ducks(data, name, def)
+  if type(def) == "table" and def.fanfare then return true end
+  local fanfares = data.audio and data.audio.fanfares or FANFARES
+  return fanfares[name] and true or false
+end
+
+local function played(kind, name, species)
+  if not Runtime.wants("sound.played") then return end
+  Runtime.emit("sound.played", { kind = kind, name = name, species = species })
+end
+
 function Sound.play(data, name)
   local sfx = data.audio and data.audio.sfx
-  local src = playPath(data, name, sfx and sfx[name])
-  if src and FANFARES[name] then
+  local def = sfx and sfx[name]
+  local src = playPath(data, name, def)
+  if not src then return end
+  if ducks(data, name, def) then
     require("src.core.Music").duckForFanfare(src)
   end
+  played("sfx", name)
 end
 
 -- Play a move's sound with its MoveSoundTable pitch/tempo modifiers
@@ -78,42 +137,87 @@ function Sound.playMove(data, anim)
   if not sfx then return end
   local name = anim.sound
   local pitch, tempo = anim.pitch or 0, anim.tempo or 0x80
-  if data.audio.runtime and sfx[name] then
-    playPath(data, ("%s@%02x%02x"):format(name, pitch, tempo),
-      sfx[name], pitch, tempo)
+  -- a chip program synthesizes the modified variant on demand; a file def
+  -- can only reach for a pre-rendered one
+  if isChipDef(sfx[name]) then
+    if playPath(data, ("%s@%02x%02x"):format(name, pitch, tempo),
+        sfx[name], pitch, tempo) then
+      played("move", name)
+    end
     return
   end
   if pitch ~= 0 or tempo ~= 0x80 then
     local key = ("%s@%02x%02x"):format(name, pitch, tempo)
     if sfx[key] then
-      playPath(data, key, sfx[key])
+      if playPath(data, key, sfx[key]) then played("move", name) end
       return
     end
   end
-  playPath(data, name, sfx[name])
+  if playPath(data, name, sfx[name]) then played("move", name) end
 end
 
-function Sound.playCry(data, species)
+-- A derived cry ({ base = "RHYDON", pitch, length }) borrows another
+-- species' program and applies its own modifiers, so a new species needs no
+-- assets at all.  Chains are followed; the modifiers nearest the caller win.
+local function resolveCry(data, def, depth)
+  if type(def) ~= "table" or not def.base then return def end
+  if depth > 8 then return nil, "cry base chain too deep" end
   local cries = data.audio and data.audio.cries
-  -- returns the source (nil headless) so callers that block on the cry
-  -- like the original's PlayCry -> WaitForSoundToFinish can poll it
-  local definition = cries and cries[species]
-  if data.audio and data.audio.runtime and definition then
-    local key = "cry:" .. tostring(species)
-    local src = cache[key]
-    if not src then
-      local ok, generated = pcall(
-        require("src.core.ChipAudio").newCry, data, species)
-      if not ok or not generated then return nil end
-      generated:setVolume(BASE_VOLUME * volumeScale)
-      cache[key] = generated
-      src = generated
-    end
-    src:stop()
-    src:play()
-    return src
+  local baseDef = cries and cries[def.base]
+  if not baseDef then
+    return nil, "unknown base cry " .. tostring(def.base)
   end
-  return playPath(data, "cry:" .. tostring(species), definition)
+  local resolved, err = resolveCry(data, baseDef, depth + 1)
+  if not resolved then return nil, err end
+  if type(resolved) ~= "table" or not (resolved.header or resolved.chip) then
+    return nil, "base cry " .. tostring(def.base) .. " is not a chip program"
+  end
+  return {
+    header = resolved.header, chip = resolved.chip,
+    pitch = def.pitch or resolved.pitch,
+    length = def.length or resolved.length,
+  }
+end
+
+local function newCrySource(data, species, def)
+  local resolved, err = resolveCry(data, def, 0)
+  if not resolved then return nil, err end
+  if type(resolved) == "table" and (resolved.header or resolved.chip) then
+    local ok, s = pcall(
+      require("src.core.ChipAudio").newCry, data, species, resolved)
+    if not ok then return nil, tostring(s) end
+    if not s then return nil, "no source" end
+    return s
+  end
+  return newFileSource(resolved)
+end
+
+-- returns the source (nil headless) so callers that block on the cry
+-- like the original's PlayCry -> WaitForSoundToFinish can poll it
+function Sound.playCry(data, species)
+  if not love.audio then return nil end
+  local cries = data.audio and data.audio.cries
+  local def = cries and cries[species]
+  if not def then return nil end
+  local key = "cry:" .. tostring(species)
+  local src = cache[key]
+  if src == false then return nil end
+  if not src then
+    local s, err = newCrySource(data, species, def)
+    if not s then
+      cache[key] = false
+      reportBadDef("cry", tostring(species),
+        owner(data, "cries", species), err)
+      return nil
+    end
+    s:setVolume(BASE_VOLUME * volumeScale)
+    cache[key] = s
+    src = s
+  end
+  src:stop()
+  src:play()
+  played("cry", species, species)
+  return src
 end
 
 -- GROWL/ROAR are the only two moves that play a cry (IsCryMove checks
@@ -159,25 +263,28 @@ local looping = {}
 
 function Sound.startLoop(data, name)
   if looping[name] then return end
+  if not love.audio then return end
   local sfx = data.audio and data.audio.sfx
-  local path = sfx and sfx[name]
-  local runtimeAlarm = data.audio and data.audio.runtime
-    and name == "Low_Health_Alarm"
-  if not enabled or not love.audio or (not path and not runtimeAlarm) then
-    return
-  end
+  local def = sfx and sfx[name]
+  local alarm = not def and name == "Low_Health_Alarm"
+  if not def and not alarm then return end
   local src = loopCache[name]
+  if src == false then return end
   if not src then
-    local ok, s
-    if data.audio.runtime and name == "Low_Health_Alarm" then
-      ok, s = pcall(require("src.core.ChipAudio").newLowHealthAlarm)
-    elseif data.audio.runtime and type(path) == "table" then
-      ok, s = pcall(
-        require("src.core.ChipAudio").newSfx, data, name)
+    local s, err
+    if alarm then
+      -- the synthesized siren is the default, not the rule: a registered
+      -- Low_Health_Alarm def of any shape replaces it
+      local ok, generated = pcall(require("src.core.ChipAudio").newLowHealthAlarm)
+      if ok then s = generated else err = tostring(generated) end
     else
-      ok, s = pcall(love.audio.newSource, path, "static")
+      s, err = newSfxSource(data, name, def)
     end
-    if not ok then return end
+    if not s then
+      loopCache[name] = false
+      reportBadDef("sfx", name, owner(data, "sfx", name), err or "no source")
+      return
+    end
     s:setLooping(true)
     s:setVolume(BASE_VOLUME * volumeScale)
     loopCache[name] = s
@@ -206,12 +313,39 @@ end
 function Sound.setVolumeLevel(level)
   volumeScale = math.max(0, math.min(7, level or 7)) / 7
   for _, src in pairs(cache) do
-    pcall(src.setVolume, src, BASE_VOLUME * volumeScale)
+    if src then pcall(src.setVolume, src, BASE_VOLUME * volumeScale) end
   end
   for _, src in pairs(loopCache) do
-    pcall(src.setVolume, src, BASE_VOLUME * volumeScale)
+    if src then pcall(src.setVolume, src, BASE_VOLUME * volumeScale) end
   end
 end
+
+-- hot reload / jukebox A-B: drop one key's sources (its pitch-tempo
+-- variants included) or all of them, so the next play re-resolves the def
+function Sound.invalidate(name)
+  local function evict(store, key)
+    local src = store[key]
+    if src then pcall(src.stop, src) end
+    store[key] = nil
+  end
+  for _, store in ipairs({ cache, loopCache }) do
+    for key in pairs(store) do
+      if not name or key == name or key:sub(1, #name + 1) == name .. "@" then
+        evict(store, key)
+      end
+    end
+  end
+  for key, src in pairs(looping) do
+    if not name or key == name then
+      pcall(src.stop, src)
+      looping[key] = nil
+    end
+  end
+end
+
+-- the flush fan-out calls with no key, dropping everything, so an edited
+-- def is re-resolved on the next play (20 §2 cache contract, audio row)
+Assets.register(Sound.invalidate)
 
 -- re-apply persisted audio options (Game calls this on boot and after
 -- loading a save)

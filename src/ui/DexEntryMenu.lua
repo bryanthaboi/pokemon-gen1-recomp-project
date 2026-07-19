@@ -43,7 +43,10 @@ function DexEntryMenu:draw()
   Font.draw(def.name, 72, 8)
   local e = def.dexEntry or {}
   Font.draw((e.kind or "?") .. " POKéMON", 72, 20)
-  Font.draw(("No.%03d"):format(def.dex or 0), 72, 32)
+  -- same number width as the list (constants.dexDigits), so a dex past 999
+  -- prints the extra digit everywhere at once
+  local digits = (self.game.data.constants or {}).dexDigits or 3
+  Font.draw(("No.%0" .. digits .. "d"):format(def.dex or 0), 72, 32)
   local owned = self.game.save.pokedex and self.game.save.pokedex.owned[def.id]
   -- height/weight print only once owned, like the description
   -- (pokedex.asm: "if the pokemon has not been owned, don't print the

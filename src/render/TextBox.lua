@@ -7,13 +7,14 @@
 -- the text is exhausted and A is pressed, then calls onDone.
 
 local Font = require("src.render.Font")
+local Theme = require("src.ui.Theme")
 
 local TextBox = {}
 TextBox.__index = TextBox
 
+-- theme-free fallbacks; geometry resolves against Theme.textBox at
+-- construction time, so an unthemed boot stays byte-identical
 local BOX_TX, BOX_TY, BOX_TW, BOX_TH = 0, 12, 20, 6
-local LINE1_Y, LINE2_Y = (BOX_TY + 2) * 8, (BOX_TY + 4) * 8
-local TEXT_X = 8
 local MAX_COLS = 18
 
 -- opts.choice: when the last page has typed out, a YES/NO ChoiceBox pops
@@ -33,8 +34,17 @@ function TextBox.new(game, text, onDone, opts)
   self.choice = opts and opts.choice
   self.defaultNo = opts and opts.defaultNo
   self.auto = opts and opts.auto
+  local box = Theme.textBox or {}
+  self.boxTx = box.tx or BOX_TX
+  self.boxTy = box.ty or BOX_TY
+  self.boxTw = box.tw or BOX_TW
+  self.boxTh = box.th or BOX_TH
+  self.maxCols = box.maxCols or MAX_COLS
+  self.textX = (self.boxTx + 1) * 8
+  self.line1Y = (self.boxTy + 2) * 8
+  self.line2Y = (self.boxTy + 4) * 8
   text = TextBox.substitute(game, text)
-  self.pages = TextBox.paginate(text)
+  self.pages = TextBox.paginate(text, self.maxCols)
   self.pageIndex = 1
   self.lineIndex = 1
   self.charIndex = 0
@@ -46,23 +56,35 @@ function TextBox.new(game, text, onDone, opts)
   return self
 end
 
-function TextBox.substitute(game, text)
-  local save = game.save
-  text = text:gsub("{PLAYER}", save.player.name or "RED")
-  text = text:gsub("{RIVAL}", save.player.rival or "BLUE")
-  -- wStringBuffer: give_item copies the item name here, like GiveItem ->
-  -- CopyToStringBuffer (home/give.asm); "received item!" texts read it
-  -- (staying set afterwards mirrors pokered's stale-buffer semantics)
-  if game.stringBuffer then
-    text = text:gsub("{RAM:wStringBuffer}", game.stringBuffer)
+-- The runtime tokens substitute() knows, as handlers the tokens registry
+-- serves.  Each is fn(game, arg) -> replacement, or nil to drop the token.
+-- RAM keeps pokered's stale-buffer semantics: give_item copies the item
+-- name into stringBuffer, like GiveItem -> CopyToStringBuffer
+-- (home/give.asm), and it stays set afterwards.
+TextBox.TOKENS = {
+  PLAYER = function(game) return game.save.player.name or "RED" end,
+  RIVAL = function(game) return game.save.player.rival or "BLUE" end,
+  RAM = function(game, arg)
+    return arg == "wStringBuffer" and game.stringBuffer or nil
+  end,
+}
+
+function TextBox.registerInto(registry, _, owner)
+  for id, handler in pairs(TextBox.TOKENS) do
+    registry:register(id, handler, owner)
   end
-  text = text:gsub("{[%w_:]+}", "") -- other runtime tokens: drop visibly-empty
-  return text
+end
+
+function TextBox.substitute(game, text)
+  local Tokens = require("src.script.Tokens")
+  local handlers = game.data and game.data.tokens or TextBox.TOKENS
+  return Tokens.expand(game, text, handlers)
 end
 
 -- Split marked-up text into pages of lines.  \v-scrolled lines become
 -- additional lines on the same page (the box scrolls them).
-function TextBox.paginate(text)
+function TextBox.paginate(text, maxCols)
+  maxCols = maxCols or (Theme.textBox and Theme.textBox.maxCols) or MAX_COLS
   local pages = {}
   for pageText in (text .. "\f"):gmatch("(.-)\f") do
     if pageText ~= "" then
@@ -70,9 +92,9 @@ function TextBox.paginate(text)
       for chunk in (pageText .. "\n"):gmatch("(.-)[\n\v]") do
         local line = chunk
         -- wrap long lines defensively (the source rarely needs it)
-        while #line > MAX_COLS do
-          local cut = MAX_COLS
-          for i = MAX_COLS, 1, -1 do
+        while #line > maxCols do
+          local cut = maxCols
+          for i = maxCols, 1, -1 do
             if line:sub(i, i) == " " then cut = i break end
           end
           table.insert(lines, line:sub(1, cut))
@@ -194,25 +216,27 @@ function TextBox:update(dt)
 end
 
 function TextBox:draw()
-  Font.drawBox(BOX_TX, BOX_TY, BOX_TW, BOX_TH)
+  Font.drawBox(self.boxTx, self.boxTy, self.boxTw, self.boxTh)
   love.graphics.setColor(0, 0, 0, 1)
   if self.scrollPx and self.scrollPx > 0 then
     self.scrollPx = self.scrollPx - 2
     if self.scrollPx <= 0 then self.scrollPx = nil end
   end
   local off = self.scrollPx or 0
-  local ys = { LINE1_Y, LINE2_Y }
+  local ys = { self.line1Y, self.line2Y }
   for i, line in ipairs(self.shown) do
-    local y = (ys[i] or LINE2_Y) + off
+    local y = (ys[i] or self.line2Y) + off
     for j, code in ipairs(line) do
-      Font.drawCode(code, TEXT_X + (j - 1) * 8, y)
+      Font.drawCode(code, self.textX + (j - 1) * 8, y)
     end
   end
   if (self.waiting or (self.done and not self.choice and not self.auto))
      and self.blink < 30 then
-    -- page-advance cursor: glyph $EE, the blinking down arrow the original
-    -- prints via `ld a, "▼"` (home/text.asm)
-    Font.drawCode(0xEE, 18 * 8, (BOX_TY + 5) * 8 - 4)
+    -- page-advance cursor: glyph $EE by default, the blinking down arrow
+    -- the original prints via `ld a, "▼"` (home/text.asm)
+    Font.drawCode(Theme.moreArrow or 0xEE,
+                  (self.boxTx + self.boxTw - 2) * 8,
+                  (self.boxTy + self.boxTh - 1) * 8 - 4)
   end
   love.graphics.setColor(1, 1, 1, 1)
 end

@@ -149,10 +149,10 @@ local function useOn(game, battle, id, target, list, moveIndex)
           game.data.pokemon[target.species].name, mdef.name) })
         if result == "learn" then consume(game, id) end
       else
-        local MoveLearnMenu = require("src.ui.MoveLearnMenu")
-        game.stack:push(MoveLearnMenu.new(game, target, moveId, function(learned)
-          if learned and result == "learn" then consume(game, id) end
-        end))
+        require("src.ui.Screens").push(game, "MoveLearnMenu", target, moveId,
+          function(learned)
+            if learned and result == "learn" then consume(game, id) end
+          end)
       end
     end
     list:close()
@@ -162,10 +162,10 @@ local function useOn(game, battle, id, target, list, moveIndex)
 
   -- the TOWN MAP screen (engine/menus/town_map.asm)
   if result == "townmap" then
-    local ok, TownMap = pcall(require, "src.ui.TownMap")
-    if ok then
-      game.stack:push(TownMap.new(game))
-    else
+    local ok = pcall(function()
+      require("src.ui.Screens").push(game, "TownMap")
+    end)
+    if not ok then
       showMessages(game, { "The TOWN MAP is\nunreadable here." })
     end
     return
@@ -243,8 +243,11 @@ local function useOn(game, battle, id, target, list, moveIndex)
             local moveId = moves[i]
             if not moveId then
               local Evolution = require("src.pokemon.Evolution")
-              local evoTo = Evolution.pendingLevelEvo(game.data, target)
-              if evoTo then Evolution.evolve(game, target, evoTo) end
+              local evoTo, evo = Evolution.pendingFor(game, target,
+                                                     { kind = "levelup" })
+              if evoTo then
+                Evolution.evolve(game, target, evoTo, nil, evo and evo.method)
+              end
               return
             end
             for _, mv in ipairs(target.moves) do
@@ -257,8 +260,8 @@ local function useOn(game, battle, id, target, list, moveIndex)
               showMessages(game, { ("%s learned\n%s!"):format(name, mdef.name) },
                            nextStep)
             else
-              local MoveLearnMenu = require("src.ui.MoveLearnMenu")
-              game.stack:push(MoveLearnMenu.new(game, target, moveId, nextStep))
+              require("src.ui.Screens").push(game, "MoveLearnMenu",
+                                             target, moveId, nextStep)
             end
           end
           nextStep()
@@ -291,11 +294,10 @@ local function useItem(game, battle, id, list)
   local def = game.data.items[id]
   if ItemEffects.needsTarget(id, def) and not ItemEffects.isBall(id) then
     -- pick a target from the party
-    local PartyMenu = require("src.ui.PartyMenu")
     -- the ETHERs and PP UP open the move menu after picking a mon
     -- (ItemUsePPRestore / ItemUsePPUp); the ELIXERs hit every move
     local wantsMove = id == "ETHER" or id == "MAX_ETHER" or id == "PP_UP"
-    game.stack:push(PartyMenu.new(game, {
+    require("src.ui.Screens").push(game, "PartyMenu", {
       pickOnly = true,
       onSwitch = function(mon)
         if not wantsMove then
@@ -318,7 +320,7 @@ local function useItem(game, battle, id, list)
           end,
         }))
       end,
-    }))
+    })
   else
     useOn(game, battle, id, nil, list)
   end

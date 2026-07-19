@@ -5,11 +5,10 @@
 -- menu and only the start menu's adds PAD_START.
 
 local Font = require("src.render.Font")
+local Theme = require("src.ui.Theme")
 
 local Menu = {}
 Menu.__index = Menu
-
-local CURSOR = 0xED -- "▶" glyph (right arrow) in font.png
 
 function Menu.new(game, items, opts)
   local self = setmetatable({}, Menu)
@@ -70,7 +69,7 @@ function Menu:draw()
   for i, item in ipairs(self.items) do
     Font.draw(item.label, (self.tx + 2) * 8, (self.ty + i * 2 - 1) * 8)
   end
-  Font.drawCode(CURSOR, (self.tx + 1) * 8, (self.ty + self.index * 2 - 1) * 8)
+  Font.drawCode(Theme.cursor, (self.tx + 1) * 8, (self.ty + self.index * 2 - 1) * 8)
   love.graphics.setColor(1, 1, 1, 1)
 end
 

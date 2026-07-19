@@ -7,9 +7,60 @@
 
 local Flags = require("src.script.Flags")
 local Logger = require("src.core.Logger")
+local Screens = require("src.ui.Screens")
 local TextBox = require("src.render.TextBox")
 
 local Commands = {}
+
+-- "mod:" keys route to save.modData[owner], the mod-private namespace
+-- (09 §4.8); owner comes from the dispatching contribution's source
+-- attribution, so an engine-owned script using one is a script error
+local function modFieldOwner(ctx)
+  local owner = ctx.source and ctx.source.modId
+  if not owner then
+    error("'mod:' fields need a mod-owned script", 0)
+  end
+  return owner
+end
+
+local function flagValue(ctx, name)
+  local rest = type(name) == "string" and name:match("^mod:(.+)$")
+  if rest then
+    local modData = ctx.save.modData
+    local bucket = modData and modData[modFieldOwner(ctx)]
+    return (bucket and bucket[rest]) and true or false
+  end
+  return Flags.get(ctx.save, name)
+end
+
+-- Parallel-runner move locks (09 §4.6): a background script moving an
+-- NPC takes a per-NPC lock; a foreground script requesting the same NPC
+-- preempts (kills) the background runner.  The player is never movable
+-- from a parallel runner.
+local function claimMove(ctx, entity)
+  local ow = ctx.overworld
+  if not ow then return end
+  if ctx.runner.parallel then
+    if entity == ow.player then
+      error("parallel scripts cannot move the player", 0)
+    end
+    ow.npcMoveLocks = ow.npcMoveLocks or {}
+    ow.npcMoveLocks[entity] = ctx.runner
+  else
+    local holder = ow.npcMoveLocks and ow.npcMoveLocks[entity]
+    if holder and holder ~= ctx.runner and ow.killParallel then
+      Logger.warn("script: foreground move preempts a parallel runner")
+      ow:killParallel(holder)
+      -- the dead runner's queued steps go too; the foreground move owns
+      -- the entity now
+      for i = #ow.scriptMoves, 1, -1 do
+        if ow.scriptMoves[i].entity == entity then
+          table.remove(ow.scriptMoves, i)
+        end
+      end
+    end
+  end
+end
 
 -- show_text <textId or literal> [subs]: textId is looked up in generated
 -- text (by label like "_PalletTownGirlText" or via the map's TEXT_*
@@ -53,6 +104,23 @@ function Commands.show_text(ctx, textId, subs)
       return require("src.core.Sound").playCry(ctx.game.data, species)
     end, delay = 0 } } -- WaitForSoundToFinish has no trailing Delay3 of its own
   end
+  -- text_opts armed the next box: auto = true is the plain no-button-wait
+  -- form, overlap folds under auto, everything else passes through
+  if ctx.textOpts then
+    local armed = ctx.textOpts
+    ctx.textOpts = nil
+    opts = opts or {}
+    for k, v in pairs(armed) do
+      if k == "auto" then
+        opts.auto = opts.auto or (v == true and {} or v)
+      elseif k == "overlap" then
+        opts.auto = opts.auto or {}
+        opts.auto.overlap = v
+      else
+        opts[k] = v
+      end
+    end
+  end
   ctx.game.stack:push(TextBox.new(ctx.game, text, function()
     runner:resume()
   end, opts))
@@ -91,7 +159,7 @@ function Commands.clear_flag(ctx, name)
 end
 
 function Commands.check_flag(ctx, name)
-  ctx.lastCheck = Flags.get(ctx.save, name)
+  ctx.lastCheck = flagValue(ctx, name)
 end
 
 function Commands.check_item(ctx, itemId)
@@ -119,7 +187,8 @@ function Commands.give_item(ctx, itemId, count, gotText)
   -- room and talk again, like the original (pokered's `jr nc, .bag_full`
   -- skips the received text entirely when AddItemToInventory refuses)
   if not require("src.inventory.Bag").add(ctx.save, itemId, count or 1) then
-    Commands.show_text(ctx, "You can't carry\nany more items!")
+    Commands.show_text(ctx, ctx.game.data.text
+      and ctx.game.data.text._BagFullText or "You can't carry\nany more items!")
     return math.huge
   end
   local def = ctx.game.data.items[itemId]
@@ -178,6 +247,7 @@ function Commands.wait(ctx, frames)
 end
 
 local function walkEntity(ctx, entity, dir, tiles)
+  claimMove(ctx, entity)
   local runner = ctx.runner
   ctx.overworld:scriptMove(entity, dir, tiles or 1, function()
     runner:resume()
@@ -289,7 +359,25 @@ end
 -- consumed by a map's onEnter, e.g. save.pendingHallOfFame handed from the
 -- Champions Room warp to the HALL_OF_FAME room cutscene).  Not a flag: it
 -- lives outside the event-flag namespace and is cleared on consumption.
+-- "mod:key" routes to the owning mod's save.modData namespace instead of
+-- the save root, so mod state stays attributable.
 function Commands.set_field(ctx, key, value)
+  local rest = type(key) == "string" and key:match("^mod:(.+)$")
+  if rest then
+    local owner = modFieldOwner(ctx)
+    local modData = ctx.save.modData
+    if not modData then
+      modData = {}
+      ctx.save.modData = modData
+    end
+    local bucket = modData[owner]
+    if not bucket then
+      bucket = {}
+      modData[owner] = bucket
+    end
+    bucket[rest] = value
+    return
+  end
   ctx.save[key] = value
 end
 
@@ -425,11 +513,9 @@ function Commands.record_hall_of_fame(ctx)
   table.insert(ctx.save.hallOfFame, entry)
   local runner = ctx.runner
   local game = ctx.game
-  local HallOfFame = require("src.ui.HallOfFame")
-  local Credits = require("src.ui.Credits")
-  game.stack:push(HallOfFame.new(game, function()
+  Screens.push(game, "HallOfFame", function()
     -- the end credits roll after the induction (engine/movie/credits.asm)
-    game.stack:push(Credits.new(game, function()
+    Screens.push(game, "Credits", function()
       runner:resume()
     end, function()
       -- THE END is on screen: HallOfFameResetEventsAndSaveScript sets
@@ -437,22 +523,24 @@ function Commands.record_hall_of_fame(ctx)
       -- save keeps the player standing in the HALL_OF_FAME room.  (The
       -- E4 room-script/event resets that precede the save in pokered are
       -- the Indigo lobby's re-entry reset here, data/scripts/story6.lua.)
-      ctx.save.lastHeal = { map = "PALLET_TOWN", x = 5, y = 6 }
+      -- The reset heal point is field.boot's spawn, PALLET_TOWN (5,6)
+      -- in the vanilla dataset.
+      local boot = game.data.field and game.data.field.boot or {}
+      ctx.save.lastHeal = { map = boot.startMap or "PALLET_TOWN",
+                            x = boot.startX or 5, y = boot.startY or 6 }
       if game.writeSave then game:writeSave() end
-    end))
-  end))
+    end)
+  end)
   runner:yield()
   -- after the A/B press on THE END the script does `jp Init`: a soft
   -- reset through the boot sequence -- copyright card + attract movie,
   -- then the title screen (the same path Game:load boots through)
   require("src.core.Music").stop()
   while game.stack:top() do game.stack:pop() end
-  local okIntro, IntroMovie = pcall(require, "src.ui.IntroMovie")
-  if okIntro and IntroMovie then
-    game.stack:push(IntroMovie.new(game, function()
-      if game.makeTitleState then game.stack:push(game:makeTitleState()) end
-    end))
-  elseif game.returnToTitle then
+  local okIntro = pcall(Screens.push, game, "IntroMovie", function()
+    if game.makeTitleState then game.stack:push(game:makeTitleState()) end
+  end)
+  if not okIntro and game.returnToTitle then
     game:returnToTitle()
   end
 end
@@ -496,20 +584,27 @@ function Commands.open_mart(ctx, textConst)
     Logger.warn("open_mart: no mart on %s/%s", ow.map.def.label, tostring(textConst))
     return
   end
-  local ShopMenu = require("src.ui.ShopMenu")
   local runner = ctx.runner
-  ctx.game.stack:push(ShopMenu.new(ctx.game, entry.mart, function()
+  Screens.push(ctx.game, "ShopMenu", entry.mart, function()
     runner:resume()
-  end))
+  end)
   runner:yield()
 end
 
 -- Rival battles pick the party from the player's starter choice
 -- (parties are ordered by the rival's own starter; see parties.asm):
 -- player CHARMANDER -> base+0, SQUIRTLE -> base+1, BULBASAUR -> base+2.
-function Commands.rival_battle(ctx, oppClass, baseParty)
+-- offsets (flag -> party offset) lets a modded roster remap the pick;
+-- field.starterCounterpicks is the data-side default when stamped.
+function Commands.rival_battle(ctx, oppClass, baseParty, offsets)
+  offsets = offsets
+    or (ctx.game.data.field and ctx.game.data.field.starterCounterpicks)
   local offset = 0
-  if Flags.get(ctx.save, "EVENT_CHOSE_SQUIRTLE") then
+  if offsets then
+    for flag, mapped in pairs(offsets) do
+      if Flags.get(ctx.save, flag) then offset = mapped break end
+    end
+  elseif Flags.get(ctx.save, "EVENT_CHOSE_SQUIRTLE") then
     offset = 1
   elseif Flags.get(ctx.save, "EVENT_CHOSE_BULBASAUR") then
     offset = 2
@@ -535,6 +630,9 @@ function Commands.trade(ctx, tradeIndex, doneFlag)
   local wantName = data.pokemon[trade.give] and data.pokemon[trade.give].name or trade.give
   local getName = data.pokemon[trade.get] and data.pokemon[trade.get].name or trade.get
   local dialogset = trade.dialogset or 1 -- older generated data: casual
+  -- a trade record may carry explicit text-label overrides (texts.wannaTrade
+  -- and friends); the dialogset families stay the defaults
+  local texts = trade.texts or {}
   local subs = {
     ["RAM:wInGameTradeGiveMonName"] = wantName,
     ["RAM:wInGameTradeReceiveMonName"] = getName,
@@ -543,12 +641,12 @@ function Commands.trade(ctx, tradeIndex, doneFlag)
     Commands.show_text(ctx, label, subs)
   end
   if doneFlag and Flags.get(ctx.save, doneFlag) then
-    say("_AfterTrade" .. dialogset .. "Text")
+    say(texts.afterTrade or "_AfterTrade" .. dialogset .. "Text")
     return
   end
-  Commands.ask(ctx, "_WannaTrade" .. dialogset .. "Text", subs)
+  Commands.ask(ctx, texts.wannaTrade or "_WannaTrade" .. dialogset .. "Text", subs)
   if not ctx.lastCheck then
-    say("_NoTrade" .. dialogset .. "Text")
+    say(texts.noTrade or "_NoTrade" .. dialogset .. "Text")
     return
   end
   -- InGameTrade_DoTrade: DisplayPartyMenu -- the player picks which mon
@@ -557,22 +655,21 @@ function Commands.trade(ctx, tradeIndex, doneFlag)
   local party = ctx.save.party
   local runner = ctx.runner
   local picked
-  local PartyMenu = require("src.ui.PartyMenu")
-  ctx.game.stack:push(PartyMenu.new(ctx.game, {
+  Screens.push(ctx.game, "PartyMenu", {
     pickOnly = true,
     onCancel = function() runner:resume() end,
     onSwitch = function(mon)
       picked = mon
       runner:resume()
     end,
-  }))
+  })
   runner:yield()
   if not picked then
-    say("_NoTrade" .. dialogset .. "Text")
+    say(texts.noTrade or "_NoTrade" .. dialogset .. "Text")
     return
   end
   if picked.species ~= trade.give then
-    say("_WrongMon" .. dialogset .. "Text")
+    say(texts.wrongMon or "_WrongMon" .. dialogset .. "Text")
     return
   end
   local slot
@@ -581,7 +678,7 @@ function Commands.trade(ctx, tradeIndex, doneFlag)
   end
   if not slot then return end -- unreachable: picked came from the party
   if doneFlag then Flags.set(ctx.save, doneFlag) end
-  say("_ConnectCableText")
+  say(texts.connectCable or "_ConnectCableText")
   local Pokemon = require("src.pokemon.Pokemon")
   local sent = party[slot]
   -- the received mon keeps the sent mon's level (wCurEnemyLevel) and,
@@ -597,16 +694,334 @@ function Commands.trade(ctx, tradeIndex, doneFlag)
     dex.owned[trade.get] = true
   end
   -- the trade machine animation (engine/movie/trade.asm)
-  local TradeAnim = require("src.ui.TradeAnim")
-  ctx.game.stack:push(TradeAnim.new(ctx.game, {
+  Screens.push(ctx.game, "TradeAnim", {
     sent = sent, received = newMon,
     onDone = function() runner:resume() end,
-  }))
+  })
   runner:yield()
   -- TradedForText (sound_get_key_item) then the dialogset's thanks
   require("src.core.Sound").play(data, "Get_Key_Item")
-  say("_TradedForText")
-  say("_Thanks" .. dialogset .. "Text")
+  say(texts.tradedFor or "_TradedForText")
+  say(texts.thanks or "_Thanks" .. dialogset .. "Text")
+end
+
+-- ------- script v2 verbs: the promoted raw-Lua cutscene vocabulary
+
+-- label <name>: jump target, pre-scanned by the runner; no-op here
+function Commands.label() end
+
+-- emote <target> <bubble> [frames]: the emotion-bubble hold
+-- (engine/overworld/emotion_bubbles.asm).  target is "player", an object
+-- index, or nil for the talking NPC; bubble names index
+-- data.field.emotionBubbles.bubbles; blocks frames (default 60, the
+-- trainer-sight hold).
+local EMOTE_BUBBLES = { shock = 1, question = 2, happy = 3 }
+
+function Commands.emote(ctx, target, bubble, frames)
+  local ow = ctx.overworld
+  if not ow then return end
+  local entity
+  if target == "player" then
+    entity = ow.player
+  elseif type(target) == "number" then
+    entity = ow:npcByIndex(target)
+  else
+    entity = ctx.npc
+  end
+  if not entity then return end
+  local runner = ctx.runner
+  ow.emote = {
+    npc = entity, frames = frames or 60,
+    bubble = EMOTE_BUBBLES[bubble] or (type(bubble) == "number" and bubble) or 1,
+    onDone = function() runner:resume() end,
+  }
+  runner:yield()
+end
+
+-- walk_npc <objIndex|"player"> <dirs> [opts]: chained scriptMove along an
+-- explicit direction list; opts.wait = false returns immediately with
+-- the movement still running
+function Commands.walk_npc(ctx, objIndex, dirs, opts)
+  local ow = ctx.overworld
+  if not ow then return end
+  local entity = objIndex == "player" and ow.player or ow:npcByIndex(objIndex)
+  if not entity then return end
+  claimMove(ctx, entity)
+  local runner = ctx.runner
+  local wait = not (opts and opts.wait == false)
+  local yielded, finished = false, false
+  local i = 0
+  local function step()
+    i = i + 1
+    if not dirs[i] then
+      finished = true
+      if wait and yielded then runner:resume() end
+      return
+    end
+    ow:scriptMove(entity, dirs[i], 1, step)
+  end
+  step()
+  if wait and not finished then
+    yielded = true
+    runner:yield()
+  end
+end
+
+-- march_in_place <objIndex> <on>: toggle the walk-in-place state
+-- (NPC_CHANGE_FACING, movement.asm); the overworld re-arms the cycle
+-- while the toggle stays set.  Non-blocking, so ambient parallel
+-- scripts can leave an NPC fidgeting.
+function Commands.march_in_place(ctx, objIndex, on)
+  local ow = ctx.overworld
+  if not ow then return end
+  local npc = ow:npcByIndex(objIndex)
+  if not npc then return end
+  ow.marchers = ow.marchers or {}
+  ow.marchers[npc] = on and true or nil
+end
+
+-- play_music <songId> [opts]: switch map music now; opts.keep marks it
+-- to survive the next warp (the story files' keepMusic idiom)
+function Commands.play_music(ctx, songId, opts)
+  require("src.core.Music").play(ctx.game.data, songId)
+  if opts and opts.keep and ctx.overworld then
+    ctx.overworld.keepMusicOnce = true
+  end
+end
+
+function Commands.stop_music(ctx)
+  require("src.core.Music").stop()
+end
+
+-- replace_block <bx> <by> <blockId>: the Cut-tree/card-key-door idiom,
+-- on the current map
+function Commands.replace_block(ctx, bx, by, blockId)
+  if ctx.overworld then ctx.overworld:replaceBlock(bx, by, blockId) end
+end
+
+-- set_tile_anim <anim|false>: override the current tileset's animation
+-- ("TILEANIM_WATER"; false stops it) until the next map change restores
+-- the record (setMap)
+function Commands.set_tile_anim(ctx, anim)
+  local ow = ctx.overworld
+  if not ow then return end
+  local tileset = ow.map.tileset
+  if not ow.tileAnimOverride then
+    ow.tileAnimOverride = { tileset = tileset, animation = tileset.animation }
+  end
+  tileset.animation = anim or nil
+  if ow.map.renderer then ow.map.renderer:rebuild() end
+end
+
+-- text_opts <opts>: TextBox options for the NEXT show_text only; auto =
+-- true is the plain no-button-wait box, overlap folds under auto
+function Commands.text_opts(ctx, opts)
+  ctx.textOpts = opts
+end
+
+-- push_screen <screenId> [args]: instantiate through the screens
+-- registry and block until the screen pops itself
+function Commands.push_screen(ctx, screenId, args)
+  local screens = ctx.game.data.screens
+  if not (screens and screens[screenId]) then
+    error(("push_screen: unknown screen '%s'"):format(tostring(screenId)), 0)
+  end
+  local runner = ctx.runner
+  local stack = ctx.game.stack
+  local state = Screens.push(ctx.game, screenId, args)
+  runner.waitingCheck = function()
+    for _, live in ipairs(stack.states) do
+      if live == state then return false end
+    end
+    return true
+  end
+  runner:yield()
+end
+
+-- fade "out"|"in" [frames]: screen fade without warping (the Transition
+-- ramp startWarpTo uses, split in two).  "out" pushes a black overlay
+-- that stays up; the held state keeps ticking the runner's frame-waits
+-- so a script can wait/replace_block under it.  "in" ramps it away.
+local FadeOverlay = {}
+FadeOverlay.__index = FadeOverlay
+
+function FadeOverlay.new(game, ow)
+  return setmetatable({ game = game, ow = ow, alpha = 0 }, FadeOverlay)
+end
+
+function FadeOverlay:update()
+  local ow = self.ow
+  if ow and ow.runner then ow.runner:update() end
+  local ramp = self.ramp
+  if not ramp then return end
+  ramp.t = ramp.t + 1
+  local k = math.min(1, ramp.t / ramp.frames)
+  self.alpha = ramp.from + (ramp.to - ramp.from) * k
+  if ramp.t >= ramp.frames then
+    self.ramp = nil
+    if ramp.to <= 0 then
+      -- a box may sit above the overlay; remove in place, not pop
+      local states = self.game.stack.states
+      for i = #states, 1, -1 do
+        if states[i] == self then table.remove(states, i) break end
+      end
+      if ow then ow.fadeOverlay = nil end
+    end
+    if ramp.onDone then ramp.onDone() end
+  end
+end
+
+function FadeOverlay:draw()
+  love.graphics.setColor(0, 0, 0, self.alpha)
+  love.graphics.rectangle("fill", 0, 0, 160, 144)
+  love.graphics.setColor(1, 1, 1, 1)
+end
+
+function Commands.fade(ctx, dir, frames)
+  local ow = ctx.overworld
+  if not ow then return end
+  local runner = ctx.runner
+  frames = frames or 12 -- Transition's ramp length
+  local overlay = ow.fadeOverlay
+  if dir == "out" then
+    if not overlay then
+      overlay = FadeOverlay.new(ctx.game, ow)
+      ow.fadeOverlay = overlay
+      ctx.game.stack:push(overlay)
+    end
+    overlay.ramp = { from = overlay.alpha, to = 1, frames = frames, t = 0,
+                     onDone = function() runner:resume() end }
+    runner:yield()
+  elseif dir == "in" then
+    if not overlay then return end
+    overlay.ramp = { from = overlay.alpha, to = 0, frames = frames, t = 0,
+                     onDone = function() runner:resume() end }
+    runner:yield()
+  end
+end
+
+-- pan_camera <dx> <dy> <frames> | "reset": offset the world camera by
+-- cells over frames (blocking); "reset" snaps back to player-centered
+function Commands.pan_camera(ctx, dx, dy, frames)
+  local ow = ctx.overworld
+  if not ow then return end
+  if dx == "reset" then
+    ow.cameraPan = nil
+    return
+  end
+  local runner = ctx.runner
+  local pan = ow.cameraPan or { ox = 0, oy = 0 }
+  ow.cameraPan = pan
+  pan.fromX, pan.fromY = pan.ox, pan.oy
+  pan.toX, pan.toY = pan.ox + dx * 16, pan.oy + dy * 16
+  pan.frames, pan.t = math.max(1, frames or 30), 0
+  pan.onDone = function() runner:resume() end
+  runner:yield()
+end
+
+-- wait_flag <flagName> [timeoutFrames]: yield until the flag is set,
+-- re-checked once per frame; lastCheck = true on the flag, false on
+-- timeout.  The synchronization primitive for parallel scripts.
+function Commands.wait_flag(ctx, flagName, timeoutFrames)
+  local runner = ctx.runner
+  local remaining = timeoutFrames
+  runner.waitingCheck = function()
+    if flagValue(ctx, flagName) then return true, true end
+    if remaining then
+      remaining = remaining - 1
+      if remaining <= 0 then return true, false end
+    end
+    return false
+  end
+  ctx.lastCheck = runner:yield()
+end
+
+-- run_parallel <rowsOrRef> [opts]: start a background script in one of
+-- the bounded slots and continue immediately.  rowsOrRef is a row array
+-- or "MAP_ID/name" naming a map_scripts `scripts` entry.
+function Commands.run_parallel(ctx, rowsOrRef, opts)
+  local ow = ctx.overworld
+  if not ow or not ow.startParallel then return end
+  ow:startParallel(rowsOrRef, { source = ctx.source })
+end
+
+-- choice <labels> [opts]: N-way menu (src/ui/Menu); lastChoice =
+-- { index, label }, lastCheck = (index == 1).  opts.default preselects,
+-- opts.cancel is the index B maps to (default: last).
+function Commands.choice(ctx, labels, opts)
+  local Menu = require("src.ui.Menu")
+  local runner = ctx.runner
+  local function pick(index)
+    ctx.lastChoice = { index = index, label = labels[index] }
+    ctx.lastCheck = index == 1
+    runner:resume()
+  end
+  local items = {}
+  for i, label in ipairs(labels) do
+    items[i] = { label = label, onSelect = function() pick(i) end }
+  end
+  local menu = Menu.new(ctx.game, items, {
+    onCancel = function() pick((opts and opts.cancel) or #labels) end,
+  })
+  if opts and opts.default then menu.index = opts.default end
+  ctx.game.stack:push(menu)
+  runner:yield()
+end
+
+-- ------- registry plumbing
+
+-- foreground commands push UI states or lock input and are illegal in
+-- parallel scripts; blocking commands may yield the coroutine
+Commands.meta = {}
+for _, verb in ipairs({ "show_text", "ask", "choice", "start_battle", "warp",
+    "open_mart", "trade", "push_screen", "record_hall_of_fame",
+    "old_man_demo", "static_battle", "rival_battle", "give_item",
+    "give_pokemon", "fade", "pan_camera" }) do
+  Commands.meta[verb] = { foreground = true }
+end
+for _, verb in ipairs({ "show_text", "ask", "choice", "start_battle", "warp",
+    "open_mart", "trade", "push_screen", "record_hall_of_fame",
+    "old_man_demo", "static_battle", "rival_battle", "give_item", "wait",
+    "wait_flag", "move_player", "move_npc", "move_npc_to", "walk_npc",
+    "emote", "fade", "pan_camera" }) do
+  local meta = Commands.meta[verb] or {}
+  Commands.meta[verb] = meta
+  meta.blocking = true
+end
+
+-- module functions that are not script verbs
+local NOT_VERBS = { registerInto = true, resolve = true }
+
+-- what the engine handed the registry, so resolve can tell a mod's
+-- override from the untouched self-registration
+local registered = {}
+
+-- Dispatch resolution: a merged record a mod changed or added
+-- (Data.commands differing from the engine snapshot) wins; otherwise the
+-- live module table stays the dispatch target -- the D6 "merge into the
+-- live Commands table" contract, which also keeps test doubles honest.
+-- A record is the bare handler (the whole vanilla set) or { fn = ...,
+-- foreground = ..., blocking = ... }.
+function Commands.resolve(data, name)
+  if NOT_VERBS[name] then return nil end
+  local record = data and data.commands and data.commands[name]
+  if record == nil or record == registered[name] then
+    record = Commands[name]
+  end
+  if type(record) == "table" then return record.fn, record end
+  if type(record) ~= "function" then return nil end
+  return record, Commands.meta[name]
+end
+
+-- every verb in this module is the registry's built-in set; a mod adding a
+-- verb registers, a mod replacing one has to say override
+function Commands.registerInto(registry, _, owner)
+  for verb, fn in pairs(Commands) do
+    if type(fn) == "function" and not NOT_VERBS[verb] then
+      registry:register(verb, fn, owner)
+      registered[verb] = fn
+    end
+  end
 end
 
 return Commands

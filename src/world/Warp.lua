@@ -9,6 +9,8 @@
 -- This mirrors pokered's CheckWarpsNoCollision / CheckWarpsCollision /
 -- ExtraWarpCheck (home/overworld.asm).
 
+local Runtime = require("src.mods.Runtime")
+
 local Warp = {}
 
 -- Returns the warp entry to take when arriving at (cx,cy), or nil.
@@ -88,7 +90,7 @@ end
 -- map; the landing cell is that map's warp entry named by the warp id
 -- (wDestinationWarpID placement -- two-sided route gates land you on
 -- the side you exit, not where you entered).
-function Warp.destination(data, warpDef, lastMap)
+local function resolve(data, warpDef, lastMap)
   local destMap = warpDef.destMap
   if destMap == "LAST_MAP" then
     assert(lastMap, "LAST_MAP warp with no remembered outdoor map")
@@ -106,6 +108,18 @@ function Warp.destination(data, warpDef, lastMap)
   local dw = destDef.warps[warpDef.destWarp]
   assert(dw, ("warp to %s#%d out of range"):format(destMap, warpDef.destWarp))
   return destMap, dw.x, dw.y
+end
+
+-- the resolved destination passes through warp.destination, so a mod can
+-- reroute one door without owning the warp table (ctx carries the warp
+-- record and the remembered outdoor side the resolution used)
+local function warped(mapId, x, y) return mapId, x, y end
+
+function Warp.destination(data, warpDef, lastMap)
+  local destMap, x, y = resolve(data, warpDef, lastMap)
+  if not Runtime.wantsHook("warp.destination") then return destMap, x, y end
+  return Runtime.call("warp.destination", warped, destMap, x, y,
+                      { warp = warpDef, lastMap = lastMap, data = data })
 end
 
 return Warp

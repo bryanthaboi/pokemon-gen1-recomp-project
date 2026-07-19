@@ -1,0 +1,16 @@
+{
+  "id": "example_lost_parcel",
+  "name": "The Lost Parcel",
+  "version": "1.0.0",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "content",
+  "category": "QUEST",
+  "game_version": ">=1.0.0 <2.0.0",
+  "priority": 100,
+  "permissions": ["engine_internals"],
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "description": "Quest-author gallery entry: a two-town fetch quest over real TEXT constants, with choices, labels, MOD_ flags and a parallel ambient script."
+}

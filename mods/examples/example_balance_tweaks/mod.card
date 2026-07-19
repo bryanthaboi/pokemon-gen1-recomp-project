@@ -1,0 +1,21 @@
+-- Sharing metadata (25-community-and-ecosystem.md 3.2).  Read by tooling
+-- and the manager detail pane; never by the loader's merge.
+return {
+  summary = "Faster final starters, half-price TMs, a re-slotted Route 1.",
+  author = "Pokemon Gen 1 Recompilation Project",
+  contact = "https://github.com/bryanthaboi/pokemon-gen1-recomp-project",
+  tags = { "balance", "data-only", "beginner" },
+  differences = {
+    changed = {
+      "VENUSAUR and BLASTOISE base speed raised to 100 (CHARIZARD already was)",
+      "every TM item's price halved",
+      "Route 1 grass rate 25 -> 20 and SPEAROW added to the slot table",
+    },
+    added = {},
+    known = { "TM prices halve once per load, not once per install" },
+  },
+  credits = {
+    { who = "pret/pokered", for_ = "the base stat and mart price tables this patches over" },
+  },
+  compat = { engine = ">=1.0.0 <2.0.0", modApi = 2 },
+}

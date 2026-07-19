@@ -1,11 +1,10 @@
 -- YES/NO choice box (top-left of the text box area, like the original).
 
 local Font = require("src.render.Font")
+local Theme = require("src.ui.Theme")
 
 local ChoiceBox = {}
 ChoiceBox.__index = ChoiceBox
-
-local CURSOR = 0xED
 
 function ChoiceBox.new(game, onChoose, opts)
   local self = setmetatable({}, ChoiceBox)
@@ -39,11 +38,13 @@ function ChoiceBox:update(dt)
 end
 
 function ChoiceBox:draw()
-  Font.drawBox(0, 7, 6, 5)
+  local box = Theme.choiceBox
+  Font.drawBox(box.tx, box.ty, box.tw, box.th)
   love.graphics.setColor(0, 0, 0, 1)
-  Font.draw("YES", 16, 8 * 8)
-  Font.draw("NO", 16, 10 * 8)
-  Font.drawCode(CURSOR, 8, (self.index == 1 and 8 or 10) * 8)
+  Font.draw("YES", (box.tx + 2) * 8, (box.ty + 1) * 8)
+  Font.draw("NO", (box.tx + 2) * 8, (box.ty + 3) * 8)
+  Font.drawCode(Theme.cursor, (box.tx + 1) * 8,
+                (box.ty + (self.index == 1 and 1 or 3)) * 8)
   love.graphics.setColor(1, 1, 1, 1)
 end
 

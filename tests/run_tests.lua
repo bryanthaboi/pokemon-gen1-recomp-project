@@ -8,21 +8,14 @@
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 love = require("tests.love_stub")
-math.randomseed(12345)
 
-local failures = 0
-local function check(cond, msg)
-  if cond then
-    print("ok   " .. msg)
-  else
-    failures = failures + 1
-    print("FAIL " .. msg)
-  end
-end
-
-local function eq(got, want, msg)
-  check(got == want, ("%s (got %s, want %s)"):format(msg, tostring(got), tostring(want)))
-end
+-- assertions and the RNG seed come off the shared harness; this file keeps
+-- its own tail because the verdict line ("N FAILURES") is what CI greps
+local T = require("tests.harness")
+-- this suite has always streamed a line per check, and it is the one a
+-- developer watches for progress through ~1600 assertions
+T.verbose = true
+local check, eq = T.check, T.eq
 
 -- ---------------------------------------------------------------- data
 local Data = require("src.core.Data")
@@ -545,9 +538,6 @@ local cries = Data.audio and Data.audio.cries or {}
 local cryCount = 0
 for _ in pairs(cries) do cryCount = cryCount + 1 end
 check(cryCount >= 150, "cries rendered for the full dex (" .. cryCount .. ")")
-local cf = io.open("assets/generated/audio/cries/pikachu.wav", "rb")
-check(cf ~= nil, "Pikachu cry WAV exists")
-if cf then cf:close() end
 
 -- ---------------------------------------------------------------- slot machine paylines
 local SlotMachine = require("src.ui.SlotMachine")
@@ -707,19 +697,24 @@ eq(Data.field.badgeGates.ROUTE_23.guards[1].badge, "EARTHBADGE",
 -- ROUTE_22, so the north LAST_MAP warps leave onto Route 23
 do
   local OW = require("src.world.OverworldController")
-  eq(OW.route22GateOutdoor(0), "ROUTE_23", "Route22Gate Y=0 -> Route 23")
-  eq(OW.route22GateOutdoor(3), "ROUTE_23", "Route22Gate Y=3 -> Route 23")
-  eq(OW.route22GateOutdoor(4), "ROUTE_22", "Route22Gate Y=4 -> Route 22")
-  eq(OW.route22GateOutdoor(7), "ROUTE_22", "Route22Gate Y=7 -> Route 22")
+  local FieldDefaults = require("src.world.FieldDefaults")
+  local rewrite = FieldDefaults.field(Data, "lastMapRewrites").ROUTE_22_GATE
+  local function outdoorAt(cellY)
+    return OW.rewrittenLastMap(rewrite, 0, cellY)
+  end
+  eq(outdoorAt(0), "ROUTE_23", "Route22Gate Y=0 -> Route 23")
+  eq(outdoorAt(3), "ROUTE_23", "Route22Gate Y=3 -> Route 23")
+  eq(outdoorAt(4), "ROUTE_22", "Route22Gate Y=4 -> Route 22")
+  eq(outdoorAt(7), "ROUTE_22", "Route22Gate Y=7 -> Route 22")
   local north = Data.maps.ROUTE_22_GATE.warps[3]
   local m, x, y = Warp.destination(Data, north,
-    { id = OW.route22GateOutdoor(0), x = 0, y = 0 })
+    { id = outdoorAt(0), x = 0, y = 0 })
   eq(m, "ROUTE_23", "north gate LAST_MAP with Y rewrite lands on Route 23")
   eq(x, 7, "north gate lands on Route 23 south warp x")
   eq(y, 139, "north gate lands on Route 23 south warp y")
   local south = Data.maps.ROUTE_22_GATE.warps[1]
   m, x, y = Warp.destination(Data, south,
-    { id = OW.route22GateOutdoor(7), x = 0, y = 0 })
+    { id = outdoorAt(7), x = 0, y = 0 })
   eq(m, "ROUTE_22", "south gate LAST_MAP with Y rewrite lands on Route 22")
   eq(x, 8, "south gate lands on Route 22 gate warp x")
   eq(y, 5, "south gate lands on Route 22 gate warp y")
@@ -1907,7 +1902,6 @@ end
 do
   local savedParty = Game.save.party
   local Pokemon = require("src.pokemon.Pokemon")
-  check(Data.audio.sfx.Low_Health_Alarm ~= nil, "low-health alarm sfx extracted")
   Game.save.party = { Pokemon.new(Data, "BULBASAUR", 30) }
   Game.save.party[1].hp = Game.save.party[1].stats.hp
   local lhb = BattleState.newWild(Game, "RATTATA", 3)
@@ -1942,11 +1936,12 @@ end
 do
 -- == Task 8: options screen scrolls option boxes + audio/display rows ==
 -- The screen keeps pokered's one-box-per-option adaptation of
--- DisplayOptionMenu (engine/menus/main_menu.asm) but now scrolls 11
--- option boxes through a 4-box viewport with a $EE ▼ marker; MUSIC VOL /
--- SFX VOL clamp at 0..7 like the text-speed cursor clamps at its ends
--- (.pressedLeftInTextSpeed), MUSIC FILTER cycles OFF/1X/2X/3X, and
--- COLORS / TILT / GBC FX cycle their display modes.
+-- DisplayOptionMenu (engine/menus/main_menu.asm) but now scrolls the
+-- option boxes (the port rows plus the MODS/CONTROLS entries) through a 4-box
+-- viewport with a $EE ▼ marker; MUSIC VOL / SFX VOL clamp at 0..7 like
+-- the text-speed cursor clamps at its ends (.pressedLeftInTextSpeed),
+-- MUSIC FILTER cycles OFF/1X/2X/3X, and COLORS / TILT / GBC FX cycle
+-- their display modes.
 do
   local OptionsMenu = require("src.ui.OptionsMenu")
   local OInput = require("src.core.Input")
@@ -2010,15 +2005,19 @@ do
   for _ = 1, 4 do press("a") end
   eq(og.save.options.gbcfx, 0, "GBC FX wraps back to OFF")
   press("down")
-  eq(om.index, 11, "CANCEL is row 11")
-  eq(om.scroll, 6, "CANCEL keeps the last option boxes on screen")
+  eq(om.index, 11, "cursor reaches MODS")
+  press("down")
+  eq(om.index, 12, "cursor reaches CONTROLS")
+  press("down")
+  eq(om.index, 13, "CANCEL stays the fixed final row")
+  eq(om.scroll, 8, "CANCEL keeps the last option boxes on screen")
   om:draw() -- smoke: scrolled layout draws under the headless stub
   press("a")
   check(popped, "A on CANCEL closes the options menu")
   local om2 = OptionsMenu.new(og)
   OInput.pressed = { up = true }; om2:update(1 / 60); OInput.pressed = {}
-  eq(om2.index, 11, "up from the top wraps to CANCEL")
-  eq(om2.scroll, 6, "wrapping to CANCEL scrolls to the tail")
+  eq(om2.index, 13, "up from the top wraps to CANCEL")
+  eq(om2.scroll, 8, "wrapping to CANCEL scrolls to the tail")
   -- headless-safe: no love.audio, setters only update internal state
   require("src.core.Music").applyOptions(og.save.options)
   require("src.core.Sound").applyOptions(og.save.options)
@@ -2349,20 +2348,114 @@ eq(frameFor("BALL", true, 96), 3, "fallback: 16x96 sheet animates to 3")
 eq(frameFor("HELIX", true, 32), 1, "fallback: 16x32 sheet animates to 1")
 end
 
--- ---------------------------------------------- parity workstream tests
--- Each tests/parity_*.lua is a self-contained file (own bootstrap + check,
--- error()s if any assertion fails).  We dofile the ones that exist here so
--- `luajit tests/run_tests.lua` stays the single green bar; absent files
--- are skipped.
-for _, name in ipairs({ "D", "F", "E", "C", "K", "L", "H", "G", "I_M", "B", "J", "A", "flavor", "trainer_sight", "static", "trashcans", "hof", "trade_gift", "intro", "tilt", "gbcfx" }) do
-  local path = "tests/parity_" .. name .. ".lua"
-  local fh = io.open(path, "r")
-  if fh then
-    fh:close()
+-- ---------------------------------------------- suite discovery
+-- The chains below used to be hard-coded arrays, so adding a suite meant
+-- editing a list and forgetting to meant the suite silently never ran.
+-- They are globbed now (21-testing-and-ci §CI).
+--
+-- Order still matters: these suites share one process and one Data, and
+-- the sequence they were chained in is the sequence they are known to
+-- pass in.  So the known order runs first and anything the glob newly
+-- turned up runs after it, alphabetically -- a new suite runs without a
+-- code change, and no existing suite moves.
+local function orderedGlob(pattern, preferred, skip)
+  local seen, ordered = {}, {}
+  for _, path in ipairs(preferred) do
+    local handle = io.open(path, "r")
+    if handle then
+      handle:close()
+      seen[path] = true
+      ordered[#ordered + 1] = path
+    end
+  end
+  local discovered = {}
+  local pipe = io.popen("ls -1 " .. pattern .. " 2>/dev/null")
+  if pipe then
+    for line in pipe:lines() do
+      if line ~= "" and not seen[line] and not (skip and skip[line]) then
+        seen[line] = true
+        discovered[#discovered + 1] = line
+      end
+    end
+    pipe:close()
+  end
+  table.sort(discovered)
+  for _, path in ipairs(discovered) do ordered[#ordered + 1] = path end
+  return ordered
+end
+
+local function runSuites(paths)
+  for _, path in ipairs(paths) do
+    local label = path:match("([^/]+)%.lua$") or path
     local ok, err = pcall(dofile, path)
-    check(ok, "parity_" .. name .. (ok and " suite" or (": " .. tostring(err))))
+    check(ok, label .. (ok and " suite" or (": " .. tostring(err))))
   end
 end
 
+-- ---------------------------------------------- mod runtime & loader
+-- Self-contained like the parity files below: own bootstrap, assert-based
+-- checks, error() on any failure.
+runSuites(orderedGlob("tests/mod_*.lua tests/modkit_tests.lua", {
+  "tests/mod_runtime_tests.lua", "tests/mod_loader_tests.lua",
+  "tests/mod_registry_tests.lua", "tests/mod_manifest_tests.lua",
+  "tests/mod_constants_tests.lua", "tests/mod_catalog_tests.lua",
+  "tests/mod_audio_tests.lua", "tests/mod_world_tests.lua",
+  "tests/mod_battle_tests.lua", "tests/mod_graphics_tests.lua",
+  "tests/mod_scripting_tests.lua", "tests/mod_ui_tests.lua",
+  "tests/mod_save_tests.lua", "tests/modkit_tests.lua",
+}, {
+  -- run_link_tests.lua owns this one; dofiling it here as well would
+  -- stand a second loader up over the same Data in this process
+  ["tests/mod_link_tests.lua"] = true,
+}))
+
+-- the editor mod-awareness suite boots App.load's own loader over the
+-- singleton Data, which collides with the loader Game:load already merged
+-- in this process (one loader per process), so it gets a process to itself
+do
+  local lua = (arg and arg[-1]) or "luajit"
+  local status = os.execute(("%q tests/save_editor_mod_tests.lua"):format(lua))
+  check(status == 0 or status == true, "save_editor_mod_tests suite")
+end
+
+-- ---------------------------------------------- parity workstream tests
+-- Each tests/parity_*.lua is a self-contained file (own bootstrap + check,
+-- error()s if any assertion fails).  Globbed, so dropping a new parity
+-- file into tests/ is enough to make it run.
+runSuites(orderedGlob("tests/parity_*.lua", {
+  "tests/parity_D.lua", "tests/parity_F.lua", "tests/parity_E.lua",
+  "tests/parity_C.lua", "tests/parity_K.lua", "tests/parity_L.lua",
+  "tests/parity_H.lua", "tests/parity_G.lua", "tests/parity_I_M.lua",
+  "tests/parity_B.lua", "tests/parity_J.lua", "tests/parity_A.lua",
+  "tests/parity_flavor.lua", "tests/parity_trainer_sight.lua",
+  "tests/parity_static.lua", "tests/parity_trashcans.lua",
+  "tests/parity_hof.lua", "tests/parity_trade_gift.lua",
+  "tests/parity_intro.lua", "tests/parity_tilt.lua",
+  "tests/parity_gbcfx.lua",
+}))
+
+-- ---------------------------------------------- the globbed tiers
+-- content_red (T3, the Red-pinned facts split out of this file),
+-- engine (T2, invariants over the fixture dataset) and modkit (T4, the
+-- public mod API) each stand a loader up per suite -- and a second
+-- Builtins.install over a Data this process already merged raises -- so
+-- every one of their suites gets its own process, the way
+-- save_editor_mod_tests already does above.  Chaining the three runners
+-- here keeps `luajit tests/run_tests.lua` the single green bar it has
+-- always been; scripts/test.sh also runs them directly.
+do
+  local lua = (arg and arg[-1]) or "luajit"
+  for _, tier in ipairs({ "tests/run_content_red.lua",
+      "tests/run_engine.lua", "tests/run_modkit.lua" }) do
+    local handle = io.open(tier, "r")
+    if handle then
+      handle:close()
+      local status = os.execute(("%q %s > /dev/null 2>&1"):format(lua, tier))
+      check(status == 0 or status == true, tier:match("([^/]+)%.lua$") .. " tier")
+    end
+  end
+end
+
+local failures = T.failures
 print(("\n%s"):format(failures == 0 and "ALL TESTS PASSED" or failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

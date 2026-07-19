@@ -1,0 +1,29 @@
+-- Sharing metadata (25-community-and-ecosystem.md 3.2).  Read by tooling
+-- and the manager detail pane; never by the loader's merge.
+--
+-- Gallery entry #0, the legacy example.  Its manifest stays api 1 with
+-- category GAMEPLAY on purpose: it is the compatibility proof that a mod
+-- written before manifest v2 keeps loading unchanged.  The v2 examples
+-- live in mods/examples/.
+return {
+  summary = "Oak's Charmander gift becomes a level 20 Mew with inverted sprites.",
+  author = "Pokemon Gen 1 Recompilation Project",
+  contact = "https://github.com/bryanthaboi/pokemon-gen1-recomp-project",
+  tags = { "beginner", "cosmetic", "data-only", "legacy" },
+  differences = {
+    changed = {
+      "the Oak's Lab starter gift becomes a level 20 Mew nicknamed HOGHEAD",
+      "MEW's front and back battle sprites point at inverted copies",
+    },
+    added = {},
+    known = {
+      "assets/ is empty until tools/generate_example_mod_sprite.py runs "
+        .. "against an imported cache",
+      "api 1: uses override where a v2 mod would use patch",
+    },
+  },
+  credits = {
+    { who = "pret/pokered", for_ = "the Mew sprites the local generator inverts" },
+  },
+  compat = { engine = ">=1.0.0 <2.0.0", modApi = 1 },
+}

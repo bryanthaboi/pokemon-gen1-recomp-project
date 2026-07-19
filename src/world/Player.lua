@@ -3,6 +3,7 @@
 -- at 1px per frame (16 frames per step), input locked while stepping.
 
 local Collision = require("src.world.Collision")
+local FieldDefaults = require("src.world.FieldDefaults")
 local SpriteRenderer = require("src.render.SpriteRenderer")
 
 local Player = {}
@@ -16,15 +17,21 @@ local TURN_FRAMES = 2
 
 function Player.new(data, cx, cy, facing)
   local self = setmetatable({}, Player)
-  self.sprite = SpriteRenderer.new(data.sprites.SPRITE_RED)
-  -- the original surfs on the Seel sprite
-  -- (LoadSurfingPlayerSpriteGraphics, home/overworld.asm)
-  if data.sprites.SPRITE_SEEL then
-    self.surfSprite = SpriteRenderer.new(data.sprites.SPRITE_SEEL)
+  self.stepFrames = FieldDefaults.world(data, "stepFrames") or STEP_FRAMES
+  self.bikeStepFrames = FieldDefaults.world(data, "bikeStepFrames")
+  self.turnFrames = FieldDefaults.world(data, "turnFrames") or TURN_FRAMES
+  -- field.playerSprites: which sprite ids the player wears on foot, on the
+  -- water and on the bicycle (LoadPlayerSpriteGraphics /
+  -- LoadSurfingPlayerSpriteGraphics, home/overworld.asm)
+  local walkId = FieldDefaults.fieldValue(data, "playerSprites", "walk")
+  local surfId = FieldDefaults.fieldValue(data, "playerSprites", "surf")
+  local bikeId = FieldDefaults.fieldValue(data, "playerSprites", "bike")
+  self.sprite = SpriteRenderer.new(data.sprites[walkId])
+  if surfId and data.sprites[surfId] then
+    self.surfSprite = SpriteRenderer.new(data.sprites[surfId])
   end
-  -- and cycles on the red_bike sheet (LoadPlayerSpriteGraphics)
-  if data.sprites.SPRITE_RED_BIKE then
-    self.bikeSprite = SpriteRenderer.new(data.sprites.SPRITE_RED_BIKE)
+  if bikeId and data.sprites[bikeId] then
+    self.bikeSprite = SpriteRenderer.new(data.sprites[bikeId])
   end
   -- the ledge-hop shadow quarter-tile (gfx/overworld/shadow.png,
   -- LedgeHoppingShadow, engine/overworld/ledges.asm)
@@ -53,7 +60,7 @@ function Player:tryMove(dir, map, entities)
   if self.moving or self.inputLocked then return nil end
   if self.facing ~= dir then
     self.facing = dir
-    self.turnTimer = TURN_FRAMES
+    self.turnTimer = self.turnFrames or TURN_FRAMES
     return "turned"
   end
   if self.turnTimer > 0 then return nil end
@@ -67,7 +74,8 @@ function Player:tryMove(dir, map, entities)
   self.progress = 0
   -- the bicycle doubles walking speed (8 frames per step)
   local save = require("src.core.Game").save
-  self.stepFramesCur = (save and save.onBike) and 8 or STEP_FRAMES
+  self.stepFramesCur = (save and save.onBike) and self.bikeStepFrames
+                       or self.stepFrames or STEP_FRAMES
   return "moved"
 end
 
@@ -77,7 +85,7 @@ function Player:update()
     self.turnTimer = self.turnTimer - 1
   end
   if not self.moving then return false end
-  local stepLen = self.stepFramesCur or STEP_FRAMES
+  local stepLen = self.stepFramesCur or self.stepFrames or STEP_FRAMES
   self.progress = self.progress + 1
   local d = Collision.DELTA[self.facing]
   local px = math.floor(self.progress * 16 / stepLen)

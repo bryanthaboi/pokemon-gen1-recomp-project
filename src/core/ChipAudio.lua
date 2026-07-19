@@ -1,4 +1,5 @@
 local bit = require("bit")
+local Assets = require("src.render.Assets")
 
 local ChipAudio = {}
 
@@ -45,6 +46,22 @@ local function loadBanks(data)
     banks[bank] = raw:sub(first, first + 0x3FFF)
   end
   cachedProgramFile, cachedBanks = audio.programFile, banks
+  return banks
+end
+
+-- A def-local program (ChipAsm output) is mounted as pseudo-bank 0 next to
+-- the ROM banks, so the 0x4000-window byte reader and every call/loop
+-- target work unchanged.  The ROM's own cached bank table is never touched
+-- because bank 0 differs per def, and a blob that carries its own waves and
+-- drums renders even where programs.bin is unreadable.
+local function engineBanks(data, chip)
+  if not chip then return loadBanks(data) end
+  local banks = {}
+  local ok, romBanks = pcall(loadBanks, data)
+  if ok then
+    for bank, bytes in pairs(romBanks) do banks[bank] = bytes end
+  end
+  banks[0] = chip.blob
   return banks
 end
 
@@ -497,6 +514,8 @@ function Channel:sample()
   if event.wave then
     local wave = self.engine.waves[
       math.min(event.waveInstrument + 1, #self.engine.waves)]
+    -- a def-local program may omit its wave table entirely
+    if not wave then return 0 end
     local index = math.min(32, math.floor(phase * 32) + 1)
     return wave[index] * event.waveLevel * 0.55
   end
@@ -511,6 +530,9 @@ local Engine = {}
 Engine.__index = Engine
 
 function Engine:noiseInstrument(number)
+  -- a def-local drum wins over the ROM engine's table for that id
+  local custom = self.customDrums and self.customDrums[number]
+  if custom then return custom end
   local cached = self.noiseInstruments[number]
   if cached then return cached end
 
@@ -571,20 +593,55 @@ local function readWaves(banks, audio, engineNumber)
   return waves
 end
 
+-- def-local waves are authored either as raw 0-15 nibbles (the ROM's own
+-- units) or as the -1..1 samples readWaves produces; the synth wants the
+-- latter
+local function normalizeWaves(source)
+  local waves = {}
+  for index, values in ipairs(source) do
+    local nibbles = false
+    for _, value in ipairs(values) do
+      if value > 1 or value < -1 then nibbles = true break end
+    end
+    local wave = {}
+    for position, value in ipairs(values) do
+      wave[position] = nibbles and (value - 7.5) / 7.5 or value
+    end
+    waves[index] = wave
+  end
+  return waves
+end
+
 function Engine.new(data, header, options)
   options = options or {}
-  local banks = loadBanks(data)
+  local audio = data.audio or {}
+  -- shape dispatch: a def-local chip program supplies its own channels and
+  -- may supply its own waves/drums, falling back to a ROM engine's tables
+  local chip = header.chip
+  local banks = engineBanks(data, chip)
+  local engineNumber = chip and (chip.engine or 1) or header.engine
+  local waves
+  if chip and chip.waves then
+    waves = normalizeWaves(chip.waves)
+  elseif chip then
+    local ok, romWaves = pcall(readWaves, banks, audio, engineNumber)
+    waves = ok and romWaves or {}
+  else
+    waves = readWaves(banks, audio, engineNumber)
+  end
   local engine = setmetatable({
     banks = banks,
     tempo = 0x100,
     pan = 0xFF,
-    waves = readWaves(banks, data.audio, header.engine),
-    noiseHeaders = data.audio.noiseHeaders
-      and data.audio.noiseHeaders[tostring(header.engine)] or {},
+    waves = waves,
+    noiseHeaders = audio.noiseHeaders
+      and audio.noiseHeaders[tostring(engineNumber)] or {},
+    customDrums = chip and chip.drums or nil,
     noiseInstruments = {},
     channels = {},
   }, Engine)
-  for _, spec in ipairs(headerChannels(banks, header)) do
+  for _, spec in ipairs(chip and chip.channels
+      or headerChannels(banks, header)) do
     local frameTicks = options.frameTicks
     local hardware = (spec.number - 1) % 4 + 1
     if hardware == 4 then
@@ -593,7 +650,7 @@ function Engine.new(data, header, options)
       frameTicks = 0x80 + options.cryLength
     end
     engine.channels[#engine.channels + 1] = Channel.new(engine, spec, {
-      bank = header.bank,
+      bank = chip and 0 or header.bank,
       sfx = options.sfx,
       allowLoops = options.allowLoops,
       frequencyOffset = options.frequencyOffset,
@@ -663,14 +720,14 @@ local function fillMusic()
 end
 
 function ChipAudio.playMusic(data, header, allowLoops)
-  ChipAudio.stopMusic()
+  -- build before tearing down: a def that fails to compile (bad addresses,
+  -- unreadable blob) must leave the outgoing song sounding
+  local engine = Engine.new(data, header, { allowLoops = allowLoops })
   local ok, source = pcall(
     love.audio.newQueueableSource, SAMPLE_RATE, 16, 2, MUSIC_BUFFER_COUNT)
   if not ok then return nil, source end
-  currentMusic = {
-    source = source,
-    engine = Engine.new(data, header, { allowLoops = allowLoops }),
-  }
+  ChipAudio.stopMusic()
+  currentMusic = { source = source, engine = engine }
   fillMusic()
   source:play()
   return source
@@ -699,6 +756,17 @@ function ChipAudio.stopMusic()
   end
   currentMusic = nil
 end
+
+-- hot reload: the next play re-reads programs.bin (a mod may have swapped
+-- the file out from under the single-slot bank cache)
+function ChipAudio.invalidate()
+  ChipAudio.stopMusic()
+  cachedProgramFile, cachedBanks = nil, nil
+end
+
+-- a stale song must not keep sounding past the flush that replaced its
+-- program (20 §2 cache contract, chip music row)
+Assets.register(ChipAudio.invalidate)
 
 local function renderEffect(data, header, options)
   if not header then return nil end
@@ -796,10 +864,13 @@ function ChipAudio.newSfx(data, name, pitch, tempo, header)
   })
 end
 
-function ChipAudio.newCry(data, species)
-  local cry = data.audio.cries[species]
+-- `resolved` is a {header|chip, pitch, length} def the caller already worked
+-- out -- a derived cry borrowing another species' header with its own
+-- modifiers, which no registry lookup under `species` could find
+function ChipAudio.newCry(data, species, resolved)
+  local cry = resolved or (data.audio.cries and data.audio.cries[species])
   if not cry then return nil end
-  return renderEffect(data, cry.header, {
+  return renderEffect(data, cry.chip and cry or cry.header, {
     frequencyOffset = cry.pitch,
     cryLength = cry.length,
   })

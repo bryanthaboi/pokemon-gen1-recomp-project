@@ -3,27 +3,68 @@
 --
 -- Battlers carry curStats/curTypes (Transform/Conversion can override the
 -- species values) plus reflect/lightScreen/focusEnergy volatile flags.
+-- Battlers built by makeBattler also carry the merged badgeBoosts rows and
+-- statuses records; hand-built battlers fall back to the vanilla tables.
 
+local Logger = require("src.core.Logger")
+local Runtime = require("src.mods.Runtime")
 local Stats = require("src.pokemon.Stats")
+local Status = require("src.battle.Status")
 local TypeChart = require("src.battle.TypeChart")
 
 local Damage = {}
 
 -- Moves with a boosted critical-hit rate (engine/battle/core.asm
--- CriticalHitTest checks these move ids explicitly).
+-- CriticalHitTest checks these move ids explicitly).  The move-record
+-- highCrit field wins; this list covers pre-existing imported caches.
 local HIGH_CRIT = {
   KARATE_CHOP = true, RAZOR_LEAF = true, CRABHAMMER = true, SLASH = true,
 }
 
+-- ApplyBadgeStatBoosts (engine/battle/core.asm): x9/8 per badge on the
+-- named battle stat.  Data.constants.badgeBoosts replaces this via the
+-- battler's badgeBoosts field; these rows are the vanilla values.
+Damage.BADGE_BOOSTS = {
+  { badge = "BOULDERBADGE", stat = "attack", num = 9, den = 8 },
+  { badge = "THUNDERBADGE", stat = "defense", num = 9, den = 8 },
+  { badge = "SOULBADGE", stat = "speed", num = 9, den = 8 },
+  { badge = "VOLCANOBADGE", stat = "special", num = 9, den = 8 },
+}
+
+-- the boost a battler's badge set applies to one battle stat, or nil
+local function badgeBoost(battler, stat)
+  local badges = battler.badges
+  if not badges then return nil end
+  for _, row in ipairs(battler.badgeBoosts or Damage.BADGE_BOOSTS) do
+    if row.stat == stat and badges[row.badge] then return row end
+  end
+  return nil
+end
+
+-- the merged status record for a battler's persistent condition, or nil
+local function statusRecord(battler)
+  return Status.recordFor(battler.statuses, battler.mon.status)
+end
+
 -- Critical chance test, following CriticalHitTest's shift chain exactly
--- (each left shift caps at 255): b = baseSpeed/2, then x2 (or /2 with
+-- (each left shift caps at 255): b = speed/2, then x2 (or /2 with
 -- Focus Energy's famous right-shift bug), then x4 for high-crit moves
 -- or /2 for normal ones.  Net rates: normal = speed/512, high-crit =
 -- speed*4/256 (capped), Focus Energy bug = 1/4 the usual.
-function Damage.critRoll(ruleset, attacker, moveId, rng)
+-- critUsesBaseSpeed (default true, the Gen 1 rule) reads the species
+-- base speed; a ruleset that sets it false uses the current in-battle
+-- speed with stages applied.
+function Damage.critRoll(ruleset, attacker, moveId, rng, highCrit)
   rng = rng or love.math.random
   local function shl(x) return math.min(255, x * 2) end
-  local b = math.floor(attacker.def.baseStats.speed / 2)
+  local speed
+  if ruleset.critUsesBaseSpeed == false then
+    speed = Stats.applyStage(attacker.curStats.speed,
+              attacker.stages and attacker.stages.speed or 0)
+  else
+    speed = attacker.def.baseStats.speed
+  end
+  local b = math.floor(speed / 2)
   if attacker.focusEnergy then
     if ruleset.focusEnergyBug then
       b = math.floor(b / 2)      -- srl instead of sla
@@ -33,7 +74,8 @@ function Damage.critRoll(ruleset, attacker, moveId, rng)
   else
     b = shl(b)
   end
-  if HIGH_CRIT[moveId] then
+  if highCrit == nil then highCrit = HIGH_CRIT[moveId] end
+  if highCrit then
     b = shl(shl(b))
   else
     b = math.floor(b / 2)
@@ -63,13 +105,27 @@ function Damage.accuracyRoll(ruleset, move, attacker, defender, rng)
   return rng(0, 255) < acc
 end
 
-local function isSpecial(moveType)
-  -- Gen 1: WATER/GRASS/FIRE/ICE/ELECTRIC/PSYCHIC/DRAGON are special
-  return moveType == "WATER" or moveType == "GRASS" or moveType == "FIRE"
-      or moveType == "ICE" or moveType == "ELECTRIC" or moveType == "PSYCHIC_TYPE"
-      or moveType == "DRAGON"
+local warnedTypes = {}
+
+-- Gen 1 splits physical from special by TYPE: the move's own category
+-- field wins, then the merged type record's, then physical (with one
+-- warning per unknown type).
+local function categoryOf(move)
+  local category = move.category or TypeChart.category(move.type)
+  if category == nil then
+    if move.type ~= nil and not warnedTypes[move.type] then
+      warnedTypes[move.type] = true
+      Logger.warn("move type %s has no category; treated as physical",
+                  tostring(move.type))
+    end
+    category = "physical"
+  end
+  return category
 end
-Damage.isSpecial = isSpecial
+
+function Damage.isSpecial(moveType)
+  return TypeChart.category(moveType) == "special"
+end
 
 -- Compute damage.  attacker/defender are battler tables.
 -- opts: rng, forceCrit, explode (halves defense), typeless (confusion
@@ -80,16 +136,23 @@ Damage.isSpecial = isSpecial
 function Damage.compute(ruleset, attacker, defender, move, opts)
   opts = opts or {}
   local rng = opts.rng or love.math.random
-  if move.power == 0 then
+  if move.power == 0 or move.category == "status" then
     return 0, { crit = false, typeMult = 10 }
   end
 
   local crit = opts.forceCrit
   if crit == nil then
-    crit = Damage.critRoll(ruleset, attacker, move.id, rng)
+    if Runtime.wantsHook("battle.crit") then
+      crit = Runtime.call("battle.crit", function(c)
+        return Damage.critRoll(c.ruleset, c.attacker, c.moveId, c.rng, c.highCrit)
+      end, { ruleset = ruleset, attacker = attacker, moveId = move.id,
+             rng = rng, highCrit = move.highCrit })
+    else
+      crit = Damage.critRoll(ruleset, attacker, move.id, rng, move.highCrit)
+    end
   end
 
-  local special = isSpecial(move.type)
+  local special = categoryOf(move) == "special"
   local atkStat = special and "special" or "attack"
   local defStat = special and "special" or "defense"
 
@@ -105,28 +168,23 @@ function Damage.compute(ruleset, attacker, defender, move, opts)
     -- badge boosts (x9/8), engine/battle/core.asm ApplyBadgeStatBoosts:
     -- Boulder -> attack, Thunder -> defense, Soul -> speed (TurnOrder),
     -- Volcano -> special
-    local badges = attacker.badges
-    if badges then
-      if not special and badges.BOULDERBADGE then
-        atk = math.floor(atk * 9 / 8)
-      elseif special and badges.VOLCANOBADGE then
-        atk = math.floor(atk * 9 / 8)
-      end
+    local atkBoost = badgeBoost(attacker, atkStat)
+    if atkBoost then
+      atk = math.floor(atk * (atkBoost.num or 9) / (atkBoost.den or 8))
     end
-    local dbadges = defender.badges
-    if dbadges then
-      if not special and dbadges.THUNDERBADGE then
-        dfn = math.floor(dfn * 9 / 8)
-      elseif special and dbadges.VOLCANOBADGE then
-        dfn = math.floor(dfn * 9 / 8)
-      end
+    local defBoost = badgeBoost(defender, defStat)
+    if defBoost then
+      dfn = math.floor(dfn * (defBoost.num or 9) / (defBoost.den or 8))
     end
-    -- burn halves physical attack (applied as part of the stat in Gen 1).
+    -- burn halves physical attack (applied as part of the stat in Gen 1;
+    -- the status record's statPenalty names the stat it cuts).
     -- hazeStatReset suppresses it: Haze (haze.asm ResetStats) copied the
     -- unmodified attack over the burn-halved battle stat, lifting the
     -- penalty until the next stat recompute.
-    if not special and attacker.mon.status == "BRN" and not attacker.hazeStatReset then
-      atk = math.max(1, math.floor(atk / 2))
+    local record = statusRecord(attacker)
+    local penalty = record and record.statPenalty
+    if penalty and penalty.stat == atkStat and not attacker.hazeStatReset then
+      atk = math.max(1, math.floor(atk / penalty.div))
     end
     -- screens double the effective defense (crits bypass them).  The
     -- confusion self-hit is the quirk case: HandleSelfConfusionDamage

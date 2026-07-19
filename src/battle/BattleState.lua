@@ -10,14 +10,18 @@
 -- bide, recharge, confusion, screens, substitute, transform, ...) is
 -- ported from engine/battle/core.asm; see docs/behavior-porting-notes.md.
 
+local Assets = require("src.render.Assets")
 local Catching = require("src.battle.Catching")
 local Damage = require("src.battle.Damage")
+local EffectRegistry = require("src.battle.EffectRegistry")
 local Experience = require("src.battle.Experience")
 local Font = require("src.render.Font")
 local Logger = require("src.core.Logger")
 local MoveEffects = require("src.battle.MoveEffects")
 local Party = require("src.pokemon.Party")
 local Pokemon = require("src.pokemon.Pokemon")
+local Runtime = require("src.mods.Runtime")
+local Screens = require("src.ui.Screens")
 local Status = require("src.battle.Status")
 local TrainerAI = require("src.battle.TrainerAI")
 local TurnOrder = require("src.battle.TurnOrder")
@@ -51,14 +55,17 @@ local imagePadBottom = {}
 -- image -> { path, pal } so palette-fade variants (see fadeImage) can be
 -- rebuilt for any battle pic, whatever code loaded it
 local imageMeta = {}
--- pal = { name, colors } recolors the 4 GB shades like the Super Game Boy
-local function getImage(path, pal)
+-- pal = { name, colors } recolors the 4 GB shades like the Super Game Boy.
+-- trueColor art (14 §the 4-shade contract) opts out of the quantize
+-- entirely, so its palette variant collapses back onto the plain path.
+local function getImage(path, pal, trueColor)
   if not path then return nil end
+  if trueColor then pal = nil end
   local key = pal and (path .. "#" .. pal.name) or path
   if not imageCache[key] then
     local img, pad = nil, 0
     if love.image and love.image.newImageData then
-      local id = love.image.newImageData(path)
+      local id = Assets.imageData(path)
       if pal then
         local c = pal.colors
         id:mapPixel(function(_, _, r, g, b, a)
@@ -82,14 +89,22 @@ local function getImage(path, pal)
       img = love.graphics.newImage(id)
       pad = h - 1 - bottom
     else
-      img = love.graphics.newImage(path) -- headless stub: no pixel access
+      img = Assets.image(path) -- headless stub: no pixel access
     end
     imageCache[key] = img
     imagePadBottom[img] = pad
-    imageMeta[img] = { path = path, pal = pal }
+    imageMeta[img] = { path = path, pal = pal, trueColor = trueColor or nil }
   end
   return imageCache[key]
 end
+
+-- hot reload: the next getImage re-resolves every pic through the asset
+-- search path and re-measures its ground padding
+function BattleState.invalidate()
+  imageCache, imagePadBottom, imageMeta = {}, {}, {}
+end
+
+Assets.register(BattleState.invalidate)
 
 -- the species' SGB palette (data/pokemon/palettes.asm), or nil
 local function monPalette(data, species)
@@ -114,6 +129,8 @@ local function fadeImage(img, bgp)
   if not bgp or not img then return img end
   local meta = imageMeta[img]
   if not meta then return img end
+  -- a full-color pic has no DMG shades to remap
+  if meta.trueColor then return img end
   local PaletteFX = require("src.render.PaletteFX")
   local base = meta.pal and meta.pal.colors or PaletteFX.GRAYS
   local name = (meta.pal and meta.pal.name or "GB")
@@ -137,20 +154,19 @@ function BattleState:picImage(img)
   return fadeImage(img, self:activeBgp())
 end
 
--- Gen 1 trainer Pokémon have fixed DVs (engine/battle/core.asm)
+-- Gen 1 trainer Pokémon have fixed DVs (engine/battle/core.asm);
+-- constants.trainerDvs overrides, this is the imported-cache fallback
 local TRAINER_DVS = { attack = 9, defense = 8, speed = 8, special = 8, hp = 8 }
 
--- Status-move effects whose pokered handlers call MoveHitTest (sleep/
--- poison/paralyze/confusion/leech seed/disable and the primary
--- stat-down moves).  Everything else in MoveEffects.primary is
--- self-targeting and never rolls accuracy.  Mimic also hit-tests but
--- runs its own mid-move flow (resolveMimic).
-local ACC_CHECKED_STATUS = {
-  SLEEP_EFFECT = true, POISON_EFFECT = true, PARALYZE_EFFECT = true,
-  CONFUSION_EFFECT = true, LEECH_SEED_EFFECT = true, DISABLE_EFFECT = true,
-  ATTACK_DOWN1_EFFECT = true, DEFENSE_DOWN1_EFFECT = true,
-  DEFENSE_DOWN2_EFFECT = true, SPEED_DOWN1_EFFECT = true,
-  ACCURACY_DOWN1_EFFECT = true,
+-- charge-turn texts by move id; the move record's chargeText field wins
+-- (ChargeEffect's per-move text pointers)
+local CHARGE_TEXT = {
+  FLY = "%s\nflew up high!",
+  DIG = "%s\ndug a hole!",
+  RAZOR_WIND = "%s\nmade a whirlwind!",
+  SOLARBEAM = "%s\ntook in sunlight!",
+  SKULL_BASH = "%s\nlowered its head!",
+  SKY_ATTACK = "%s\nis glowing!",
 }
 
 -- pokered's <USER>/<TARGET> text macros (home/text.asm
@@ -206,12 +222,14 @@ end
 
 local function makeBattler(data, mon, isPlayer, save)
   local def = data.pokemon[mon.species]
+  local badgeBoosts = data.constants and data.constants.badgeBoosts
   local badges = nil
   if isPlayer and save then
-    -- Gen 1 badge stat boosts (x9/8)
+    -- Gen 1 badge stat boosts (x9/8); the badge set follows the merged
+    -- badgeBoosts rows so a retuned list changes what gets baked in
     badges = {}
-    for _, b in ipairs({ "BOULDERBADGE", "THUNDERBADGE", "SOULBADGE", "VOLCANOBADGE" }) do
-      if save.inventory[b] then badges[b] = true end
+    for _, row in ipairs(badgeBoosts or Damage.BADGE_BOOSTS) do
+      if save.inventory[row.badge] then badges[row.badge] = true end
     end
   end
   return {
@@ -220,6 +238,9 @@ local function makeBattler(data, mon, isPlayer, save)
     name = mon.nickname or def.name,
     isPlayer = isPlayer,
     badges = badges,
+    -- merged registry views consumed by the pure battle modules
+    badgeBoosts = badgeBoosts,
+    statuses = data.statuses,
     shownHP = mon.hp, -- the HP the bar displays (UpdateHPBar drain)
     stages = {},
     -- volatile state; Transform/Conversion/Mimic override the cur* fields
@@ -227,7 +248,7 @@ local function makeBattler(data, mon, isPlayer, save)
     curTypes = def.types,
     curMoves = mon.moves,
     sprite = getImage(isPlayer and def.spriteBack or def.spriteFront,
-                      monPalette(data, mon.species)),
+                      monPalette(data, mon.species), def.trueColor),
   }
 end
 
@@ -244,7 +265,8 @@ function BattleState:speciesSprite(species, isPlayerSide)
   local PaletteFX = require("src.render.PaletteFX")
   local colors = PaletteFX.monPal(self.data, species, true)
   return getImage(isPlayerSide and def.spriteBack or def.spriteFront,
-                  colors and { name = "GRAYMON", colors = colors } or nil)
+                  colors and { name = "GRAYMON", colors = colors } or nil,
+                  def.trueColor)
 end
 
 local function markSeen(game, species)
@@ -278,9 +300,26 @@ local function newBattle(game)
   local self = setmetatable({}, BattleState)
   self.game = game
   self.data = game.data
-  self.ruleset = Rulesets[game.save.options and game.save.options.ruleset or "gen1_faithful"]
-                 or Rulesets.gen1_faithful
+  -- ruleset from the merged registry (the requires above are the same
+  -- records on a mod-free boot); an unknown save value falls back to the
+  -- default with a notice instead of silently switching behavior
+  local rulesets = game.data.rulesets or Rulesets
+  local selected = game.save.options and game.save.options.ruleset
+  local fallback = (game.data.constants and game.data.constants.defaultRuleset)
+                   or "gen1_faithful"
+  local ruleset = selected and rulesets[selected]
+  if selected and not ruleset then
+    Logger.warn("unknown ruleset %s; using %s", tostring(selected), fallback)
+  end
+  self.ruleset = ruleset or rulesets[fallback] or Rulesets.gen1_faithful
   self.rng = function(a, b) return love.math.random(a, b) end
+  -- side/field substrate: vanilla writes nothing here, but every battle
+  -- carries the stable shape mods hang screens/hazards/tokens on
+  self.sides = {
+    { index = 1, battlers = {}, screens = {}, hazards = {}, tokens = {} },
+    { index = 2, battlers = {}, screens = {}, hazards = {}, tokens = {} },
+  }
+  self.field = { weather = nil, tokens = {}, sides = self.sides }
   TypeChart.load(game.data)
   -- the subanimation player (data/battle_anims via battle_anims.lua)
   if game.data.battle_anims then
@@ -380,17 +419,35 @@ function BattleState.newTrainer(game, oppClass, partyIndex)
   self.enemyAIMods = self.trainer.aiMods
   local partyDef = self.trainer.parties[partyIndex or 1]
   assert(partyDef, ("trainer %s has no party %s"):format(oppClass, tostring(partyIndex)))
+  if Runtime.wantsHook("trainer.party") then
+    partyDef = Runtime.call("trainer.party", function(_, _, party)
+      return party
+    end, oppClass, partyIndex or 1, partyDef) or partyDef
+  end
+  local trainerDvs = (game.data.constants and game.data.constants.trainerDvs)
+                     or TRAINER_DVS
   self.enemyParty = {}
   for _, slot in ipairs(partyDef) do
     local mon = Pokemon.new(game.data, slot.species, slot.level)
     -- fixed trainer DVs, recomputed stats
-    mon.dvs = TRAINER_DVS
+    mon.dvs = trainerDvs
     mon.stats = require("src.pokemon.Stats").calc(game.data.pokemon[slot.species],
-                                                  slot.level, TRAINER_DVS)
+                                                  slot.level, trainerDvs)
     mon.hp = mon.stats.hp
     table.insert(self.enemyParty, mon)
   end
   applySpecialMoves(game.data, oppClass, partyIndex or 1, self.enemyParty)
+  -- a party slot's own moves list wins over the legacy boss-move tables
+  for i, slot in ipairs(partyDef) do
+    local mon = self.enemyParty[i]
+    if mon and slot.moves then
+      mon.moves = {}
+      for _, moveId in ipairs(slot.moves) do
+        local mdef = game.data.moves[moveId]
+        table.insert(mon.moves, { id = moveId, pp = mdef and mdef.pp or 0 })
+      end
+    end
+  end
   self.enemyIndex = 1
   local playerMon = Party.firstHealthy(game.save.party)
   if not playerMon then
@@ -490,6 +547,31 @@ end
 function BattleState:uiNext(factory)
   self.nextInsert = (self.nextInsert or 0) + 1
   table.insert(self.queue, self.nextInsert, { ui = factory })
+end
+
+-- ui rows compose screens unpushed (updateQueue pushes them), so
+-- Screens.push's mod-screen degrade can't cover them; mirror it here,
+-- stamping the id the same way
+function BattleState:buildScreen(id, ...)
+  local game = self.game
+  local factory = Screens.get(game, id)
+  local inst
+  if factory.__modOwned then
+    -- a broken mod screen degrades to the builtin, never a dead end
+    local ok, result = pcall(factory.new, game, ...)
+    if ok and result then
+      inst = result
+    else
+      Logger.error("mod screen '%s' failed: %s -- using builtin",
+                   id, tostring(result))
+      Screens.invalidate()
+      inst = require("src.ui." .. id).new(game, ...)
+    end
+  else
+    inst = factory.new(game, ...)
+  end
+  inst.screenId = inst.screenId or id
+  return inst
 end
 
 -- insert a wait for the HP bars to finish draining (UpdateHPBar):
@@ -635,7 +717,9 @@ function BattleState:updateQueue()
           local ok = pcall(self.animPlayer.start, self.animPlayer,
                            item.anim, item.attackerIsPlayer,
                            (item.shakes or item.ball)
-                             and { shakes = item.shakes, ball = item.ball }
+                             and { shakes = item.shakes, ball = item.ball,
+                                   ballFlicker = item.ball
+                                     and self:ballFlicker(item.ball) or nil }
                              or nil)
           self.animPlaying = ok
         end
@@ -739,9 +823,30 @@ function BattleState:computeMusicKind()
   return "wild"
 end
 
+-- side tables mirror the singles battlers; called before every
+-- battler-switch notification so sides[i].battlers[1] stays honest
+function BattleState:syncSides()
+  self.sides[1].battlers[1] = self.player
+  self.sides[2].battlers[1] = self.enemy
+end
+
+function BattleState:sideOf(battler)
+  return (battler and battler.isPlayer) and self.sides[1] or self.sides[2]
+end
+
+-- battle.started's kind verb: the mutated ghost/safari/oldman variants
+-- override the constructor's wild/trainer/link
+function BattleState:battleKind()
+  if self.ghost then return "ghost" end
+  if self.safari then return "safari" end
+  if self.demo then return "oldman" end
+  return self.kind
+end
+
 function BattleState:enter()
   if self.dead then
     self.game.stack:pop()
+    Runtime.emit("battle.ended", { battle = self, result = "skipped" })
     if self.onFinish then self.onFinish("skipped") end
     return
   end
@@ -801,6 +906,13 @@ function BattleState:enter()
   end
   self.phase = "messages"
   self.afterQueue = "menu"
+  self:syncSides()
+  Runtime.emit("battle.started", {
+    battle = self, kind = self:battleKind(),
+    trainerId = self.trainer and self.trainer.id,
+    species = self.enemy and self.enemy.mon.species,
+    level = self.enemy and self.enemy.mon.level,
+  })
 end
 
 -- any pop (finish, script teardown) must silence the alarm loop
@@ -1021,7 +1133,7 @@ function BattleState:resolveMimic(user, target, move, moveInst)
   self.nextInsert = (self.nextInsert or 0) + 1
   table.insert(self.queue, self.nextInsert, { wait = 50 })
   if target.invulnerable
-     or not Damage.accuracyRoll(self.ruleset, move, user, target, self.rng) then
+     or not self:accuracyRoll(move, user, target) then
     self:sayNext("But, it failed!")
     return
   end
@@ -1185,10 +1297,72 @@ function BattleState:moveDef(moveInst)
   return self.data.moves[moveInst.id]
 end
 
+-- the merged move_effects record for an effect id; the module records
+-- cover battles built without a loader
+function BattleState:effectRecord(effect)
+  local effects = self.data.move_effects
+  if effects then return effects[effect] end
+  return MoveEffects.RECORDS[effect]
+end
+
+-- the merged ball record (Catching.attempt handles the unknown-id default)
+function BattleState:ballDef(ball)
+  local balls = self.data.balls
+  return balls and balls[ball] or Catching.BALLS[ball]
+end
+
+-- the HUD label drawn in place of the level for a statused mon
+function BattleState:statusLabel(mon)
+  local record = Status.recordFor(self.data.statuses, mon.status)
+  if record then
+    return record.hudLabel or record.label or mon.status
+  end
+  return mon.status
+end
+
+-- the one accuracy roll (MoveHitTest), hooked as battle.accuracy
+function BattleState:accuracyRoll(move, user, target)
+  if Runtime.wantsHook("battle.accuracy") then
+    return Runtime.call("battle.accuracy", function(c)
+      return Damage.accuracyRoll(c.ruleset, c.move, c.user, c.target, c.rng)
+    end, { battle = self, ruleset = self.ruleset, move = move,
+           user = user, target = target, rng = self.rng })
+  end
+  return Damage.accuracyRoll(self.ruleset, move, user, target, self.rng)
+end
+
+-- Damage.compute, hooked as battle.damage; the ctx table is only built
+-- when a chain is installed, so the no-mod path allocates nothing
+function BattleState:computeDamage(user, target, move, opts)
+  if Runtime.wantsHook("battle.damage") then
+    return Runtime.call("battle.damage", function(c)
+      return Damage.compute(c.ruleset, c.user, c.target, c.move, c.opts)
+    end, { battle = self, ruleset = self.ruleset, user = user,
+           target = target, move = move, opts = opts, rng = self.rng })
+  end
+  return Damage.compute(self.ruleset, user, target, move, opts)
+end
+
+-- Catching.attempt against the merged registry, hooked as catch.rate
+function BattleState:catchAttempt(ball, rateOverride)
+  if Runtime.wantsHook("catch.rate") then
+    local battle = self
+    return Runtime.call("catch.rate", function(b, mon, def, o)
+      return Catching.attempt(b, mon, def, o.rng, o.rateOverride,
+        { ballDef = battle:ballDef(b), statuses = battle.data.statuses,
+          battle = battle })
+    end, ball, self.enemy.mon, self.enemy.def,
+    { rng = self.rng, rateOverride = rateOverride, battle = self })
+  end
+  return Catching.attempt(ball, self.enemy.mon, self.enemy.def, self.rng,
+    rateOverride, { ballDef = self:ballDef(ball),
+                    statuses = self.data.statuses, battle = self })
+end
+
 -- wAICount: item/switch uses per enemy Pokémon for this trainer class
 function BattleState:aiUsesFor()
   if self.kind ~= "trainer" or not self.trainer then return 0 end
-  local class = require("data.scripts.ai_classes")[self.trainer.id]
+  local class = TrainerAI.classFor(self)
   return class and class.uses or 0
 end
 
@@ -1201,9 +1375,27 @@ function BattleState:markParticipant()
   end
 end
 
+-- the whole choke point is hooked (battle.enemy_action), so a mod can
+-- rewrite any trainer's choice without registering brains
 function BattleState:enemyAction()
+  if Runtime.wantsHook("battle.enemy_action") then
+    return Runtime.call("battle.enemy_action", function(battle)
+      return battle:vanillaEnemyAction()
+    end, self)
+  end
+  return self:vanillaEnemyAction()
+end
+
+function BattleState:vanillaEnemyAction()
   local locked = self:lockedAction(self.enemy)
   if locked then return locked end
+  -- an ai_classes brain (or one on the trainer record) supersedes the
+  -- class action and move scoring entirely
+  if self.kind == "trainer" and self.trainer then
+    local class = TrainerAI.classFor(self)
+    local brain = self.trainer.brain or (class and class.brain)
+    if brain then return brain(self) end
+  end
   -- class AI may spend the turn on an item or a switch
   local classAct = TrainerAI.classAction(self)
   if classAct then return classAct end
@@ -1217,9 +1409,21 @@ end
 
 function BattleState:resolveTurn(playerAction)
   local enemyAction = self:enemyAction()
-  local pFirst = TurnOrder.firstMover(self.player, orderMove(playerAction, self.data),
-                                      self.enemy, orderMove(enemyAction, self.data),
-                                      self.rng)
+  self.turnCount = (self.turnCount or 0) + 1
+  Runtime.emit("battle.turn_started", {
+    battle = self, turn = self.turnCount,
+    playerAction = playerAction, enemyAction = enemyAction,
+  })
+  local pMove = orderMove(playerAction, self.data)
+  local eMove = orderMove(enemyAction, self.data)
+  local pFirst
+  if Runtime.wantsHook("battle.turn_order") then
+    pFirst = Runtime.call("battle.turn_order", function(a, aMove, b, bMove, c)
+      return TurnOrder.firstMover(a, aMove, b, bMove, c.rng, c.invertTie)
+    end, self.player, pMove, self.enemy, eMove, { rng = self.rng })
+  else
+    pFirst = TurnOrder.firstMover(self.player, pMove, self.enemy, eMove, self.rng)
+  end
   local order
   if pFirst then
     order = { { self.player, self.enemy, playerAction },
@@ -1231,7 +1435,6 @@ function BattleState:resolveTurn(playerAction)
 
   self.phase = "messages"
   self.afterQueue = "menu"
-  self.turnCount = (self.turnCount or 0) + 1
 
   for _, entry in ipairs(order) do
     self:act(function()
@@ -1247,7 +1450,13 @@ function BattleState:resolveSwitch(newMon)
   self.afterQueue = "menu"
   self:act(function()
     self:restoreMimicked(self.player) -- the battle copy leaves with it
+    local previous = self.player
     self.player = makeBattler(self.data, newMon, true, self.game.save)
+    self:syncSides()
+    Runtime.emit("battle.battler_switched", {
+      battle = self, side = self.sides[1], battler = self.player,
+      previous = previous,
+    })
     self:markParticipant()
     self.sendingOut = true
     self:sayNext(self:sendOutText(self.player.name))
@@ -1279,7 +1488,7 @@ function BattleState:endOfTurn()
                           { self.enemy, self.player, "enemy" } }) do
     local b, opp, side = pair[1], pair[2], pair[3]
     if b.mon.hp > 0 then
-      local msgs = Status.residual(b, opp)
+      local msgs = Status.residual(b, opp, self)
       for _, m in ipairs(msgs) do self:sayNext(prefixEnemy(m, b)) end
       if #msgs > 0 then self:drainNext() end -- poison/burn/seed HP moved
       if b.toxicCounter then
@@ -1295,6 +1504,30 @@ function BattleState:endOfTurn()
       b.trappingTurns = nil
     end
   end
+  self:tickTokens()
+  Runtime.emit("battle.turn_ended", { battle = self, turn = self.turnCount or 0 })
+end
+
+-- side/field tokens ({ id, turns?, onResidual?, onExpire? }) tick after
+-- the residual sweep; with the tables empty this is a nil check per list
+local function tickTokenList(battle, tokens, holder)
+  if tokens[1] == nil then return end
+  for i = #tokens, 1, -1 do
+    local token = tokens[i]
+    if token.turns then token.turns = token.turns - 1 end
+    if token.onResidual then token.onResidual(battle, holder) end
+    if token.turns and token.turns <= 0 then
+      if token.onExpire then token.onExpire(battle, holder) end
+      table.remove(tokens, i)
+    end
+  end
+end
+
+function BattleState:tickTokens()
+  for _, side in ipairs(self.sides) do
+    tickTokenList(self, side.tokens, side)
+  end
+  tickTokenList(self, self.field.tokens, self.field)
 end
 
 -- ---------------------------------------------------------------------
@@ -1770,9 +2003,15 @@ function BattleState:executeAction(user, target, action)
   end
   if action.special == "aiSwitch" then
     self.aiUses = (self.aiUses or 1) - 1
+    local previous = self.enemy
     local oldName = self.enemy.name
     self.enemyIndex = action.index
     self.enemy = makeBattler(self.data, self.enemyParty[action.index], false)
+    self:syncSides()
+    Runtime.emit("battle.battler_switched", {
+      battle = self, side = self.sides[2], battler = self.enemy,
+      previous = previous,
+    })
     self.aiUses = self:aiUsesFor()
     markSeen(self.game, self.enemy.mon.species)
     -- _AIBattleWithdrawText: "X with-/drew Y!"
@@ -1862,7 +2101,7 @@ end
 -- Runs Status.beforeMove plus the shared interruption bookkeeping;
 -- returns true when the user's action is interrupted.
 function BattleState:statusInterrupt(user, target)
-  local canMove, msgs, selfHit = Status.beforeMove(user, self.rng)
+  local canMove, msgs, selfHit = Status.beforeMove(user, self.rng, self)
   for _, m in ipairs(msgs) do self:sayNext(prefixEnemy(m, user)) end
   if selfHit then
     -- confusion self-hit (core.asm:3428-3434): clears everything in
@@ -1870,10 +2109,10 @@ function BattleState:statusInterrupt(user, target)
     -- 40-power typeless hit against the mon's own defense -- with the
     -- OPPONENT's Reflect still applying (the screen check keeps
     -- reading the opponent's battle status)
-    local dmg = Damage.compute(self.ruleset, user, user,
-                               { id = "CONFUSED", power = 40, type = "NORMAL", accuracy = 100 },
-                               { rng = self.rng, forceCrit = false, typeless = true,
-                                 screens = target })
+    local dmg = self:computeDamage(user, user,
+                                   { id = "CONFUSED", power = 40, type = "NORMAL", accuracy = 100 },
+                                   { rng = self.rng, forceCrit = false, typeless = true,
+                                     screens = target })
     self:sayNext("It hurt itself in\nits confusion!")
     self:clearVolatiles(user, true)
     self:applyDamage(user, dmg)
@@ -1909,12 +2148,16 @@ function BattleState:clearVolatiles(user, selfHit)
 end
 
 -- performMove runs a move (possibly via Metronome/Mirror Move recursion).
+-- Decomposed into a staged pipeline over the merged move_effects record:
+-- announcement -> callsMove -> charge -> perform -> primary run -> the
+-- damaging pipeline (EffectRegistry.runDamaging).
 function BattleState:performMove(user, target, moveInst, isCalled)
   local move = self:moveDef(moveInst)
   if not move then
     Logger.warn("unknown move instance %s", tostring(moveInst.id))
     return
   end
+  local record = self:effectRecord(move.effect)
 
   -- charge release?
   local releasing = user.charging == moveInst and user.chargeReady
@@ -1930,387 +2173,90 @@ function BattleState:performMove(user, target, moveInst, isCalled)
     moveInst.pp = math.max(0, moveInst.pp - 1)
   end
 
-  local effect = move.effect
-
   self.moveAnimRow = nil
   if not (user.thrashTurns and moveInst == user.thrashMove and user.thrashAnnounced) then
     self:sayNext(("%s\nused %s!"):format(displayName(user), move.name))
     -- the move's animation plays right after the announcement; the
     -- damage path attaches the target's hit blink to this row so the
     -- blink follows the animation (pokered's order).  Mimic is the
-    -- exception: PlayCurrentMoveAnimation runs only after a successful
-    -- copy (effects.asm:1268), never on a miss -- applyMimic queues it
-    if effect ~= "MIMIC_EFFECT" then
+    -- exception (announceAnim = false): PlayCurrentMoveAnimation runs
+    -- only after a successful copy, never on a miss -- applyMimic queues it
+    if not (record and record.announceAnim == false) then
       self.nextInsert = (self.nextInsert or 0) + 1
       self.moveAnimRow = { anim = move.id, attackerIsPlayer = user.isPlayer }
       table.insert(self.queue, self.nextInsert, self.moveAnimRow)
     end
   end
+  Runtime.emit("battle.move_used", {
+    battle = self, user = user, target = target, move = move,
+    isCalled = isCalled or false,
+  })
 
-  -- Metronome / Mirror Move
-  if effect == "METRONOME_EFFECT" then
-    local order = self.data.constants.moveOrder
-    local pick
-    repeat
-      pick = order[self.rng(1, #order)]
-    until pick ~= "METRONOME" and pick ~= "STRUGGLE" and self.data.moves[pick]
-    self:performMove(user, target, { id = pick, pp = 1 }, true)
-    return
-  end
-  if effect == "MIRROR_MOVE_EFFECT" then
-    local last = target.lastMove
-    if not last then
-      self:sayNext("The MIRROR MOVE\nfailed!")
-      return
+  local ctx = EffectRegistry.makeCtx(self, user, target, move, moveInst, isCalled)
+
+  -- Metronome / Mirror Move re-entry; a nil pick means the record
+  -- already said its failure text
+  if record and record.callsMove then
+    local pick = record.callsMove(ctx)
+    if pick then
+      self:performMove(user, target, { id = pick, pp = 1 }, true)
     end
-    self:performMove(user, target, { id = last, pp = 1 }, true)
     return
   end
-
   user.lastMove = move.id
 
-  -- charge moves: first turn just charges; Fly AND Dig go
-  -- semi-invulnerable (ChargeEffect sets INVULNERABLE for both)
-  if (effect == "CHARGE_EFFECT" or effect == "FLY_EFFECT") and not releasing then
+  -- charge moves: first turn just charges; the text comes from the move
+  -- record (chargeText) and the invulnerability from semiInvulnerable,
+  -- falling back to the id tables (Fly AND Dig go semi-invulnerable:
+  -- ChargeEffect sets INVULNERABLE for both)
+  if record and record.charge and not releasing then
     user.charging = moveInst
     user.chargeReady = true
-    local chargeText = ({
-      FLY = "%s\nflew up high!",
-      DIG = "%s\ndug a hole!",
-      RAZOR_WIND = "%s\nmade a whirlwind!",
-      SOLARBEAM = "%s\ntook in sunlight!",
-      SKULL_BASH = "%s\nlowered its head!",
-      SKY_ATTACK = "%s\nis glowing!",
-    })[move.id] or "%s\nis charging up!"
-    if effect == "FLY_EFFECT" or move.id == "DIG" then
+    local invulnerable = move.semiInvulnerable
+    if invulnerable == nil then
+      invulnerable = record.charge.invulnerable or move.id == "DIG"
+    end
+    if invulnerable then
       user.invulnerable = true
     end
+    local chargeText = move.chargeText or CHARGE_TEXT[move.id]
+                       or "%s\nis charging up!"
     self:sayNext(chargeText:format(displayName(user)))
     return
   end
 
-  if effect == "SWITCH_AND_TELEPORT_EFFECT" then
-    -- SwitchAndTeleportEffect (effects.asm:810-909): in a wild battle
-    -- it auto-succeeds when the user's level >= the opponent's;
-    -- otherwise roll rand[0, userLevel+enemyLevel] and FAIL when the
-    -- roll is below opponentLevel/4.  Teleport's failure text is "But
-    -- it failed!", Roar/Whirlwind's is DidntAffectText; in trainer
-    -- battles Teleport fails and Roar/Whirlwind are "unaffected".
-    if self.kind == "wild" then
-      local uLvl, tLvl = user.mon.level, target.mon.level
-      local ok = uLvl >= tLvl
-      if not ok then
-        ok = self.rng(0, uLvl + tLvl) >= math.floor(tLvl / 4)
-      end
-      if ok then
-        if move.id == "ROAR" then
-          self:sayNext(("%s\nran away scared!"):format(displayName(target)))
-        elseif move.id == "WHIRLWIND" then
-          self:sayNext(("%s\nwas blown away!"):format(displayName(target)))
-        else
-          self:sayNext(("%s\nran from battle!"):format(displayName(user)))
-        end
-        self.result = "run"
-        self.afterQueue = "finish"
-      elseif move.id == "TELEPORT" then
-        self:sayNext("But, it failed!")
-      else
-        self:sayNext(("It didn't affect\n%s!"):format(displayName(target)))
-      end
-    elseif move.id == "TELEPORT" then
-      self:sayNext("But, it failed!")
-    else
-      self:sayNext(("%s\nis unaffected!"):format(displayName(target)))
-    end
-    return
-  end
-
-  if effect == "BIDE_EFFECT" then
-    user.bideTurns = self.rng(2, 3)
-    user.bideDamage = 0
-    self:sayNext(("%s\nis storing energy!"):format(displayName(user)))
-    return
-  end
-
-  -- Mimic runs its own mid-move flow: hit test, then the copy menu
-  -- (player) or a random roll (enemy / link), all on the queue
-  if effect == "MIMIC_EFFECT" then
-    self:resolveMimic(user, target, move, moveInst)
+  -- fully custom resolution (Bide, Roar/Teleport, Mimic)
+  if record and record.perform then
+    record.perform(ctx)
     return
   end
 
   -- pure status moves
-  local primary = MoveEffects.primary[effect]
-  if move.power == 0 and primary then
+  if move.power == 0 and record and record.kind == "primary" and record.run then
     -- accuracy-checked status effects run MoveHitTest, which has no
     -- 100%-accuracy early-out (even Thunder Wave misses on the 255
     -- roll) and misses outright against a mid-Fly/Dig target; the
     -- never-miss paths (X ACCURACY) live inside Damage.accuracyRoll
-    if ACC_CHECKED_STATUS[effect]
+    if record.accuracyChecked
        and (target.invulnerable
-            or not Damage.accuracyRoll(self.ruleset, move, user, target, self.rng)) then
+            or not self:accuracyRoll(move, user, target)) then
       self:sayNext(("%s's\nattack missed!"):format(displayName(user)))
       return
     end
-    for _, m in ipairs(primary(self, user, target, move, moveInst)) do
+    for _, m in ipairs(record.run(ctx)) do
       self:sayNext(m)
     end
     self:drainNext() -- REST/RECOVER/SOFTBOILED move the user's bar
     return
   end
-  if move.power == 0 and not MoveEffects.special[effect] then
-    MoveEffects.warnUnknown(effect)
+  if move.power == 0 and not (record and record.kind == "full") then
+    MoveEffects.warnUnknown(move.effect)
     self:sayNext("But, it failed!")
     return
   end
 
-  -- damaging move ---------------------------------------------------------
-
-  -- Swift ignores semi-invulnerability (MoveHitTest returns hit for
-  -- SWIFT_EFFECT before the INVULNERABLE check)
-  if target.invulnerable and effect ~= "SWIFT_EFFECT" then
-    self:sayNext(("%s's\nattack missed!"):format(displayName(user)))
-    return
-  end
-
-  if effect == "OHKO_EFFECT" then
-    -- fails against faster opponents (Gen 1 rule) and immune types
-    if TypeChart.effectiveness(move.type, target.curTypes) == 0 then
-      self:sayNext(("It doesn't affect\n%s!"):format(displayName(target)))
-      return
-    end
-    if TurnOrder.effectiveSpeed(user) < TurnOrder.effectiveSpeed(target) then
-      self:sayNext("But, it failed!")
-      return
-    end
-  end
-
-  -- Dream Eater only works on sleeping targets (checked before damage)
-  if effect == "DREAM_EATER_EFFECT" and target.mon.status ~= "SLP" then
-    self:sayNext("But, it failed!")
-    return
-  end
-
-  local hits = 1
-  if effect == "TWO_TO_FIVE_ATTACKS_EFFECT" then
-    local r = self.rng(0, 7)
-    hits = ({ 2, 2, 2, 3, 3, 3, 4, 5 })[r + 1]
-  elseif effect == "ATTACK_TWICE_EFFECT" or effect == "TWINEEDLE_EFFECT" then
-    hits = 2
-  end
-
-  -- TrappingEffect runs BEFORE the hit test and clears the target's
-  -- Hyper Beam recharge, even if the trapping move then misses
-  -- (effects.asm:1091-1092 ClearHyperBeam)
-  if effect == "TRAPPING_EFFECT" and not user.trappingTurns then
-    target.mustRecharge = nil
-  end
-
-  -- accuracy (Swift never misses)
-  if effect ~= "SWIFT_EFFECT" then
-    if not Damage.accuracyRoll(self.ruleset, move, user, target, self.rng) then
-      if effect == "JUMP_KICK_EFFECT" then
-        self:sayNext(("%s's\nattack missed!"):format(displayName(user)))
-        self:sayNext(("%s\nkept going and\ncrashed!"):format(displayName(user)))
-        self:applyDamage(user, 1)
-        if user.mon.hp <= 0 then self:onFaint(user) end
-      elseif effect == "EXPLODE_EFFECT" then
-        self:sayNext(("%s's\nattack missed!"):format(displayName(user)))
-        self:selfDestruct(user)
-      else
-        self:sayNext(("%s's\nattack missed!"):format(displayName(user)))
-      end
-      user.trappingTurns = nil
-      return
-    end
-  end
-
-  -- damage per hit
-  local dmg, info
-  if move.id == "COUNTER" then
-    -- HandleCounterMove: 2x the last damage dealt in battle, only if
-    -- the opponent's last move was Normal/Fighting with >0 power (and
-    -- not Counter itself); wDamage is shared, so any last damage counts
-    local lastId = target.lastMove
-    local lm = lastId and lastId ~= "COUNTER" and self.data.moves[lastId]
-    local counterable = lm and (lm.power or 0) > 0
-                        and (lm.type == "NORMAL" or lm.type == "FIGHTING")
-    if not counterable or (self.lastDamage or 0) == 0 then
-      self:sayNext(("%s's\nattack missed!"):format(displayName(user)))
-      return
-    end
-    dmg = math.min(65535, self.lastDamage * 2)
-    info = { crit = false, typeMult = 10 }
-  elseif effect == "SPECIAL_DAMAGE_EFFECT" or effect == "SUPER_FANG_EFFECT" then
-    -- fixed damage still respects type immunity (AdjustDamageForMoveType
-    -- flags the miss before the special-damage override)
-    if TypeChart.effectiveness(move.type, target.curTypes) == 0 then
-      self:sayNext(("It doesn't affect\n%s!"):format(displayName(target)))
-      return
-    end
-    if effect == "SUPER_FANG_EFFECT" then
-      dmg = math.max(1, math.floor(target.mon.hp / 2))
-    else
-      dmg = self:specialDamage(user, target, move)
-      if not dmg then
-        self:sayNext("But, it failed!")
-        return
-      end
-    end
-    info = { crit = false, typeMult = 10 }
-  elseif effect == "OHKO_EFFECT" then
-    dmg = 65535
-    info = { crit = false, typeMult = 10 }
-  else
-    dmg, info = Damage.compute(self.ruleset, user, target, move,
-                               { rng = self.rng, explode = effect == "EXPLODE_EFFECT" })
-  end
-
-  if info.typeMult == 0 then
-    self:sayNext(("It doesn't affect\n%s!"):format(displayName(target)))
-    if effect == "EXPLODE_EFFECT" then self:selfDestruct(user) end
-    return
-  end
-  if info.missed then
-    -- 0.25x floored the damage to zero: the original registers a miss
-    self:sayNext(("%s's\nattack missed!"):format(displayName(user)))
-    if effect == "EXPLODE_EFFECT" then self:selfDestruct(user) end
-    return
-  end
-  self.lastDamage = dmg -- wDamage (shared by both sides, read by Counter)
-
-  -- the hit blink + damage sound ride the queue behind the animation:
-  -- on the move's anim row when one was announced, else on a bare hit
-  -- row (thrash/rage continuations), placed BEFORE the drain rows the
-  -- hits loop inserts so the blink precedes the bar drain
-  local hitRow = self.moveAnimRow
-  if not hitRow then
-    self.nextInsert = (self.nextInsert or 0) + 1
-    hitRow = { hitRow = true }
-    table.insert(self.queue, self.nextInsert, hitRow)
-  end
-
-  local totalDealt = 0
-  local hitCount, brokeSub = 0, false
-  for h = 1, hits do
-    if target.mon.hp <= 0 then break end
-    local hadSub = target.substituteHP ~= nil
-    totalDealt = totalDealt + self:applyDamage(target, dmg)
-    hitCount = h
-    if hadSub and not target.substituteHP then
-      -- AttackSubstitute: breaking the substitute ends a multi-hit move
-      brokeSub = true
-      break
-    end
-  end
-  hits = hitCount > 0 and hitCount or hits
-  if totalDealt > 0 then
-    -- the original's per-hit sound: normal / super / not-very-effective
-    local hitSfx = info.typeMult > 10 and "Super_Effective"
-                   or info.typeMult < 10 and "Not_Very_Effective" or "Damage"
-    hitRow.hit = { sfx = hitSfx,
-                   blink = self:animationsOn() and target or nil }
-  end
-  -- PrintCriticalOHKOText prints "Critical hit!"/"One-hit KO!" right
-  -- after the damage lands, BEFORE DisplayEffectiveness (core.asm
-  -- .moveDidNotMiss); the multi-hit count follows the last hit
-  if info.crit then self:sayNext("Critical hit!") end
-  if effect == "OHKO_EFFECT" then
-    self:sayNext("One-hit KO!")
-  end
-  if info.typeMult > 10 then
-    self:sayNext("It's super\neffective!")
-  elseif info.typeMult < 10 then
-    self:sayNext("It's not very\neffective...")
-  end
-  if hits > 1 then
-    -- player: _MultiHitText; enemy: _HitXTimesText (always plural)
-    if user.isPlayer then
-      self:sayNext(("Hit the enemy\n%d times!"):format(hits))
-    else
-      self:sayNext(("Hit %d times!"):format(hits))
-    end
-  end
-
-  -- post-damage effect bookkeeping
-  if effect == "RECOIL_EFFECT" or moveInst.struggle then
-    -- recoil.asm reads the RAW computed wDamage (not the HP actually
-    -- removed): overkill and substitute hits recoil at full strength
-    local recoil = math.max(1, math.floor(dmg / (moveInst.struggle and 2 or 4)))
-    self:sayNext(("%s's\nhit with recoil!"):format(displayName(user)))
-    self:applyDamage(user, recoil)
-  elseif effect == "DRAIN_HP_EFFECT" or effect == "DREAM_EATER_EFFECT" then
-    -- drain_hp.asm halves the RAW wDamage IN PLACE (minimum 1) and
-    -- heals that amount, so Counter would see the halved value
-    local heal = math.max(1, math.floor(dmg / 2))
-    self.lastDamage = heal
-    user.mon.hp = math.min(user.mon.stats.hp, user.mon.hp + heal)
-    self:drainNext()
-    if effect == "DREAM_EATER_EFFECT" then
-      self:sayNext(("%s's\ndream was eaten!"):format(displayName(target)))
-    else
-      self:sayNext(("Sucked health from\n%s!"):format(displayName(target)))
-    end
-  elseif effect == "EXPLODE_EFFECT" then
-    self:selfDestruct(user)
-  elseif effect == "HYPER_BEAM_EFFECT" then
-    -- no recharge when the target faints OR its substitute breaks
-    if target.mon.hp > 0 and not brokeSub then
-      user.mustRecharge = true
-    end
-  elseif effect == "PAY_DAY_EFFECT" then
-    self.payDay = (self.payDay or 0) + 2 * user.mon.level
-    self:sayNext("Coins scattered\neverywhere!")
-  elseif effect == "TRAPPING_EFFECT" then
-    if not user.trappingTurns then
-      -- TrappingEffect (effects.asm:1080-1103) rolls wNumAttacksLeft
-      -- as 1-4 (weights 3/8 3/8 1/8 1/8): that many CONTINUATION
-      -- attacks follow this first hit, 2-5 attacks total.  The victim
-      -- is held while the counter runs (live mirror in lockedAction).
-      local r = self.rng(0, 7)
-      user.trappingTurns = ({ 1, 1, 1, 2, 2, 2, 3, 4 })[r + 1]
-      user.trapDamage = dmg
-      -- remember the move so its animation can replay on each locked
-      -- continuation (core.asm:3554-3566 -> GetPlayerAnimationType)
-      user.trapMove = move.id
-    end
-  elseif effect == "THRASH_PETAL_DANCE_EFFECT" then
-    if not user.thrashTurns then
-      user.thrashTurns = self.rng(2, 3) -- 3-4 attacks total, then confusion
-      user.thrashMove = moveInst
-      user.thrashAnnounced = true
-    else
-      user.thrashTurns = user.thrashTurns - 1
-      if user.thrashTurns <= 0 then
-        user.thrashTurns, user.thrashMove, user.thrashAnnounced = nil, nil, nil
-        if not user.confusedTurns then
-          user.confusedTurns = self.rng(2, 5)
-          self:sayNext(("%s\nbecame confused!"):format(displayName(user)))
-        end
-      end
-    end
-  elseif effect == "RAGE_EFFECT" then
-    user.rageMove = moveInst
-  end
-
-  -- secondary side effects (blocked by fainting)
-  local secondary = MoveEffects.secondary[effect]
-  if secondary and target.mon.hp > 0 and totalDealt > 0 then
-    for _, m in ipairs(secondary(self, user, target, move)) do
-      self:sayNext(m)
-    end
-  end
-  if not MoveEffects.special[effect] and not MoveEffects.secondary[effect]
-     and not MoveEffects.primary[effect] and effect ~= "NO_ADDITIONAL_EFFECT" then
-    MoveEffects.warnUnknown(effect)
-  end
-
-  if target.mon.hp <= 0 then
-    self:onFaint(target)
-  end
-  if user.mon.hp <= 0 then
-    self:onFaint(user)
-  end
+  -- damaging pipeline, driven by the record's stage callbacks
+  EffectRegistry.runDamaging(self, ctx, record)
 end
 
 function BattleState:continueTrapping(user, target)
@@ -2382,19 +2328,6 @@ function BattleState:applyDamage(target, dmg)
   return dealt
 end
 
--- fixed-damage moves (engine/battle/core.asm SpecialDamage)
-function BattleState:specialDamage(user, target, move)
-  local id = move.id
-  if id == "SONICBOOM" then return 20 end
-  if id == "DRAGON_RAGE" then return 40 end
-  if id == "SEISMIC_TOSS" or id == "NIGHT_SHADE" then return user.mon.level end
-  if id == "PSYWAVE" then
-    local max = math.max(1, math.floor(user.mon.level * 3 / 2) - 1)
-    return self.rng(1, max)
-  end
-  return nil
-end
-
 -- ---------------------------------------------------------------------
 -- fainting / exp / party
 -- ---------------------------------------------------------------------
@@ -2402,6 +2335,7 @@ end
 function BattleState:onFaint(battler)
   if battler.faintQueued then return end
   battler.faintQueued = true
+  Runtime.emit("battle.fainted", { battle = self, battler = battler })
   -- the faint slide + cry ride the queue (after the move animation and
   -- the HP-bar drain, pokered's order); the slide finishes before the
   -- faint text via a queued hold
@@ -2454,6 +2388,9 @@ function BattleState:enemyMonFainted()
     local levels, gained = Experience.apply(self.data, mon, self.enemy.def,
                                             self.enemy.mon.level, self.kind == "trainer",
                                             split, mon.traded)
+    Runtime.emit("battle.exp_gained", {
+      battle = self, mon = mon, gained = gained, levels = levels,
+    })
     local name = mon.nickname or self.data.pokemon[mon.species].name
     if announce then
       -- GainedText (experience.asm:342-354): "X gained" plus one of
@@ -2526,12 +2463,17 @@ function BattleState:enemyMonFainted()
           local ChoiceBox = require("src.ui.ChoiceBox")
           return ChoiceBox.new(game, function(yes)
             if not yes then return end
-            local PartyMenu = require("src.ui.PartyMenu")
-            game.stack:push(PartyMenu.new(game, {
+            Screens.push(game, "PartyMenu", {
               battle = self,
               onSwitch = function(mon)
                 if mon ~= self.player.mon and mon.hp > 0 then
+                  local previous = self.player
                   self.player = makeBattler(self.data, mon, true, game.save)
+                  self:syncSides()
+                  Runtime.emit("battle.battler_switched", {
+                    battle = self, side = self.sides[1],
+                    battler = self.player, previous = previous,
+                  })
                   self:markParticipant()
                   self.nextInsert = 0
                   self.sendingOut = true
@@ -2545,12 +2487,18 @@ function BattleState:enemyMonFainted()
                   end)
                 end
               end,
-            }))
+            })
           end)
         end)
       end
       self:act(function()
+        local previous = self.enemy
         self.enemy = makeBattler(self.data, self.enemyParty[self.enemyIndex], false)
+        self:syncSides()
+        Runtime.emit("battle.battler_switched", {
+          battle = self, side = self.sides[2], battler = self.enemy,
+          previous = previous,
+        })
         self.aiUses = self:aiUsesFor()
         markSeen(self.game, self.enemy.mon.species)
         self:markParticipant()
@@ -2597,6 +2545,7 @@ function BattleState:learnMove(mon, moveId)
   end
   if #mon.moves < 4 then
     table.insert(mon.moves, { id = moveId, pp = mdef.pp })
+    Runtime.emit("pokemon.move_learned", { mon = mon, moveId = moveId })
     self:sayNext(("%s learned\n%s!"):format(mon.nickname or self.data.pokemon[mon.species].name,
                                             mdef.name))
     return
@@ -2604,10 +2553,8 @@ function BattleState:learnMove(mon, moveId)
   -- the "trying to learn" preamble lives inside MoveLearnMenu:enter;
   -- ordered insert so multi-level gains keep each level's checks
   -- between its own stat box and the next "grew to level" text
-  local game = self.game
   self:uiNext(function()
-    local MoveLearnMenu = require("src.ui.MoveLearnMenu")
-    return MoveLearnMenu.new(game, mon, moveId)
+    return self:buildScreen("MoveLearnMenu", mon, moveId)
   end)
 end
 
@@ -2653,8 +2600,7 @@ function BattleState:openReplacementMenu()
   self.phase = "messages"
   self.afterQueue = "menu"
   self:ui(function()
-    local PartyMenu = require("src.ui.PartyMenu")
-    return PartyMenu.new(game, {
+    return self:buildScreen("PartyMenu", {
       battle = self,
       onSwitch = function(mon)
         if mon.hp <= 0 then
@@ -2662,7 +2608,13 @@ function BattleState:openReplacementMenu()
           return -- the menu-phase guard reopens the menu
         end
         self:restoreMimicked(self.player)
+        local previous = self.player
         self.player = makeBattler(self.data, mon, true, game.save)
+        self:syncSides()
+        Runtime.emit("battle.battler_switched", {
+          battle = self, side = self.sides[1], battler = self.player,
+          previous = previous,
+        })
         self:markParticipant()
         self.nextInsert = 0
         self.sendingOut = true
@@ -2705,13 +2657,15 @@ function BattleState:safariAction(choice)
     self:say(("%s used\nSAFARI BALL!"):format(playerName))
     self:act(function()
       require("src.core.Sound").play(self.data, "Ball_Toss")
-      local caught, shakes = Catching.attempt("SAFARI_BALL", self.enemy.mon,
-                                              self.enemy.def, self.rng,
-                                              self.safariCatchRate)
+      self.lastBall = "SAFARI_BALL"
+      local caught, shakes = self:catchAttempt("SAFARI_BALL", self.safariCatchRate)
+      Runtime.emit("battle.ball_thrown", {
+        battle = self, ball = "SAFARI_BALL", caught = caught, shakes = shakes,
+      })
       -- SAFARI_BALL is neither POKE nor GREAT, so TossBallAnimation
       -- lands on the ULTRATOSS arc (no flicker: SAFARI_BALL is $08,
       -- above DoBallTossSpecialEffects's <= ULTRA_BALL check)
-      self:ballChain("ULTRATOSS_ANIM", caught, shakes, "SAFARI_BALL")
+      self:ballChain(self:tossAnimFor("SAFARI_BALL"), caught, shakes, "SAFARI_BALL")
       if caught then
         -- ItemUseBallText05's sound_caught_mon: fanfare with the text
         self:actNext(function()
@@ -2785,9 +2739,20 @@ end
 
 -- Gen 1 escape formula (engine/battle/core.asm TryRunningFromBattle),
 -- shared by the RUN menu choice and the faint dialogue's NO branch;
--- counts a run attempt each call.
+-- counts a run attempt each call.  Hooked as battle.run.
 function BattleState:runRoll(pSpd, eSpd)
   self.runAttempts = (self.runAttempts or 0) + 1
+  if Runtime.wantsHook("battle.run") then
+    local battle = self
+    return Runtime.call("battle.run", function(c)
+      return battle:runRollVanilla(c.pSpd, c.eSpd)
+    end, { battle = self, pSpd = pSpd, eSpd = eSpd,
+           attempts = self.runAttempts, rng = self.rng })
+  end
+  return self:runRollVanilla(pSpd, eSpd)
+end
+
+function BattleState:runRollVanilla(pSpd, eSpd)
   if self.ghost then
     return true -- IsGhostBattle -> always escapes
   end
@@ -2830,12 +2795,10 @@ function BattleState:tryRun()
 end
 
 function BattleState:openItems()
-  local BagMenu = require("src.ui.BagMenu")
-  local game = self.game
   self.phase = "messages"
   self.afterQueue = "menu"
   self:ui(function()
-    return BagMenu.new(game, { battle = self })
+    return self:buildScreen("BagMenu", { battle = self })
   end)
 end
 
@@ -2875,14 +2838,14 @@ function BattleState:storeCaughtMon()
   local dex = game.save.pokedex
   local species = self.enemy.mon.species
   local isNew = dex ~= nil and not dex.owned[species]
+  local destination = "party"
   markOwned(game, species)
   stampOT(game.save, self.enemy.mon)
   if isNew then
     -- _ItemUseBallText06 + ShowPokedexData
     self:sayNext(("New POKéDEX data\nwill be added for\n%s!"):format(self.enemy.name))
     self:uiNext(function()
-      local DexEntryMenu = require("src.ui.DexEntryMenu")
-      return DexEntryMenu.new(game, species)
+      return self:buildScreen("DexEntryMenu", species)
     end)
   end
   if Party.add(game.save.party, self.enemy.mon) then
@@ -2897,18 +2860,17 @@ function BattleState:storeCaughtMon()
           :format(enemyName), function()
         game.stack:push(ChoiceBox.new(game, function(yes)
           if not yes then return end
-          local ok, NamingScreen = pcall(require, "src.ui.NamingScreen")
-          if not ok then return end
-          game.stack:push(NamingScreen.new(game, {
+          pcall(Screens.push, game, "NamingScreen", {
             title = "NICKNAME?", maxLen = 10,
             onDone = function(name)
               if name and #name > 0 then caught.nickname = name end
             end,
-          }))
+          })
         end))
       end)
     end)
   else
+    destination = "box"
     local boxNum = require("src.pokemon.Boxes").deposit(game.save, self.enemy.mon)
     if boxNum then
       -- _ItemUseBallText07/08 keyed on EVENT_MET_BILL
@@ -2919,6 +2881,10 @@ function BattleState:storeCaughtMon()
       self:sayNext("But every BOX\nis full!")
     end
   end
+  Runtime.emit("pokemon.caught", {
+    battle = self, mon = self.enemy.mon, species = species, isNew = isNew,
+    ball = self.lastBall, destination = destination, game = game,
+  })
   self.result = "caught"
   self.afterQueue = "finish"
 end
@@ -2947,12 +2913,21 @@ function BattleState:ballChain(tossAnim, caught, shakes, ball)
   end)
 end
 
--- TossBallAnimation picks the toss arc from wCurItem: POKE->TOSS,
+-- TossBallAnimation picks the toss arc from the ball record's tossAnim;
+-- an unknown ball keeps the wCurItem mapping: POKE->TOSS,
 -- GREAT->GREATTOSS, everything else (ULTRA/MASTER/SAFARI...)->ULTRATOSS
-local function tossAnimFor(ball)
+function BattleState:tossAnimFor(ball)
+  local def = self:ballDef(ball)
+  if def and def.tossAnim then return def.tossAnim end
   return ball == "POKE_BALL" and "TOSS_ANIM"
          or ball == "GREAT_BALL" and "GREATTOSS_ANIM"
          or "ULTRATOSS_ANIM"
+end
+
+-- the Master/Ultra OBJ-palette flicker, from the ball record
+function BattleState:ballFlicker(ball)
+  local def = self:ballDef(ball)
+  return (def and def.flicker) or false
 end
 
 -- called by BagMenu when a ball is thrown
@@ -2972,7 +2947,7 @@ function BattleState:throwBall(ball)
       -- wCurItem, so a Master/Ultra toss keeps its flicker), dodged
       -- ($10 anim data, no wobbles), and the turn is spent like any
       -- failed throw
-      self:animNext(tossAnimFor(ball), true, nil, ball)
+      self:animNext(self:tossAnimFor(ball), true, nil, ball)
       self:sayNext("It dodged the\nthrown BALL!")
       self:sayNext("This POKéMON\ncan't be caught!")
       self:act(function()
@@ -2981,13 +2956,15 @@ function BattleState:throwBall(ball)
       self:act(function() self:endOfTurn() end)
       return
     end
-    local caught, shakes = Catching.attempt(ball, self.enemy.mon,
-                                            self.enemy.def, self.rng)
+    self.lastBall = ball
+    local caught, shakes = self:catchAttempt(ball)
+    Runtime.emit("battle.ball_thrown", {
+      battle = self, ball = ball, caught = caught, shakes = shakes,
+    })
     -- ItemUseBall's 20-frame beat, then the toss chain for the outcome
-    -- (TossBallAnimation maps POKE->TOSS, GREAT->GREATTOSS, else ULTRATOSS)
     self.nextInsert = (self.nextInsert or 0) + 1
     table.insert(self.queue, self.nextInsert, { wait = 20 })
-    self:ballChain(tossAnimFor(ball), caught, shakes, ball)
+    self:ballChain(self:tossAnimFor(ball), caught, shakes, ball)
     if caught then
       -- ItemUseBallText05 carries sound_caught_mon (item_effects.asm:
       -- 608-614): the fanfare sounds with the caught message, before
@@ -3008,12 +2985,10 @@ function BattleState:throwBall(ball)
 end
 
 function BattleState:openParty()
-  local PartyMenu = require("src.ui.PartyMenu")
-  local game = self.game
   self.phase = "messages"
   self.afterQueue = "menu"
   self:ui(function()
-    return PartyMenu.new(game, {
+    return self:buildScreen("PartyMenu", {
       battle = self,
       onSwitch = function(mon)
         if mon == self.player.mon then
@@ -3065,6 +3040,7 @@ function BattleState:finish()
   -- (home/overworld.asm:2343-2348)
   require("src.core.Music").restoreMap(self.data)
   self.game.stack:pop()
+  Runtime.emit("battle.ended", { battle = self, result = self.result or "run" })
   if self.onFinish then self.onFinish(self.result or "run") end
 end
 
@@ -3619,7 +3595,7 @@ function BattleState:drawHUDs(slide)
     love.graphics.setColor(0, 0, 0, 1)
     Font.draw(self.enemy.name, nameX(1, self.enemy.name), 0)
     if self.enemy.mon.status then
-      Font.draw(self.enemy.mon.status, 40, 8)
+      Font.draw(self:statusLabel(self.enemy.mon), 40, 8)
     else
       hudTile(0x6E, 32, 8) -- <LV>
       Font.draw(tostring(self.enemy.mon.level), 40, 8)
@@ -3661,7 +3637,7 @@ function BattleState:drawHUDs(slide)
     love.graphics.setColor(0, 0, 0, 1)
     Font.draw(self.player.name, nameX(10, self.player.name), 56)
     if self.player.mon.status then
-      Font.draw(self.player.mon.status, 120, 64)
+      Font.draw(self:statusLabel(self.player.mon), 120, 64)
     else
       hudTile(0x6E, 112, 64) -- <LV>
       Font.draw(tostring(self.player.mon.level), 120, 64)
@@ -3741,7 +3717,9 @@ function BattleState:drawTextArea()
       else
         local def = self.data.moves[sel.id]
         Font.draw("TYPE/", 8, 72)
-        Font.draw(def.type or "", 16, 80)
+        -- the type record's display name (a mod type shows its name, and
+        -- PSYCHIC_TYPE prints PSYCHIC like the original)
+        Font.draw(def.type and TypeChart.displayName(def.type) or "", 16, 80)
         local maxPP = def.pp + (sel.ppUps or 0) * math.floor(def.pp / 5)
         Font.draw(("%2d/%2d"):format(sel.pp, maxPP), 40, 88)
       end

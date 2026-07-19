@@ -1,0 +1,31 @@
+-- Sharing metadata (25-community-and-ecosystem.md 3.2).  Read by tooling
+-- and the manager detail pane; never by the loader's merge.
+return {
+  summary = "Sable Cove: one town, three species, one badge. The smallest whole conversion.",
+  author = "Pokemon Gen 1 Recompilation Project",
+  contact = "https://github.com/bryanthaboi/pokemon-gen1-recomp-project",
+  tags = { "total-conversion", "capstone" },
+  differences = {
+    changed = {
+      "field.boot spawns on SABLE_COVE as SABLE, rival CORAL, 1500 money",
+      "constants.dexSize 151 -> 3, dexDigits 3 -> 1, levelCap 100 -> 50",
+      "constants.badges replaced with one TIDEBADGE",
+      "constants.hmMoves replaced with CUT and SURF",
+      "the title screen is SableTitle",
+    },
+    added = {
+      "SABLE_EMBERKIT, SABLE_TIDEPUP and SABLE_MOSSLING with cries and icons",
+      "SABLE_TIDE_BADGE key item",
+      "the SABLE_COVE map and its encounter table",
+    },
+    known = {
+      "no gym, no story and no warps yet: this is the skeleton the TC guide elaborates",
+      "Red's maps and species stay merged and reachable; a real conversion removes them",
+    },
+  },
+  credits = {
+    { who = "Pokemon Gen 1 Recompilation Project", for_ = "all original sprite art under assets/" },
+    { who = "pret/pokered", for_ = "the OVERWORLD tileset, font and move table this builds on" },
+  },
+  compat = { engine = ">=1.0.0 <2.0.0", modApi = 2 },
+}

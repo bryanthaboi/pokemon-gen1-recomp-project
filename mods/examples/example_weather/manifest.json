@@ -1,0 +1,15 @@
+{
+  "id": "example_weather",
+  "name": "Weather Battles Example",
+  "version": "1.0.0",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "overhaul",
+  "category": "MECHANIC",
+  "game_version": ">=1.0.0 <2.0.0",
+  "priority": 100,
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "description": "Mechanic-designer gallery entry: a rain field effect behind an opt-in ruleset, driven by the battle.damage hook."
+}

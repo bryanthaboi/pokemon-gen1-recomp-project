@@ -3,14 +3,34 @@
 -- status sheet (font_battle_extra -> $62) and the HUD line tiles
 -- (battle_hud_1 -> $6D, battle_hud_2+3 -> $73).
 
+local Assets = require("src.render.Assets")
+
 local HudTiles = {}
+
+-- The four HUD sheets are glyph pages like any other, so they resolve
+-- through the font registry: mod.content.font:register("battle_hud_1",
+-- { image = ..., base = 0x6D }) reskins the HP bar.  These are the
+-- vanilla pages the importer's cache carries, in the order the asm
+-- overlays them ($6D lands on top of font_battle_extra's tail).
+local PAGES = {
+  { id = "font_battle_extra",
+    image = "assets/generated/battle/font_battle_extra.png", base = 0x62 },
+  { id = "battle_hud_1",
+    image = "assets/generated/battle/battle_hud_1.png", base = 0x6D },
+  { id = "battle_hud_2",
+    image = "assets/generated/battle/battle_hud_2.png", base = 0x73 },
+  { id = "battle_hud_3",
+    image = "assets/generated/battle/battle_hud_3.png", base = 0x76 },
+}
 
 local tiles
 function HudTiles.tile(code, x, y, tint)
   if not tiles then
     tiles = {}
+    local registered = require("src.core.Data").font
+    registered = registered and registered.pages or nil
     local function add(path, base)
-      local ok, img = pcall(love.graphics.newImage, path)
+      local ok, img = pcall(Assets.image, path)
       if not ok then return end
       local iw, ih = img:getDimensions()
       local per = iw / 8
@@ -22,10 +42,11 @@ function HudTiles.tile(code, x, y, tint)
         }
       end
     end
-    add("assets/generated/battle/font_battle_extra.png", 0x62)
-    add("assets/generated/battle/battle_hud_1.png", 0x6D) -- overrides
-    add("assets/generated/battle/battle_hud_2.png", 0x73)
-    add("assets/generated/battle/battle_hud_3.png", 0x76)
+    for _, page in ipairs(PAGES) do
+      local override = registered and registered[page.id]
+      add(override and override.image or page.image,
+          override and override.base or page.base)
+    end
   end
   local t = tiles[code]
   if not t then return end
@@ -34,6 +55,13 @@ function HudTiles.tile(code, x, y, tint)
   love.graphics.draw(t.img, t.quad, x, y)
   love.graphics.setColor(r, g, b, a)
 end
+
+-- lazy: the next tile() rebuilds every page from the search path
+function HudTiles.invalidate()
+  tiles = nil
+end
+
+Assets.register(HudTiles.invalidate)
 
 -- The bar's right-end tile follows wHPBarType (DrawHPBar's "Right"
 -- branch): only type 1 -- the player's in-battle bar and the status
