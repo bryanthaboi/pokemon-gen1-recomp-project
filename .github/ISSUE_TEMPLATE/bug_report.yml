@@ -1,0 +1,101 @@
+name: Bug report
+description: Something in the game is broken, wrong, or not behaving like the original.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A screenshot is worth more than any description. If you can grab one, grab one.
+        If you genuinely can't, that's fine, but then the details below need to be thorough
+        enough that someone can find the bug without ever seeing your screen.
+
+  - type: input
+    id: summary
+    attributes:
+      label: One line summary
+      description: What's broken, in a sentence.
+      placeholder: Warp at the south end of the Route 5-8 underground path drops you in the wrong spot
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Which build are you running
+      options:
+        - macOS
+        - Windows
+        - Both
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release you downloaded. It's in the release title, like 0.1.4.
+      placeholder: 0.1.4
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Where in the game
+      description: >
+        Be specific. Route, town, building, floor, menu, battle. If it's a map
+        transition, say which side you came in from.
+      placeholder: Underground path between Route 5 and Route 8, south entrance
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot, or a detailed description if you couldn't take one
+      description: >
+        Drag the image straight into this box. If you couldn't get a screenshot,
+        write "no screenshot" and then describe exactly what was on screen: where
+        the player sprite was, what the tiles around it looked like, any text on
+        screen, whether anything was frozen or flickering. The more concrete, the better.
+      placeholder: |
+        Drop the image here.
+
+        Or, with no screenshot:
+        Screen faded out like a normal warp, then faded back in with the player
+        standing on the grass tile north of the Route 6 gate house instead of
+        inside the tunnel. Player was facing down. No text box. Music kept playing
+        the underground path track instead of switching to the Route 6 track.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen
+      description: Numbered steps, starting from a point someone else can get to.
+      placeholder: |
+        1. Start a new game, get to Cerulean
+        2. Go south to Route 5, enter the underground path building
+        3. Walk to the south end of the tunnel
+        4. Step onto the stairs
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened
+      placeholder: Should have come out inside the Route 8 side entrance building, facing up.
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: >
+        Does it happen every time or only sometimes. Did it start after a specific
+        release. Anything you were doing right before it. Leave blank if nothing comes to mind.
+    validations:
+      required: false

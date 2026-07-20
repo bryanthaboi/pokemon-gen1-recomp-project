@@ -55,6 +55,21 @@ reference — lives on the
 
 Shipped example mods, one per kind of author, live in [`mods/`](mods/).
 
+## Bugs and Ideas
+
+Found a bug? A warp dropping you somewhere it shouldn't, a battle doing math
+that looks wrong, text in the wrong box, anything that does not match the
+original game.
+[Open a bug report](https://github.com/bryanthaboi/pokemon-gen1-recomp-project/issues/new?template=bug_report.yml).
+Attach a screenshot if you can. It saves a lot of back and forth, and if you
+can't get one, the form asks you to describe what you saw instead.
+
+Thought of a feature that could be good, or a way to improve one that already
+exists?
+[Open a feature request](https://github.com/bryanthaboi/pokemon-gen1-recomp-project/issues/new?template=feature_request.yml).
+Say what you want, why it is worth doing, and how you picture it working. A
+request with real detail is one that can actually get built.
+
 ## More
 
 - [Link play](https://github.com/bryanthaboi/pokemon-gen1-recomp-project/wiki/Guide-Link-Play)
