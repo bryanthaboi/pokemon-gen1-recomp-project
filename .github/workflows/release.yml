@@ -14,6 +14,12 @@ name: Release
 on:
   push:
     branches: [main]
+    # CI/workflow and docs-only changes don't ship anything to users, so they
+    # don't earn a release. A push touching these *and* real source still
+    # releases; only pushes confined entirely to these paths are skipped.
+    paths-ignore:
+      - '.github/**'
+      - '**.md'
   workflow_dispatch:
     inputs:
       version:
@@ -23,6 +29,8 @@ on:
 
 permissions:
   contents: write
+  issues: read
+  pull-requests: read
 
 concurrency:
   group: release
@@ -206,7 +214,40 @@ jobs:
           v="${{ steps.ver.outputs.version }}"
           tag="${{ steps.ver.outputs.tag }}"
 
+          # Issues this release closes, per GitHub's own "closing issues" links
+          # (works for squash, rebase, and merge commits alike). Scans every
+          # commit since the previous tag so a skipped release run doesn't drop
+          # issues on the floor.
+          prev_tag="$(git tag -l 'v*' --sort=-v:refname | grep -v "^${tag}$" | head -1 || true)"
+          range="${prev_tag:+${prev_tag}..}$GITHUB_SHA"
+
+          closed=""
+          for pr in $(git log --pretty=%H "$range" \
+                        | xargs -I{} gh api "repos/$GITHUB_REPOSITORY/commits/{}/pulls" \
+                              --jq '.[].number' 2>/dev/null \
+                        | sort -un || true); do
+            closed+="$(gh api graphql \
+              -f owner="${GITHUB_REPOSITORY%/*}" \
+              -f name="${GITHUB_REPOSITORY#*/}" \
+              -F pr="$pr" \
+              -f query='
+                query($owner:String!, $name:String!, $pr:Int!) {
+                  repository(owner:$owner, name:$name) {
+                    pullRequest(number:$pr) {
+                      closingIssuesReferences(first:50) { nodes { number title } }
+                    }
+                  }
+                }' \
+              --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[]
+                    | "- #\(.number) \(.title)"' 2>/dev/null || true)"$'\n'
+          done
+          closed="$(printf '%s' "$closed" | grep . | sort -t'#' -k2 -n || true)"
+
           notes="Download the correct version for your computer below."
+          if [ -n "$closed" ]; then
+            notes+=$'\n\n## Issues closed\n\n'"$closed"
+          fi
+          printf 'Release notes:\n%s\n' "$notes"
 
           gh release create "$tag" \
             --target "$GITHUB_SHA" \

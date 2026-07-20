@@ -1,0 +1,88 @@
+name: Feature request
+description: Ask for something new, or a change to how something already works.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        "Can we add X" on its own is hard to act on. Say what you want, why you want it,
+        and how you picture it working. A request with real detail is one someone can
+        actually build without guessing at what you meant.
+
+  - type: input
+    id: summary
+    attributes:
+      label: One line summary
+      description: What you want, in a sentence.
+      placeholder: Add a run toggle so you can move at bike speed without the bike
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What do you want
+      description: >
+        Describe it properly. What is it, where does it live in the game, what does the
+        player see or do. If it changes something that already exists, say what it does today
+        and what it should do instead.
+      placeholder: |
+        A hold-to-run button, the way later Pokemon games do it. Hold B while moving on
+        foot and the player moves at bike speed. Release and you go back to walking.
+        Doesn't work indoors where the bike doesn't work, doesn't work in battles or menus.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is this worth doing
+      description: >
+        What's annoying or missing right now. What does this fix. If it's just because you
+        think it would be fun, say that, it's a real answer.
+      placeholder: |
+        Backtracking across routes you've already cleared is slow, and the bike is a menu
+        dive away and doesn't work in a lot of places. Running would cut a lot of dead time
+        without making the game easier.
+    validations:
+      required: true
+
+  - type: textarea
+    id: how
+    attributes:
+      label: How should it work
+      description: >
+        The specifics. Which button, which menu, what happens in the edge cases. If you don't
+        know, say what you'd expect as a player and leave the rest open.
+      placeholder: |
+        - Hold B on the overworld to run
+        - Same speed as the bike
+        - Disabled anywhere the bike is disabled
+        - Sprite should probably need a running animation, not sure what that takes
+        - No effect on encounter rates
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Does this change how the original game plays
+      description: >
+        Some requests are quality of life, some change the actual game. Both are fine,
+        it just helps to know which one you're asking for.
+      options:
+        - Quality of life, original game is untouched
+        - Changes how the game plays
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: >
+        Reference screenshots, how another game does it, related issues. Leave blank
+        if nothing comes to mind.
+    validations:
+      required: false
