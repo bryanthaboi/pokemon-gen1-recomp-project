@@ -84,3 +84,7 @@ request with real detail is one that can actually get built.
 This project would not be possible without [pret](https://github.com/pret) >
 the pret band of decompiling maniacs > and their
 [pokered](https://github.com/pret/pokered) disassembly.
+
+## Wanna Support My Work?
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy_Me_a_Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/bryanthaboi)
+
