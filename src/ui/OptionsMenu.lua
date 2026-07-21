@@ -11,6 +11,7 @@
 local PaletteFX = require("src.render.PaletteFX")
 local Tilt = require("src.render.Tilt")
 local GBCFX = require("src.render.GBCFX")
+local GameSpeed = require("src.core.GameSpeed")
 local Logger = require("src.core.Logger")
 local Runtime = require("src.mods.Runtime")
 local OptionRows = require("src.ui.OptionRows")
@@ -188,6 +189,17 @@ local function buildRows(game)
         local o = g.save.options
         o.gbcfx = wrapIndex((o.gbcfx or 0) + dir, 5)
         GBCFX.setLevel(o.gbcfx)
+        return true
+      end },
+    -- fast-forward the logic clock only; music and sfx keep their tempo
+    -- (src/core/GameSpeed.lua), so this is safe to leave on
+    { id = "speed", label = "GAME SPEED",
+      value = function(g)
+        return GameSpeed.levelLabel(g.save.options.speed)
+      end,
+      step = function(g, dir)
+        local o = g.save.options
+        o.speed = GameSpeed.cycle(o.speed, dir)
         return true
       end },
     -- the manager's discoverable home (18-mod-manager-ux); inert until

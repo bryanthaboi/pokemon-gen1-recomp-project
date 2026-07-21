@@ -41,7 +41,11 @@ local CONSTANT_DEFAULTS = {
 -- field.boot is the total-conversion override point for the new game; the
 -- values match what SaveData.newGame and the Oak speech used to inline.
 local BOOT_DEFAULTS = {
-  startMap = "PALLET_TOWN", startX = 5, startY = 6, startFacing = "down",
+  -- special_warps.asm NewGameWarp: REDS_HOUSE_2F, 3, 6 -- the bedroom, not
+  -- the tile outside the house. lastHeal is deliberately absent: SaveData
+  -- derives the vanilla blackout point, and seeding it here would leak into
+  -- total conversions that patch the spawn without naming a heal point.
+  startMap = "REDS_HOUSE_2F", startX = 3, startY = 6, startFacing = "down",
   playerName = "RED", rivalName = "BLUE",
   startMoney = 3000,
   screens = { splash = "IntroMovie", title = "TitleState", newGame = "OakSpeech" },

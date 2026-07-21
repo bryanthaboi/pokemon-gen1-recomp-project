@@ -148,14 +148,38 @@ function Game:step(dt)
   self.stack:update(dt)
   -- play time for the trainer card / save screen
   self.save.playTime = (self.save.playTime or 0) + dt
-  require("src.core.Music").update(Data)
+  -- Music.update is NOT serviced here: it decrements fade counters and
+  -- drives ChipAudio once per call, so running it inside the logic step
+  -- would pitch music and sfx up under fast-forward. Game:update advances
+  -- it on its own real-time 60Hz accumulator instead.
+end
+
+-- The logic multiplier for this frame. Read live rather than cached so the
+-- Options row takes effect immediately; speedOverride is the --speed /
+-- POKEPORT_SPEED run argument, which wins over the saved option so a bot
+-- or screenshot run does not depend on whatever the player last chose.
+function Game:logicSpeed()
+  local GameSpeed = require("src.core.GameSpeed")
+  if self.speedOverride then return GameSpeed.clamp(self.speedOverride) end
+  local opts = self.save and self.save.options
+  return GameSpeed.clamp(opts and opts.speed or GameSpeed.DEFAULT)
 end
 
 function Game:update(dt)
   -- Touch timers / prior-frame auto-releases before the fixed step so
   -- deferred A and edge pulses land in Input's press queue for this step.
   TouchInput:update(dt)
-  FixedStep:update(dt)
+  -- Fast-forward scales only the logic clock (see src/core/GameSpeed.lua).
+  FixedStep:update(dt * self:logicSpeed())
+  -- Audio runs off real time at a fixed 60Hz regardless of game speed or
+  -- display refresh, so fades and chip synthesis keep their intended tempo
+  -- whether we are at 1X, 10X, or running with vsync disabled.
+  local step = FixedStep.STEP
+  self.audioAccum = math.min((self.audioAccum or 0) + dt, 0.25)
+  while self.audioAccum >= step do
+    self.audioAccum = self.audioAccum - step
+    require("src.core.Music").update(Data)
+  end
   -- Overworld tilt toggle tween: presentational, so it runs on the real
   -- frame dt (not the fixed logic step) for a smooth ~0.25s glide.
   require("src.render.Tilt").update(dt)

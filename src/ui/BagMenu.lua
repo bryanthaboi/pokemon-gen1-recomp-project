@@ -71,6 +71,12 @@ local function useOn(game, battle, id, target, list, moveIndex)
     consume(game, id)
     list:close()
     showMessages(game, payload, function()
+      -- ItemUsePokeDoll sets wEscapedFromBattle and never touches
+      -- wBattleResult, so a script that reads the result afterwards sees
+      -- 0 -- "defeated". The ghost MAROWAK's script keys on exactly that
+      -- (the Poke Doll trick); the flag lets it tell this escape from an
+      -- ordinary RUN, which writes $2.
+      battle.pokeDollEscape = true
       battle.result = "run"
       battle.afterQueue = "finish"
       battle.phase = "messages"

@@ -13,6 +13,19 @@ local driverCo  -- optional frame-driver (POKEPORT_DRIVER=file.lua): a
                 -- coroutine that receives `Game` and yields once per
                 -- frame; used headless (xvfb) for scripted screenshots
 
+-- --speed N / POKEPORT_SPEED=N: run the logic clock N times faster without
+-- touching audio (src/core/GameSpeed.lua).  Overrides the saved option so a
+-- bot or screenshot run is not at the mercy of the player's last choice.
+local speedOverride = tonumber(os.getenv("POKEPORT_SPEED"))
+
+-- How many times to run a scripted act+step loop per rendered frame.  Only
+-- scripted runs use this; interactive play fast-forwards through
+-- Game.speedOverride / the GAME SPEED option instead.
+local function scriptedIterations()
+  if not (autopilot or driverCo) then return 1 end
+  return math.max(1, math.floor(require("src.core.GameSpeed").clamp(speedOverride)))
+end
+
 local function bootGame()
   Game = require("src.core.Game")
   Game:load()
@@ -24,6 +37,10 @@ local function bootGame()
     local fn = assert(loadfile(driverPath))()
     driverCo = coroutine.create(fn)
   end
+  -- After the two above are known: a scripted run drives the multiplier
+  -- from love.update's loop, so the in-engine one must stay at 1 or the
+  -- two would compound (10x10 = 100 steps per observation).
+  Game.speedOverride = (autopilot or driverCo) and 1 or speedOverride
 end
 
 function love.load(args)
@@ -33,6 +50,8 @@ function love.load(args)
       editorMode = true
     elseif a == "--save" and args[i + 1] and args[i + 1] ~= "" then
       savePath = args[i + 1]
+    elseif a == "--speed" and tonumber(args[i + 1]) then
+      speedOverride = tonumber(args[i + 1])
     end
   end
   love.graphics.setDefaultFilter("nearest", "nearest")
@@ -67,23 +86,36 @@ function love.update(dt)
   if editorMode then return EditorApp.update(dt) end
   if Importer then return Importer:update(dt) end
 
+  -- Scripted runs (autopilot / POKEPORT_DRIVER) observe and act exactly
+  -- once per Game:update, so they must keep a 1:1 relationship with the
+  -- logic step.  Fast-forwarding them by scaling the step inside
+  -- Game:update would run N steps per observation: a held direction walks
+  -- through all N, the player slides past the waypoint, and the script
+  -- re-plans from an overshot cell.  So iterate the whole act+step loop
+  -- instead -- same script, just more of it per rendered frame.
+  local iterations = scriptedIterations()
+
   if autopilot then
-    autopilot.update()
-    Game:update(1 / 60) -- deterministic stepping for the autopilot
+    for _ = 1, iterations do
+      autopilot.update()
+      Game:update(1 / 60) -- deterministic stepping for the autopilot
+    end
     return
   end
   if driverCo then
-    local ok, err = coroutine.resume(driverCo, Game)
-    if not ok then
-      print("driver error: " .. tostring(err))
-      love.event.quit(1)
-      return
+    for _ = 1, iterations do
+      local ok, err = coroutine.resume(driverCo, Game)
+      if not ok then
+        print("driver error: " .. tostring(err))
+        love.event.quit(1)
+        return
+      end
+      if coroutine.status(driverCo) == "dead" then
+        love.event.quit()
+        return
+      end
+      Game:update(1 / 60)
     end
-    if coroutine.status(driverCo) == "dead" then
-      love.event.quit()
-      return
-    end
-    Game:update(1 / 60)
     return
   end
   Game:update(dt)

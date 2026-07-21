@@ -112,8 +112,8 @@ check(#Data.constants.hmMoves == 5 and Data.constants.hmMoves[1] == "CUT",
   "hmMoves seeded")
 
 local boot = Data.field.boot
-check(boot.startMap == "PALLET_TOWN" and boot.startX == 5 and boot.startY == 6
-  and boot.startFacing == "down", "field.boot seeded with the Pallet spawn")
+check(boot.startMap == "REDS_HOUSE_2F" and boot.startX == 3 and boot.startY == 6
+  and boot.startFacing == "down", "field.boot seeded with the NewGameWarp spawn")
 check(boot.playerName == "RED" and boot.rivalName == "BLUE"
   and boot.startMoney == 3000, "field.boot seeded with the Red new-game values")
 check(boot.namePresets.player[1] == "RED" and boot.namePresets.rival[1] == "BLUE",
@@ -312,16 +312,21 @@ check(#worldData.field.ledges == #Data.field.ledges,
 -- ------- field.boot changes the new game
 
 local vanillaSave = SaveData.newGame(Data.field.boot)
-check(vanillaSave.player.map == "PALLET_TOWN" and vanillaSave.player.x == 5
+-- special_warps.asm NewGameWarp is REDS_HOUSE_2F, 3, 6 -- the bedroom. This
+-- previously asserted PALLET_TOWN (5, 6), which is where you stand after
+-- walking out of the house, so a new game skipped Red's house entirely.
+check(vanillaSave.player.map == "REDS_HOUSE_2F" and vanillaSave.player.x == 3
   and vanillaSave.player.y == 6 and vanillaSave.player.facing == "down",
-  "the seeded boot config reproduces the Pallet spawn")
+  "the seeded boot config reproduces the NewGameWarp bedroom spawn")
 check(vanillaSave.player.name == "RED" and vanillaSave.player.rival == "BLUE"
   and vanillaSave.money == 3000, "the seeded boot config reproduces the Red start")
+-- the heal point is deliberately NOT the spawn: wLastBlackoutMap is
+-- zero-filled at new game and PALLET_TOWN is map 0
 check(vanillaSave.lastHeal.map == "PALLET_TOWN" and vanillaSave.lastHeal.x == 5
-  and vanillaSave.lastHeal.y == 6, "heal point defaults to the spawn")
+  and vanillaSave.lastHeal.y == 6, "blackouts return to Pallet Town, not the spawn")
 -- an absent config is still the vanilla new game
 local bareSave = SaveData.newGame()
-check(bareSave.player.map == "PALLET_TOWN" and bareSave.money == 3000
+check(bareSave.player.map == "REDS_HOUSE_2F" and bareSave.money == 3000
   and bareSave.lastHeal.map == "PALLET_TOWN",
   "newGame without a boot config is unchanged")
 
@@ -355,7 +360,7 @@ check(bootData.field.boot.screens.title == "TitleState",
 check(bootData.field.hiddenItems.CERULEAN_CAVE_1F ~= nil
   and #bootData.field.flyOrder == #Data.field.flyOrder,
   "sibling field keys are intact after a boot patch")
-check(Data.field.boot.startMap == "PALLET_TOWN",
+check(Data.field.boot.startMap == "REDS_HOUSE_2F",
   "the boot merge never touched the live Data")
 
 -- the save table is a copy: writing to it cannot reach back into Data

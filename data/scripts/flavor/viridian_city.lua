@@ -1,22 +1,18 @@
 -- Viridian City flavor dialogue (pokered/scripts/ViridianCity.asm).
--- Ports the text_asm bodies for GAMBLER1, YOUNGSTER2, GIRL and OLD_MAN.
+-- Ports the text_asm bodies for GAMBLER1, YOUNGSTER2 and GIRL.
 --
 -- Not ported here (already handled elsewhere / not talk-reachable):
 --  * TEXT_VIRIDIANCITY_FISHER (TM42 gift) -- already ported as a
 --    `gift()` entry in data/scripts/story5.lua's M.VIRIDIAN_CITY.talk.
---  * TEXT_VIRIDIANCITY_OLD_MAN_SLEEPY / TEXT_VIRIDIANCITY_GYM_LOCKED --
---    these are step-triggered blocking texts (ViridianCityCheckGotPokedexScript /
---    ViridianCityCheckGymOpenScript), not npc talk text_asm bodies; the
---    gates themselves are already implemented via story5.lua's onStep
---    chain (viridianOldManStep / viridianGymLock) for this map.
---  * The old man's catch-training minigame trigger (SCRIPT_VIRIDIANCITY_
---    OLD_MAN_START_CATCH_TRAINING / battle vs. WEEDLE) is a full
---    scripted-battle cutscene outside this task's Commands vocabulary
---    (no static_battle-style "battle a scripted old-man WEEDLE" command
---    exists); we port the real YES/NO branch text he speaks but the
---    "yes" branch here just shows the "I'll show you how" line rather
---    than actually starting the minigame, since that machinery isn't
---    ported to this map yet.
+--  * TEXT_VIRIDIANCITY_OLD_MAN (the walking man at (17,5)) and
+--    TEXT_VIRIDIANCITY_OLD_MAN_SLEEPY (the sleeper at (18,9)) -- both
+--    live in data/scripts/story.lua, which owns this map's onStep gate
+--    and can reach the `old_man_demo` command for the real catch
+--    tutorial.  Keep them there: story.lua loads BEFORE this file, so a
+--    duplicate here would silently win the merge.
+--  * TEXT_VIRIDIANCITY_GYM_LOCKED -- a step-triggered blocking text
+--    (ViridianCityCheckGymOpenScript), implemented by story5.lua's
+--    onStep chain (viridianGymLock -> viridianOldManStep) for this map.
 
 local M = {}
 
@@ -91,24 +87,6 @@ M.VIRIDIAN_CITY = {
       end
     end,
 
-    -- ViridianCityOldManText (scripts/ViridianCity.asm): once he's had
-    -- his coffee, he asks (YES/NO) whether you want to learn how to
-    -- catch Pokemon. YES leads into the catch-training minigame
-    -- (SCRIPT_VIRIDIANCITY_OLD_MAN_START_CATCH_TRAINING, not ported --
-    -- see file header); NO just brushes you off ("Time is money...").
-    TEXT_VIRIDIANCITY_OLD_MAN = function(game, ow, npc, done)
-      local t = text(game)
-      ask(game, t._ViridianCityOldManHadMyCoffeeNowText
-        or "Ahh, I've had my\ncoffee now and I\nfeel great!\nSure you can go\nthrough!\nAre you in a\nhurry?", function(yes)
-        if yes then
-          push(game, t._ViridianCityOldManKnowHowToCatchPokemonText
-            or "I see you're using\na POKéDEX.\nWhen you catch a\nPOKéMON, POKéDEX\nis automatically\nupdated.\nWhat? Don't you\nknow how to catch\nPOKéMON?\nI'll show you\nhow to then.", done)
-        else
-          push(game, t._ViridianCityOldManTimeIsMoneyText
-            or "Time is money...\nGo along then.", done)
-        end
-      end)
-    end,
   },
 }
 

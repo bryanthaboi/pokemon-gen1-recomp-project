@@ -63,7 +63,15 @@ M.ROUTE_12_SUPER_ROD_HOUSE.talk.TEXT_ROUTE12SUPERRODHOUSE_FISHING_GURU[9] =
 
 -- -------------------------------------------------------------------
 -- The ghost Marowak (scripts/PokemonTower6F.asm): blocks the stairs at
--- (10,16) until identified with the Silph Scope and defeated.
+-- (10,16) until defeated.
+--
+-- PokemonTower6FDefaultScript starts the RESTLESS SOUL battle with NO
+-- Silph Scope check at the trigger -- the scope only decides whether the
+-- battle is disguised (IsGhostBattle -> makeGhost: "too scared to move",
+-- balls dodged). An earlier version of this port turned the player back
+-- without the scope and never opened the battle, which made 6F
+-- impassable on any route that skips Rocket Hideout; vanilla lets the
+-- battle open and a POKE_DOLL end it (see wBattleResult below).
 -- -------------------------------------------------------------------
 
 M.POKEMON_TOWER_6F = {
@@ -71,24 +79,30 @@ M.POKEMON_TOWER_6F = {
     if game.save.flags.EVENT_BEAT_GHOST_MAROWAK then return false end
     if x ~= 10 or y ~= 16 then return false end
     local TextBox = require("src.render.TextBox")
-    if not game.save.inventory.SILPH_SCOPE then
-      game.stack:push(TextBox.new(game,
-        "A GHOST blocks\nthe way...\fDarn! You can't\nidentify it!",
-        function()
-          local back = ow.player.facing == "up" and "down" or "up"
-          ow:scriptMove(ow.player, back, 1)
-        end))
-      return true
-    end
+    local t = game.data.text
     game.stack:push(TextBox.new(game,
-      "The GHOST was\nMAROWAK!\fThe restless soul\nattacks!", function()
+      t._PokemonTower6FBeGoneText or "Be gone...\nIntruders...", function()
       local BattleState = require("src.battle.BattleState")
       local battle = BattleState.newWild(game, "MAROWAK", 30)
+      if not game.save.inventory.SILPH_SCOPE then
+        battle:makeGhost()
+      end
       battle.onFinish = function(result)
-        if result == "win" then
+        -- wBattleResult parity (PokemonTower6FMarowakBattleScript's
+        -- "and a / jr nz"): losing writes $1 and running writes $2, but
+        -- ItemUsePokeDoll ends the battle WITHOUT touching it, so the
+        -- script reads 0 -- defeated. That is the famous Poke Doll
+        -- trick, and the speedrun route this bot follows depends on it.
+        if result == "win" or battle.pokeDollEscape then
           game.save.flags.EVENT_BEAT_GHOST_MAROWAK = true
           game.stack:push(TextBox.new(game,
-            "The restless soul\ncalmed down and\ndeparted!"))
+            t._PokemonTower6FSoulWasCalmedText
+            or "The mother's soul\nwas calmed.\012It departed to\nthe afterlife!"))
+        elseif result ~= "lose" then
+          -- .did_not_defeat: one simulated step right, off the trigger,
+          -- so fleeing does not leave you standing on a cell that
+          -- immediately re-fires.
+          ow:scriptMove(ow.player, "right", 1)
         end
         ow:afterBattle(result)
       end

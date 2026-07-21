@@ -2559,15 +2559,25 @@ function BattleState:learnMove(mon, moveId)
 end
 
 function BattleState:playerMonFainted()
-  if self.result then return end -- double faint: the battle is decided
   local nextMon = Party.firstHealthy(self.game.save.party)
-  if not nextMon then
+  -- Being out of useable POKéMON blacks you out even when the battle was
+  -- already decided in our favour.  A double faint -- our last mon dying
+  -- to residual damage on the turn it lands the KO -- used to hit the
+  -- "battle is decided" guard below and return with result = "win", so
+  -- afterBattle never took the lose branch: no revive, no warp to the
+  -- heal point, and the player was left standing on the map with a party
+  -- at 0 HP.  Nothing recovers from that state (every later encounter
+  -- aborts with "no healthy party"), and it is not reachable in pokered:
+  -- HandlePlayerMonFainted runs the player-side check on its own, so
+  -- losing your last mon always blacks you out whatever the enemy did.
+  if not nextMon and self.result ~= "lose" then
     self:sayNext(("%s is out of\nuseable POKéMON!"):format(self.game.save.player.name))
     self:sayNext(("%s blacked\nout!"):format(self.game.save.player.name))
     self.result = "lose"
     self.afterQueue = "finish"
     return
   end
+  if self.result then return end -- double faint: the battle is decided
   -- DoUseNextMonDialogue (core.asm:1052-1078): only WILD battles ask
   -- "Use next POKéMON?"; NO goes through the run check with party slot
   -- 1's speed, and a failed run still forces the party menu.  Trainer
@@ -3025,6 +3035,17 @@ function BattleState:finish()
     self.afterQueue = "finish"
     self.phase = "messages"
     return
+  end
+  -- Invariant: a battle can never hand the overworld a party with nothing
+  -- healthy in it.  afterBattle only revives and warps to the heal point on
+  -- "lose", so any other result here strands the player at 0 HP with no way
+  -- back -- an unrecoverable state, not merely a wrong one.  playerMonFainted
+  -- is the path that should have caught this; if we land here it did not, so
+  -- say so rather than silently papering over it.
+  if self.result ~= "lose" and not Party.firstHealthy(self.game.save.party) then
+    Logger.warn("battle finished %s with no healthy party; forcing blackout",
+                tostring(self.result))
+    self.result = "lose"
   end
   self.lockedBall = nil
   -- pokered never writes Mimic's copy into the party struct; leaving

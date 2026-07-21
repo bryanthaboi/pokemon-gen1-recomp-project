@@ -58,33 +58,40 @@ return {
     TEXT_OAKSLAB_OAK1 = {
       { "face_player" },                                          -- 1
       { "check_flag", "EVENT_GOT_OAKS_PARCEL" },                  -- 2
-      { "jump_if_false", 12 },                                    -- 3
+      { "jump_if_false", 14 },                                    -- 3
       { "check_flag", "EVENT_OAK_GOT_PARCEL" },                   -- 4
-      { "jump_if_true", 12 },                                     -- 5
+      { "jump_if_true", 14 },                                     -- 5
       { "show_text", "_OaksLabOak1DeliverParcelText" },           -- 6
       { "take_item", "OAKS_PARCEL", 1 },                          -- 7
       { "set_flag", "EVENT_OAK_GOT_PARCEL" },                     -- 8
       { "show_text", "_OaksLabOak1PokemonAroundTheWorldText" },   -- 9
       { "set_flag", "EVENT_GOT_POKEDEX" },                        -- 10
-      { "jump", 30 },                                             -- 11
-      { "check_flag", "EVENT_GOT_STARTER" },                      -- 12
-      { "jump_if_false", 27 },                                    -- 13
-      { "check_item", "POKE_BALL" },                              -- 14
-      { "jump_if_true", 25 },                                     -- 15
-      { "check_flag", "EVENT_BEAT_ROUTE22_RIVAL_1ST_BATTLE" },    -- 16
-      { "jump_if_false", 29 },                                    -- 17
-      { "check_flag", "EVENT_GOT_POKEBALLS_FROM_OAK" },           -- 18
-      { "jump_if_true", 25 },                                     -- 19
-      { "set_flag", "EVENT_GOT_POKEBALLS_FROM_OAK" },             -- 20
-      { "give_item", "POKE_BALL", 5, false },                     -- 21
-      { "show_text", "_OaksLabOak1ReceivedPokeballsText" },       -- 22
-      { "show_text", "_OaksLabGivePokeballsExplanationText" },    -- 23
-      { "jump", 30 },                                             -- 24
-      { "show_text", "_OaksLabOak1ComeSeeMeSometimesText" },      -- 25
-      { "jump", 30 },                                             -- 26
-      { "show_text", "_OaksLabOak1WhichPokemonDoYouWantText" },   -- 27
-      { "jump", 30 },                                             -- 28
-      { "show_text", "_OaksLabOak1RaiseYourYoungPokemonText" },   -- 29 (30 = end)
+      -- the Pokédex swaps Viridian's two old men (OaksLab.asm:602-606:
+      -- HideObject TOGGLE_LYING_OLD_MAN / ShowObject TOGGLE_OLD_MAN).
+      -- Until this ran, the walking man at (17,5) -- who owns the coffee
+      -- ask and the catch tutorial -- stayed OFF for the whole game
+      -- (toggleable_objects.asm seeds him OFF, the sleeper ON).
+      { "hide_object", "VIRIDIAN_CITY", "VIRIDIANCITY_OLD_MAN_SLEEPY" }, -- 11
+      { "show_object", "VIRIDIAN_CITY", "VIRIDIANCITY_OLD_MAN" },  -- 12
+      { "jump", 32 },                                             -- 13
+      { "check_flag", "EVENT_GOT_STARTER" },                      -- 14
+      { "jump_if_false", 29 },                                    -- 15
+      { "check_item", "POKE_BALL" },                              -- 16
+      { "jump_if_true", 27 },                                     -- 17
+      { "check_flag", "EVENT_BEAT_ROUTE22_RIVAL_1ST_BATTLE" },    -- 18
+      { "jump_if_false", 31 },                                    -- 19
+      { "check_flag", "EVENT_GOT_POKEBALLS_FROM_OAK" },           -- 20
+      { "jump_if_true", 27 },                                     -- 21
+      { "set_flag", "EVENT_GOT_POKEBALLS_FROM_OAK" },             -- 22
+      { "give_item", "POKE_BALL", 5, false },                     -- 23
+      { "show_text", "_OaksLabOak1ReceivedPokeballsText" },       -- 24
+      { "show_text", "_OaksLabGivePokeballsExplanationText" },    -- 25
+      { "jump", 32 },                                             -- 26
+      { "show_text", "_OaksLabOak1ComeSeeMeSometimesText" },      -- 27
+      { "jump", 32 },                                             -- 28
+      { "show_text", "_OaksLabOak1WhichPokemonDoYouWantText" },   -- 29
+      { "jump", 32 },                                             -- 30
+      { "show_text", "_OaksLabOak1RaiseYourYoungPokemonText" },   -- 31 (32 = end)
     },
 
     TEXT_OAKSLAB_CHARMANDER_POKE_BALL =
