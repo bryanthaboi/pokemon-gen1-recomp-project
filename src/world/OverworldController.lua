@@ -360,10 +360,15 @@ function OverworldState:paletteNameFor(map)
   local palettes = FieldDefaults.field(Game.data, "palettes")
   local name = map.def.palette or paletteLookup(palettes, map.id, map.def.tileset)
   if not name then
-    -- interiors inherit the outdoor map they sit in; before the player has
-    -- been outdoors at all that is wherever the game starts
+    -- Interiors inherit the outdoor map they sit in. Before the player has
+    -- been outdoors at all, that is wLastMap's zero-fill -- map 0,
+    -- PALLET_TOWN -- and NOT the spawn: the vanilla spawn (REDS_HOUSE_2F)
+    -- is itself an interior and would fall through to the ROUTE default.
+    -- defaultHeal derives the same zero-fill map (wLastBlackoutMap shares
+    -- the reasoning) and lets a total conversion redirect it.
+    local boot = (Game.data.field and Game.data.field.boot) or {}
     local last = self.lastOutdoor and self.lastOutdoor.id
-                 or FieldDefaults.fieldValue(Game.data, "boot", "startMap")
+                 or require("src.core.SaveData").defaultHeal(boot).map
     local lastDef = last and Game.data.maps[last]
     name = (last and paletteLookup(palettes, last, lastDef and lastDef.tileset))
            or palettes.default
@@ -2275,8 +2280,19 @@ function OverworldState:onStepComplete()
   -- arriving on a door/warp tile warp; a non-door warp square also fires
   -- when the extra check passes and the d-pad is held
   -- (CheckWarpsNoCollision)
+  -- The cell we warped in on is inert until we step off it: standing on it,
+  -- or being walked back onto it before leaving, does not re-fire (see
+  -- warpEntryCell where it is set). Once we are on any other cell it clears
+  -- and every warp is live again.
+  local entry = self.warpEntryCell
+  if entry and (p.cellX ~= entry.x or p.cellY ~= entry.y) then
+    self.warpEntryCell = nil
+    entry = nil
+  end
   if self.justWarped then
     self.justWarped = false
+  elseif entry then
+    -- still standing on the warp we arrived through; do not re-trigger it
   else
     local w = Warp.onArrive(self.map, p.cellX, p.cellY)
     if not w and self:dirHeld() then
@@ -2777,6 +2793,12 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
   Game.stack:push(Transition.new(Game, function()
     self:setMap(mapId, x, y, facing or "down", opts)
     self.justWarped = true
+    -- The warp we land ON stays inert until we physically step off it, so a
+    -- warp whose destination cell is itself a warp cannot bounce us straight
+    -- back (elevator cars, stacked stair/door mats). This generalizes the
+    -- one-step justWarped guard, which only skipped the very next frame's
+    -- check and so let a mon walked back onto the pad re-trigger it.
+    self.warpEntryCell = { x = x, y = y }
     -- Fly/Teleport/Dig/Escape-Rope/blackout landings poof the player
     -- back in (player_animations.asm EnterMapAnim); ordinary door
     -- warps never take this branch

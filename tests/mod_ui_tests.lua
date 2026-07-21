@@ -205,7 +205,7 @@ end
 local om = OptionsMenu.new(optGame())
 local WANT_IDS = { "textSpeed", "animations", "battleStyle", "ruleset",
                    "musicVol", "sfxVol", "musicFilter", "colors", "tilt",
-                   "gbcfx", "mods", "controls" }
+                   "gbcfx", "speed", "mods", "controls" }
 check(#om.rows == #WANT_IDS, "vanilla options row count (plus MODS/CONTROLS)")
 for i, id in ipairs(WANT_IDS) do
   check(om.rows[i].id == id, "options row order: " .. id)
@@ -238,7 +238,7 @@ check(om.game.save.options.musicVol == 0, "music volume clamps at 0")
 -- the MODS row is the manager's discoverable home
 local mgGame = optGame()
 om = OptionsMenu.new(mgGame)
-om.rows[11].activate(mgGame)
+om.rows[12].activate(mgGame)
 check(getmetatable(mgGame.stack:top()) == ManagerState,
   "the MODS row opens the manager")
 check(mgGame.stack:top().screenId == "ManagerState",
@@ -248,7 +248,7 @@ check(mgGame.stack:top().screenId == "ManagerState",
 local BindingsMenu = require("src.ui.BindingsMenu")
 local cbGame = optGame()
 om = OptionsMenu.new(cbGame)
-om.rows[12].activate(cbGame)
+om.rows[13].activate(cbGame)
 local bm = cbGame.stack:top()
 check(getmetatable(bm) == BindingsMenu,
   "the CONTROLS row opens the rebind list")

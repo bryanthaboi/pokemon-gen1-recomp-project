@@ -360,7 +360,7 @@ local rocketRows = {
   { "jump_if_true", 9 },                                       -- 5
   { "show_text", "_CeruleanCityRocketText" },                  -- 6
   { "start_battle", "trainer", "OPP_ROCKET", 5 },              -- 7
-  { "jump_if_false", 16 },                                     -- 8
+  { "jump_if_false", 18 },                                     -- 8
   { "show_text", "_CeruleanCityRocketIllReturnTheTMText" },    -- 9
   { "set_flag", "EVENT_BEAT_CERULEAN_ROCKET_THIEF" },          -- 10
   { "give_item", "TM_DIG", 1, false },                         -- 11 (row 13 prints)
@@ -368,6 +368,15 @@ local rocketRows = {
   { "show_text", "_CeruleanCityRocketReceivedTM28Text" },      -- 13
   { "show_text", "_CeruleanCityRocketIBetterGetMovingText" },  -- 14
   { "hide_object", "CERULEAN_CITY", "CERULEANCITY_ROCKET" },   -- 15
+  -- CeruleanHideRocket (scripts/CeruleanCity_2.asm) does all three behind
+  -- one fade: the ROCKET goes, GUARD1 (28,12) appears and GUARD2 (27,12)
+  -- disappears.  GUARD2 stands on the only walkable neighbour of the
+  -- trashed house's south door, which is one of the two ways through the
+  -- fence dividing Cerulean, so this swap is what reconnects the city.
+  -- Bill's ticket performs the same swap (data/scripts/story.lua), and
+  -- both are idempotent, so whichever the player reaches first opens it.
+  { "show_object", "CERULEAN_CITY", "CERULEANCITY_GUARD1" },   -- 16
+  { "hide_object", "CERULEAN_CITY", "CERULEANCITY_GUARD2" },   -- 17
 }
 
 M.CERULEAN_CITY = {

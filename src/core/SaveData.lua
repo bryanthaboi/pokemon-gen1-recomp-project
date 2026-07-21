@@ -41,6 +41,8 @@ function SaveData.defaultOptions()
     musicVol = 7,
     sfxVol = 7,
     musicFilter = 0,
+    -- logic fast-forward multiplier; audio is unaffected (GameSpeed.lua)
+    speed = 1,
     -- port display options (OptionsMenu / hotkeys 2/3/5)
     colors = "gbc",
     tilt = 0,
@@ -516,8 +518,8 @@ end
 
 local function scrubMaps(save, data, report)
   local boot = (data.field and data.field.boot) or {}
-  local spawn = { map = boot.startMap or "PALLET_TOWN",
-                  x = boot.startX or 5, y = boot.startY or 6 }
+  local spawn = { map = boot.startMap or "REDS_HOUSE_2F",
+                  x = boot.startX or 3, y = boot.startY or 6 }
   -- heal point first, so the player fallback below always lands somewhere
   -- valid; boot's heal cell (threaded from field.boot) is the last resort
   if save.lastHeal and not known(data.maps, save.lastHeal.map) then
@@ -627,11 +629,31 @@ end
 -- boot is Data.field.boot, threaded in by Game: this module must not reach
 -- into Data itself.  Every read falls back to the Red literal it replaced,
 -- so an absent or partial config still produces the vanilla new game.
+-- Where blackouts and ESCAPE ROPE return to for a given boot config.
+--
+-- In vanilla this is NOT the spawn. wLastBlackoutMap is zero-filled at new
+-- game and PALLET_TOWN is map 0, so the player starts in the bedroom
+-- (special_warps.asm NewGameWarp) but blacks out to Pallet Town's fly_warp
+-- cell (5, 6). A world that moves the spawn without naming a heal point
+-- keeps the two together -- it may have no Pallet Town at all.
+--
+-- Shared with the Hall of Fame reset, which pokered writes as a literal
+-- (HallOfFameResetEventsAndSaveScript: wLastBlackoutMap := PALLET_TOWN)
+-- rather than deriving from the spawn.
+function SaveData.defaultHeal(boot)
+  boot = type(boot) == "table" and boot or {}
+  local h = boot.lastHeal
+  if h then return { map = h.map, x = h.x, y = h.y } end
+  local map = boot.startMap or "REDS_HOUSE_2F"
+  if map == "REDS_HOUSE_2F" then return { map = "PALLET_TOWN", x = 5, y = 6 } end
+  return { map = map, x = boot.startX or 3, y = boot.startY or 6 }
+end
+
 function SaveData.newGame(boot)
   boot = type(boot) == "table" and boot or {}
-  local map = boot.startMap or "PALLET_TOWN"
-  local x, y = boot.startX or 5, boot.startY or 6
-  local heal = boot.lastHeal or {}
+  local map = boot.startMap or "REDS_HOUSE_2F"
+  local x, y = boot.startX or 3, boot.startY or 6
+  local heal = SaveData.defaultHeal(boot)
   local save = {
     meta = { format = Version.saveFormat, mods = {} },
     player = {
@@ -655,6 +677,12 @@ function SaveData.newGame(boot)
     -- where blackouts and ESCAPE ROPE return to (updated by nurses);
     -- copied, never aliased, so a save never writes back into Data
     lastHeal = { map = heal.map or map, x = heal.x or x, y = heal.y or y },
+    -- Interiors inherit the SGB palette of the last outdoor map. wLastMap
+    -- is zero-filled at new game and PALLET_TOWN is map 0, so before the
+    -- player has ever been outdoors that palette is Pallet Town's -- which
+    -- matters because the vanilla spawn (REDS_HOUSE_2F) is itself indoors.
+    -- Without this the palette falls through to the ROUTE default.
+    lastOutdoor = { id = heal.map or map, x = heal.x or x, y = heal.y or y },
     repelSteps = 0,
     -- per-mod persistence (mod.save) lives under here, keyed by mod id
     modData = {},

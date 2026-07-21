@@ -278,6 +278,23 @@ M.PALLET_TOWN = {
 
 local DRINKS = { "FRESH_WATER", "SODA_POP", "LEMONADE" }
 
+-- Hand over the first drink in the bag, if any. Mirrors RemoveGuardDrink
+-- (engine/items/inventory.asm), which walks the same three item ids and
+-- removes ONE, and the caller's BIT_GAVE_SAFFRON_GUARDS_DRINK.
+local function takeGuardDrink(game)
+  for _, drink in ipairs(DRINKS) do
+    if (game.save.inventory[drink] or 0) > 0 then
+      game.save.inventory[drink] = game.save.inventory[drink] - 1
+      if game.save.inventory[drink] == 0 then
+        game.save.inventory[drink] = nil
+      end
+      game.save.flags.EVENT_GAVE_GUARDS_DRINK = true
+      return true
+    end
+  end
+  return false
+end
+
 local function saffronGate(guardText, triggers, horizontal)
   return {
     talk = {
@@ -289,18 +306,11 @@ local function saffronGate(guardText, triggers, horizontal)
             t._SaffronGateGuardThanksForTheDrinkText or "Gee, that was\ntasty!", done))
           return
         end
-        for _, drink in ipairs(DRINKS) do
-          if (game.save.inventory[drink] or 0) > 0 then
-            game.save.inventory[drink] = game.save.inventory[drink] - 1
-            if game.save.inventory[drink] == 0 then
-              game.save.inventory[drink] = nil
-            end
-            game.save.flags.EVENT_GAVE_GUARDS_DRINK = true
-            game.stack:push(TextBox.new(game,
-              (t._SaffronGateGuardYouCanGoOnThroughText or
-               "Thanks! You can\ngo on through!"), done))
-            return
-          end
+        if takeGuardDrink(game) then
+          game.stack:push(TextBox.new(game,
+            (t._SaffronGateGuardYouCanGoOnThroughText or
+             "Thanks! You can\ngo on through!"), done))
+          return
         end
         game.stack:push(TextBox.new(game,
           t._SaffronGateGuardGeeImThirstyText or "Gee, I'm thirsty\nthough!", done))
@@ -317,6 +327,27 @@ local function saffronGate(guardText, triggers, horizontal)
       if game.save.flags.EVENT_GAVE_GUARDS_DRINK then return false end
       local TextBox = require("src.render.TextBox")
       local t = game.data.text
+      -- Stepping on the trigger WITH a drink hands it over right here.
+      --
+      -- Route5GateDefaultScript (scripts/Route5Gate.asm) runs
+      -- `farcall RemoveGuardDrink` before it decides anything: the coord
+      -- trigger itself takes the drink and sets
+      -- BIT_GAVE_SAFFRON_GUARDS_DRINK, and only a player carrying nothing
+      -- gets the thirsty line and the walk-back. We had the removal on the
+      -- guard's TALK handler only, so walking up with a FRESH_WATER in the
+      -- bag was turned away and the four gates stayed shut unless you
+      -- happened to talk to him -- which vanilla never requires.
+      --
+      -- Saffron is the middle of the map, so this sealed it: every route
+      -- through the city (Celadon <-> Lavender, Vermilion <-> Cerulean the
+      -- short way) was unreachable, and the bot could not get to Lavender
+      -- for the POKE_FLUTE at all.
+      if takeGuardDrink(game) then
+        game.stack:push(TextBox.new(game,
+          (t._SaffronGateGuardYouCanGoOnThroughText or
+           "Thanks! You can\ngo on through!")))
+        return true
+      end
       local back
       if horizontal then
         back = ow.player.facing == "left" and "right" or "left"

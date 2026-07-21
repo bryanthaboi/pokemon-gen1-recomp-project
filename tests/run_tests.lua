@@ -1972,6 +1972,7 @@ do
   local PaletteFX = require("src.render.PaletteFX")
   local Tilt = require("src.render.Tilt")
   local GBCFX = require("src.render.GBCFX")
+  local GameSpeed = require("src.core.GameSpeed")
   local SD = require("src.core.SaveData")
   -- Isolate from earlier save/options writes in this suite
   SD.saveOptions(SD.defaultOptions())
@@ -2029,19 +2030,28 @@ do
   for _ = 1, 4 do press("a") end
   eq(og.save.options.gbcfx, 0, "GBC FX wraps back to OFF")
   press("down")
-  eq(om.index, 11, "cursor reaches MODS")
+  eq(om.index, 11, "cursor reaches GAME SPEED")
+  press("a")
+  eq(og.save.options.speed, 2, "A cycles GAME SPEED to 2X")
+  -- Driven by the level list rather than a literal press count: adding a
+  -- speed (20X went in for the bot runs) otherwise fails this as a wrap
+  -- bug when the cycling is fine and the row is simply one longer.
+  for _ = 1, #GameSpeed.LEVELS - 1 do press("a") end
+  eq(og.save.options.speed, 1, "GAME SPEED wraps back to NORMAL")
   press("down")
-  eq(om.index, 12, "cursor reaches CONTROLS")
+  eq(om.index, 12, "cursor reaches MODS")
   press("down")
-  eq(om.index, 13, "CANCEL stays the fixed final row")
-  eq(om.scroll, 8, "CANCEL keeps the last option boxes on screen")
+  eq(om.index, 13, "cursor reaches CONTROLS")
+  press("down")
+  eq(om.index, 14, "CANCEL stays the fixed final row")
+  eq(om.scroll, 9, "CANCEL keeps the last option boxes on screen")
   om:draw() -- smoke: scrolled layout draws under the headless stub
   press("a")
   check(popped, "A on CANCEL closes the options menu")
   local om2 = OptionsMenu.new(og)
   OInput.pressed = { up = true }; om2:update(1 / 60); OInput.pressed = {}
-  eq(om2.index, 13, "up from the top wraps to CANCEL")
-  eq(om2.scroll, 8, "wrapping to CANCEL scrolls to the tail")
+  eq(om2.index, 14, "up from the top wraps to CANCEL")
+  eq(om2.scroll, 9, "wrapping to CANCEL scrolls to the tail")
   -- headless-safe: no love.audio, setters only update internal state
   require("src.core.Music").applyOptions(og.save.options)
   require("src.core.Sound").applyOptions(og.save.options)

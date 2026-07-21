@@ -78,23 +78,14 @@ run_tier "T4 mod-SDK" "$LUA" tests/run_modkit.lua
 # ------- content tier: only meaningful with an imported ROM
 
 
-# tests/run_tests.lua carries two pre-existing failures that are stale
-# about the chip-audio architecture rather than real defects:
-#
-#   Pikachu cry WAV exists        nothing writes .wav any more -- cries are
-#                                 synthesized at play time from
-#                                 Data.audio.cries + programs.bin
-#   low-health alarm sfx extracted  the importer deliberately does not
-#                                 extract it; Sound.startLoop falls back to
-#                                 ChipAudio.newLowHealthAlarm (Sound.lua:268)
-#
-# They are left in place (fixing them is a separate, reviewed change), so
-# the tier passes on exactly this baseline and fails the moment a third
-# failure appears or one of these two changes identity.  Ignoring the exit
-# code outright would hide every future content regression.
-KNOWN_CONTENT_FAILURES=2
-KNOWN_CONTENT_LINES="FAIL Pikachu cry WAV exists
-FAIL low-health alarm sfx extracted"
+# tests/run_tests.lua is expected to be clean.  It used to carry two stale
+# chip-audio assertions on the allowlist below (Pikachu cry WAV exists /
+# low-health alarm sfx extracted); both have since been fixed, so the
+# baseline is zero and any failure fails the tier.  Keep the allowlist
+# mechanism rather than ignoring the exit code -- that would hide every
+# future content regression.
+KNOWN_CONTENT_FAILURES=0
+KNOWN_CONTENT_LINES=""
 
 run_content_behavior() {
   local out
@@ -107,7 +98,9 @@ run_content_behavior() {
   if [ "$count" -eq "$KNOWN_CONTENT_FAILURES" ] \
      && [ "$lines" = "$(printf '%s\n' "$KNOWN_CONTENT_LINES" | sort)" ]; then
     printf '%s\n' "$out" | tail -3
-    echo "(the $KNOWN_CONTENT_FAILURES known stale audio assertions, unchanged)"
+    if [ "$KNOWN_CONTENT_FAILURES" -gt 0 ]; then
+      echo "(the $KNOWN_CONTENT_FAILURES known stale assertions, unchanged)"
+    fi
     return 0
   fi
 

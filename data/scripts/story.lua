@@ -10,6 +10,31 @@ local M = {}
 -- -------------------------------------------------------------------
 
 M.VIRIDIAN_MART = {
+  -- scripts/ViridianMart.asm: the parcel hand-off is the map's DEFAULT
+  -- script, not a talk.  Entering with a starter and no parcel runs
+  -- ViridianMartDefaultScript -- the clerk calls out, then
+  -- StartSimulatingJoypadStates walks the player to the counter
+  -- (.PlayerMovement: PAD_LEFT 1, PAD_UP 2, door (3,7) -> counter (2,5))
+  -- and ViridianMartOaksParcelScript hands the parcel over.  The player
+  -- never presses A.  This matters beyond convenience: the parcel gates
+  -- Oak's Pokedex and the old man clearing Route 2, so vanilla guarantees
+  -- it on entry rather than letting you walk out without it.
+  --
+  -- The talk branch below is kept as the fallback for a save that reaches
+  -- the counter without this having fired.
+  onEnter = function(game, ow)
+    local f = game.save.flags
+    if f.EVENT_OAK_GOT_PARCEL or f.EVENT_GOT_OAKS_PARCEL then return end
+    if not f.EVENT_GOT_STARTER then return end
+    ow:queueScript({
+      { "show_text", "_ViridianMartClerkYouCameFromPalletTownText" },
+      { "move_player", "left", 1 },
+      { "move_player", "up", 2 },
+      -- the quest text's last page is "{PLAYER} got\nOAK's PARCEL!"
+      { "give_item", "OAKS_PARCEL", 1, "_ViridianMartClerkParcelQuestText" },
+      { "set_flag", "EVENT_GOT_OAKS_PARCEL" },
+    })
+  end,
   talk = {
     TEXT_VIRIDIANMART_CLERK = {
       { "check_flag", "EVENT_OAK_GOT_PARCEL" },                       -- 1
@@ -33,42 +58,48 @@ M.VIRIDIAN_MART = {
 
 M.VIRIDIAN_CITY = {
   talk = {
-    -- the old man napping on the north path (scripts/ViridianCity.asm)
-    -- after his coffee, the old man offers the catch tutorial: not in a
-    -- hurry -> he demos catching a wild mon (BATTLE_TYPE_OLD_MAN)
+    -- The GAMBLER_ASLEEP at (18,9) (ViridianCityOldManSleepyText): he
+    -- only ever grumbles and shoves you back down -- he never wakes,
+    -- moves or hides.  The coffee ask and the catch tutorial belong to
+    -- the *other* old man, the walking SPRITE_GAMBLER at (17,5)
+    -- (TEXT_VIRIDIANCITY_OLD_MAN, below).  The two are swapped by the
+    -- Pokédex in data/scripts/oaks_lab.lua, not by talking to either.
     TEXT_VIRIDIANCITY_OLD_MAN_SLEEPY = {
-      { "check_flag", "EVENT_OAK_GOT_PARCEL" },                          -- 1
-      { "jump_if_true", 5 },                                             -- 2
-      { "show_text", "_ViridianCityOldManSleepyPrivatePropertyText" },   -- 3
-      { "jump", 14 },                                                    -- 4
-      { "face_player" },                                                 -- 5
-      { "ask", "_ViridianCityOldManHadMyCoffeeNowText" },                -- 6
-      { "jump_if_true", 12 },                                            -- 7 (in a hurry)
-      { "show_text", "_ViridianCityOldManKnowHowToCatchPokemonText" },   -- 8
-      { "show_text", "_ViridianCityOldManYouNeedToWeakenTheTargetText" }, -- 9
-      { "old_man_demo" },                                                -- 10
-      { "jump", 13 },                                                    -- 11
-      { "show_text", "_ViridianCityOldManTimeIsMoneyText" },             -- 12
-      { "hide_object", "VIRIDIAN_CITY", "VIRIDIANCITY_OLD_MAN_SLEEPY" }, -- 13
+      { "show_text", "_ViridianCityOldManSleepyPrivatePropertyText" },   -- 1
+      { "move_player", "down", 1 },                                     -- 2
+    },
+
+    -- The walking old man at (17,5), shown once the Pokédex swaps him in
+    -- (ViridianCityOldManText).  "Are you in a hurry?" -- YES brushes you
+    -- off, NO leads into the catch tutorial: he explains, demos a catch
+    -- on a wild WEEDLE (BATTLE_TYPE_OLD_MAN), then comments afterwards.
+    -- pokered prints YouNeedToWeakenTheTarget *after* the demo battle
+    -- (ViridianCityOldManEndCatchTrainingScript), not before it.
+    TEXT_VIRIDIANCITY_OLD_MAN = {
+      { "face_player" },                                                 -- 1
+      { "ask", "_ViridianCityOldManHadMyCoffeeNowText" },                -- 2
+      { "jump_if_true", 8 },                                             -- 3 (yes = in a hurry)
+      { "show_text", "_ViridianCityOldManKnowHowToCatchPokemonText" },   -- 4
+      { "old_man_demo" },                                                -- 5
+      { "show_text", "_ViridianCityOldManYouNeedToWeakenTheTargetText" },-- 6
+      { "jump", 9 },                                                     -- 7
+      { "show_text", "_ViridianCityOldManTimeIsMoneyText" },             -- 8 (9 = end)
     },
   },
-  -- the sleeping old man lies across the Route 22 path (18,9): until
-  -- he moves you can't slip past on either side (scripts/ViridianCity
-  -- blocks the whole corridor, not just his tile)
+  -- ViridianCityCheckGotPokedexScript: the north corridor is gated on
+  -- EVENT_GOT_POKEDEX, NOT on the sleeper being hidden, and it triggers
+  -- on exactly one cell -- (19,9), the gap east of the sleeper (18,9)
+  -- and the girl (17,9).  With the Pokédex the check returns immediately
+  -- and you simply walk past at x=19.
   onStep = function(game, ow, x, y)
-    local gone = game.save.objectToggles and game.save.objectToggles.VIRIDIAN_CITY
-                 and game.save.objectToggles.VIRIDIAN_CITY.VIRIDIANCITY_OLD_MAN_SLEEPY == false
-    if gone then return false end
-    -- crossing north of his row through the 3-wide gap (x 17-19, y<=8)
-    if y <= 8 and x >= 17 and x <= 19 then
-      local TextBox = require("src.render.TextBox")
-      game.stack:push(TextBox.new(game,
-        game.data.text._ViridianCityOldManSleepyPrivatePropertyText
-        or "You can't go\nthrough here!\fThis is private\nproperty!",
-        function() ow:scriptMove(ow.player, "down", 1) end))
-      return true
-    end
-    return false
+    if game.save.flags and game.save.flags.EVENT_GOT_POKEDEX then return false end
+    if x ~= 19 or y ~= 9 then return false end
+    local TextBox = require("src.render.TextBox")
+    game.stack:push(TextBox.new(game,
+      game.data.text._ViridianCityOldManSleepyPrivatePropertyText
+      or "You can't go\nthrough here!\fThis is private\nproperty!",
+      function() ow:scriptMove(ow.player, "down", 1) end))
+    return true
   end,
 }
 
@@ -104,7 +135,7 @@ M.BILLS_HOUSE = {
   talk = {
     TEXT_BILLSHOUSE_BILL_POKEMON = {
       { "check_flag", "EVENT_GOT_SS_TICKET" },                     -- 1
-      { "jump_if_true", 11 },                                      -- 2
+      { "jump_if_true", 13 },                                      -- 2
       { "show_text", "_BillsHouseBillImNotAPokemonText" },         -- 3
       { "show_text", "_BillsHouseBillNoYouGottaHelpText" },        -- 4
       -- the cell-separator PC throws its switch
@@ -118,8 +149,21 @@ M.BILLS_HOUSE = {
       { "give_item", "S_S_TICKET", 1, false },                     -- 7
       { "show_text", "_SSTicketReceivedText" },                    -- 8
       { "set_flag", "EVENT_GOT_SS_TICKET" },                       -- 9
-      { "jump", 12 },                                              -- 10
-      { "show_text", "_BillsHouseBillCheckOutMyRarePokemonText" }, -- 11
+      -- The two Cerulean guards are a SWAP PAIR, not scenery
+      -- (BillsHouse.asm:174-178): handing over the ticket shows GUARD1 at
+      -- (28,12) and hides GUARD2 at (27,12).  This matters far more than it
+      -- looks: (27,12) is the ONLY walkable neighbour of the trashed
+      -- house's south door at (27,11), and that house is one of the two
+      -- ways through the fence that splits Cerulean in half (the badge
+      -- house is the other).  Leaving GUARD2 up forever severs the city --
+      -- the gym/mart half can never reach the Route 5 exit -- which is
+      -- exactly what stranded the bot after it beat Misty.
+      -- Same swap fires after the TM28 Rocket (CeruleanCity_2.asm
+      -- CeruleanHideRocket), so either route opens the path.
+      { "show_object", "CERULEAN_CITY", "CERULEANCITY_GUARD1" },   -- 10
+      { "hide_object", "CERULEAN_CITY", "CERULEANCITY_GUARD2" },   -- 11
+      { "jump", 14 },                                              -- 12
+      { "show_text", "_BillsHouseBillCheckOutMyRarePokemonText" }, -- 13
     },
   },
 }

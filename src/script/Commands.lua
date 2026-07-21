@@ -523,11 +523,11 @@ function Commands.record_hall_of_fame(ctx)
       -- save keeps the player standing in the HALL_OF_FAME room.  (The
       -- E4 room-script/event resets that precede the save in pokered are
       -- the Indigo lobby's re-entry reset here, data/scripts/story6.lua.)
-      -- The reset heal point is field.boot's spawn, PALLET_TOWN (5,6)
-      -- in the vanilla dataset.
+      -- pokered writes PALLET_TOWN here as a literal, not as "the spawn" --
+      -- the vanilla spawn is REDS_HOUSE_2F. SaveData.defaultHeal carries
+      -- that split (and lets a total conversion redirect it).
       local boot = game.data.field and game.data.field.boot or {}
-      ctx.save.lastHeal = { map = boot.startMap or "PALLET_TOWN",
-                            x = boot.startX or 5, y = boot.startY or 6 }
+      ctx.save.lastHeal = require("src.core.SaveData").defaultHeal(boot)
       if game.writeSave then game:writeSave() end
     end)
   end)
