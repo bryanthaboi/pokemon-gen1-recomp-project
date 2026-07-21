@@ -1031,7 +1031,7 @@ function OverworldState:goFishing(rod)
       if Game.save.safari and Map.inRegion(self.map.def, "SAFARI", "SAFARI_ZONE") then
         battle:makeSafari(Game.save.safari)
       end
-      battle.onFinish = function(result) self:afterBattle(result) end
+      battle.onFinish = function(result) self:afterBattle(result, battle) end
       self:pushBattle(battle)
     end))
   end))
@@ -1687,7 +1687,7 @@ function OverworldState:talkTo(npc)
             if e == npc then table.remove(self.entities, i) break end
           end
         end
-        self:afterBattle(result)
+        self:afterBattle(result, battle)
         unfreeze()
       end
       self:pushBattle(battle)
@@ -2005,7 +2005,7 @@ function OverworldState:engageTrainer(npc, onDone)
         end
         self:checkVictoryRewards(d.trainerClass, d.trainerParty)
         local after = function()
-          self:afterBattle(result)
+          self:afterBattle(result, battle)
           if onDone then onDone() end
         end
         if wonText then
@@ -2014,7 +2014,7 @@ function OverworldState:engageTrainer(npc, onDone)
           after()
         end
       else
-        self:afterBattle(result)
+        self:afterBattle(result, battle)
         if onDone then onDone() end
       end
     end
@@ -2381,7 +2381,7 @@ function OverworldState:onStepComplete()
     if Game.save.safari and Map.inRegion(self.map.def, "SAFARI", "SAFARI_ZONE") then
       battle:makeSafari(Game.save.safari)
     end
-    battle.onFinish = function(result) self:afterBattle(result) end
+    battle.onFinish = function(result) self:afterBattle(result, battle) end
     self:pushBattle(battle)
     return
   end
@@ -2714,7 +2714,9 @@ function OverworldState:safariGameOver(text)
 end
 
 -- Blackouts return to the last heal point; evolutions run after battles.
-function OverworldState:afterBattle(result)
+-- battle is optional; when given, Oak's Lab OPP_RIVAL1 losses skip the
+-- blackout (pret HandlePlayerBlackOut) so the map script can HealParty.
+function OverworldState:afterBattle(result, battle)
   local lead = Game.save.party[1]
   Logger.info("battle over: %s (lead %s %d/%d)", tostring(result),
               lead and lead.species or "-", lead and lead.hp or 0,
@@ -2724,6 +2726,13 @@ function OverworldState:afterBattle(result)
     Evolution.checkParty(Game)
   end
   if result == "lose" then
+    local oaksLabRival = battle and battle.oppClass == "OPP_RIVAL1"
+      and self.map and self.map.id == "OAKS_LAB"
+    if oaksLabRival then
+      -- stay in the lab; OaksLabRivalEndBattleScript heals and continues
+      evolutions()
+      return
+    end
     -- blackout: revive the party at the last heal point; half the
     -- money is lost (like the original)
     local Pokemon = require("src.pokemon.Pokemon")

@@ -106,19 +106,25 @@ end
 
 Assets.register(BattleState.invalidate)
 
--- the species' SGB palette (data/pokemon/palettes.asm), or nil
+-- the species' SGB palette (active COLORS pack), or nil
 local function monPalette(data, species)
-  local p = data.palettes
-  local name = p and p.pokemon[species]
-  local colors = name and p.palettes[name]
-  return colors and { name = name, colors = colors } or nil
+  local PaletteFX = require("src.render.PaletteFX")
+  local colors = PaletteFX.monPal(data, species)
+  if not colors then return nil end
+  local name = PaletteFX.monPalName(data, species)
+  -- prefix so GBC vs RED++ cache keys don't collide on shared names
+  if PaletteFX.usesGbcPack() then name = "redpp:" .. name end
+  return { name = name, colors = colors }
 end
 
--- a named palette from data/generated/palettes.lua as a getImage pal
+-- a named palette from the active COLORS pack as a getImage pal
 local function namedPalette(data, name)
-  local p = data.palettes
-  local colors = p and p.palettes[name]
-  return colors and { name = name, colors = colors } or nil
+  local PaletteFX = require("src.render.PaletteFX")
+  local colors = PaletteFX.pal(data, name)
+  if not colors then return nil end
+  local key = name
+  if PaletteFX.usesGbcPack() then key = "redpp:" .. name end
+  return { name = key, colors = colors }
 end
 
 -- The battle-BGP fade variant of a pic (AnimationFlashScreen and the
@@ -264,8 +270,10 @@ function BattleState:speciesSprite(species, isPlayerSide)
   if not def then return nil end
   local PaletteFX = require("src.render.PaletteFX")
   local colors = PaletteFX.monPal(self.data, species, true)
+  local name = "GRAYMON"
+  if PaletteFX.usesGbcPack() then name = "redpp:GRAYMON" end
   return getImage(isPlayerSide and def.spriteBack or def.spriteFront,
-                  colors and { name = "GRAYMON", colors = colors } or nil,
+                  colors and { name = name, colors = colors } or nil,
                   def.trueColor)
 end
 
@@ -414,6 +422,7 @@ end
 function BattleState.newTrainer(game, oppClass, partyIndex)
   local self = newBattle(game)
   self.kind = "trainer"
+  self.oppClass = oppClass
   self.trainer = game.data.trainers[oppClass]
   assert(self.trainer, "unknown trainer class " .. tostring(oppClass))
   self.enemyAIMods = self.trainer.aiMods
@@ -2558,6 +2567,22 @@ function BattleState:learnMove(mon, moveId)
   end)
 end
 
+-- Map the battle was fought on (overworld wins; save.player.map is fallback).
+function BattleState.currentMapId(self)
+  local game = self.game
+  local ow = game and game.overworld
+  if ow and ow.map then return ow.map.id end
+  local player = game and game.save and game.save.player
+  return player and player.map
+end
+
+-- pret HandlePlayerBlackOut: OPP_RIVAL1 in OAKS_LAB prints Rival1WinText
+-- and returns without blacking out.  OaksLabRivalEndBattleScript then heals.
+function BattleState.isOaksLabStarterRival(self)
+  return self.oppClass == "OPP_RIVAL1"
+    and BattleState.currentMapId(self) == "OAKS_LAB"
+end
+
 function BattleState:playerMonFainted()
   local nextMon = Party.firstHealthy(self.game.save.party)
   -- Being out of useable POKéMON blacks you out even when the battle was
@@ -2570,9 +2595,20 @@ function BattleState:playerMonFainted()
   -- aborts with "no healthy party"), and it is not reachable in pokered:
   -- HandlePlayerMonFainted runs the player-side check on its own, so
   -- losing your last mon always blacks you out whatever the enemy did.
+  -- Exception: the Oak's Lab starter rival (HandlePlayerBlackOut).
   if not nextMon and self.result ~= "lose" then
-    self:sayNext(("%s is out of\nuseable POKéMON!"):format(self.game.save.player.name))
-    self:sayNext(("%s blacked\nout!"):format(self.game.save.player.name))
+    if self.oppClass == "OPP_RIVAL1" then
+      local TextBox = require("src.render.TextBox")
+      local raw = (self.data.text and self.data.text._Rival1WinText)
+        or "{RIVAL}: Yeah! Am\nI great or what?"
+      self:sayNext(TextBox.substitute(self.game, raw))
+    end
+    -- Oak's Lab starter rival: Rival1WinText only (no blackout lines).
+    -- Any other wipe, including Route 22 RIVAL1, still blacks out.
+    if not BattleState.isOaksLabStarterRival(self) then
+      self:sayNext(("%s is out of\nuseable POKéMON!"):format(self.game.save.player.name))
+      self:sayNext(("%s blacked\nout!"):format(self.game.save.player.name))
+    end
     self.result = "lose"
     self.afterQueue = "finish"
     return
@@ -3037,11 +3073,13 @@ function BattleState:finish()
     return
   end
   -- Invariant: a battle can never hand the overworld a party with nothing
-  -- healthy in it.  afterBattle only revives and warps to the heal point on
-  -- "lose", so any other result here strands the player at 0 HP with no way
-  -- back -- an unrecoverable state, not merely a wrong one.  playerMonFainted
-  -- is the path that should have caught this; if we land here it did not, so
-  -- say so rather than silently papering over it.
+  -- healthy in it -- except the Oak's Lab starter rival, where pret skips
+  -- the blackout and OaksLabRivalEndBattleScript HealParty's immediately.
+  -- afterBattle only revives and warps to the heal point on a normal
+  -- "lose", so any other result here strands the player at 0 HP with no
+  -- way back -- an unrecoverable state, not merely a wrong one.
+  -- playerMonFainted is the path that should have caught this; if we land
+  -- here it did not, so say so rather than silently papering over it.
   if self.result ~= "lose" and not Party.firstHealthy(self.game.save.party) then
     Logger.warn("battle finished %s with no healthy party; forcing blackout",
                 tostring(self.result))
@@ -3364,9 +3402,10 @@ function BattleState:colorMode()
   if self.colorFxReady == nil then
     local ready = false
     local g = love and love.graphics
+    local PaletteFX = require("src.render.PaletteFX")
     if g and g.newCanvas and g.setScissor and g.setShader and g.getCanvas
-       and love.image and self.data.palettes
-       and require("src.render.PaletteFX").shader() then
+       and love.image and PaletteFX.pack(self.data)
+       and PaletteFX.shader() then
       local ok1, bg = pcall(g.newCanvas, 160, 144)
       local ok2, wv = pcall(g.newCanvas, 160, 144)
       if ok1 and ok2 and bg and wv then
@@ -3385,9 +3424,10 @@ end
 -- PAL_MEWMON (= MonsterPalettes[0]) while a side still shows its
 -- trainer/back pic (the species bytes are 0 then).
 function BattleState:sgbBattlePals()
-  local pals = self.data.palettes and self.data.palettes.palettes
-  if not pals then return nil end
   local PaletteFX = require("src.render.PaletteFX")
+  local pack = PaletteFX.pack(self.data)
+  local pals = pack and pack.palettes
+  if not pals then return nil end
   local function bar(b)
     if not b then return pals.GREENBAR end
     local hp = b.shownHP or b.mon.hp
@@ -3395,8 +3435,7 @@ function BattleState:sgbBattlePals()
   end
   local function mon(b, placeholder)
     if placeholder or not b then return pals.MEWMON or pals.GREENBAR end
-    local name = self.data.palettes.pokemon[b.mon.species]
-    return pals[name] or pals.MEWMON
+    return PaletteFX.monPal(self.data, b.mon.species) or pals.MEWMON
   end
   return {
     [0] = bar(self.player),

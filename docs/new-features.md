@@ -132,6 +132,7 @@ migrated once into `options.lua` on load.
 - Music / SFX volume
 - Music Filter
 - OG GLITCHES on / off (Gen 1 quirks vs. modern-clean battle rules)
-- COLORS (GBC / OG / OG INV / GBC INV / CLASSIC),  also hotkey `2`
+- COLORS (GBC / RED++ / OG / OG INV / GBC INV / CLASSIC),  also hotkey `2`
+  (RED++ uses pokered-gbc SuperPalettes + per-species mon colors)
 - TILT (OFF / 15 / 35 / 50),  also hotkey `3` while free-roaming
 - GBC FX (OFF / 1 / 2 / 3 / 4),  also hotkey `5`

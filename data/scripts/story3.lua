@@ -104,7 +104,7 @@ M.POKEMON_TOWER_6F = {
           -- immediately re-fires.
           ow:scriptMove(ow.player, "right", 1)
         end
-        ow:afterBattle(result)
+        ow:afterBattle(result, battle)
       end
       game.stack:push(battle)
     end))

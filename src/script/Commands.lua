@@ -225,7 +225,7 @@ function Commands.start_battle(ctx, kind, a, b)
     ctx.lastBattleResult = result
     ctx.lastCheck = result == "win"
     if ctx.overworld then
-      ctx.overworld:afterBattle(result)
+      ctx.overworld:afterBattle(result, battle)
     end
     runner:resume()
   end

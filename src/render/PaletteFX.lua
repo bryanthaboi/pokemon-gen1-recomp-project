@@ -5,17 +5,20 @@
 -- then drawn once per zone through a shader that remaps the four DMG
 -- shades to that zone's palette.
 --
--- Port display option: COLORS (GBC / OG / OG INV / GBC INV / CLASSIC)
+-- Port display option: COLORS (GBC / RED++ / OG / OG INV / GBC INV / CLASSIC)
 -- transforms every zone's palette at send time via effectiveColors.
+-- RED++ swaps the named-palette pack for pokered-gbc SuperPalettes
+-- (data/palettes_gbc.lua), including per-species mon colors.
 
 local PaletteFX = {}
 
 local shader -- false = unavailable (headless / no shader support)
+local gbcPack -- false = missing; nil = not loaded yet
 
 -- Cycle order matches OptionsMenu / hotkey 2
-PaletteFX.MODES = { "gbc", "og", "og_inv", "gbc_inv", "classic" }
+PaletteFX.MODES = { "gbc", "redpp", "og", "og_inv", "gbc_inv", "classic" }
 PaletteFX.MODE_LABELS = {
-  gbc = "GBC", og = "OG", og_inv = "OG INV",
+  gbc = "GBC", redpp = "RED++", og = "OG", og_inv = "OG INV",
   gbc_inv = "GBC INV", classic = "CLASSIC",
 }
 PaletteFX.mode = "gbc"
@@ -124,22 +127,73 @@ function PaletteFX.whole(colors)
   return PaletteFX.zone(colors, 0, 0, 19, 17)
 end
 
--- named palette from data/generated/palettes.lua (nil on stale builds)
+-- Red++ / pokered-gbc SuperPalette pack (committed; optional if absent).
+function PaletteFX.gbcPack()
+  if gbcPack == nil then
+    local ok, pack = pcall(require, "data.palettes_gbc")
+    gbcPack = ok and pack or false
+  end
+  return gbcPack or nil
+end
+
+function PaletteFX.usesGbcPack(mode)
+  mode = mode or PaletteFX.mode
+  return mode == "redpp"
+end
+
+-- Active named-palette table for COLORS: RED++ uses data/palettes_gbc.lua,
+-- everything else uses the ROM-imported data.palettes.
+function PaletteFX.pack(data)
+  if PaletteFX.usesGbcPack() then
+    local g = PaletteFX.gbcPack()
+    if g then return g end
+  end
+  return data and data.palettes or nil
+end
+
+-- named palette from the active pack (nil on stale builds / missing name).
+-- RED++ falls back to the ROM pack for names the gbc table omits (rare).
 function PaletteFX.pal(data, name)
-  local p = data.palettes
-  return p and p.palettes[name] or nil
+  local p = PaletteFX.pack(data)
+  local c = p and p.palettes[name]
+  if c then return c end
+  if PaletteFX.usesGbcPack() and data and data.palettes then
+    return data.palettes.palettes[name]
+  end
+  return nil
 end
 
 -- the species' palette (data/pokemon/palettes.asm), MEWMON for unknowns.
 -- transformed forces PAL_GRAYMON (Ditto's palette) regardless of species
 -- (engine/gfx/palettes.asm DeterminePaletteID: bit TRANSFORMED, a; a
 -- Transformed mon's pic is tinted gray, not the copied species' own
--- SGB color).
+-- SGB color).  RED++ uses per-species pals from mon_palettes.asm.
 function PaletteFX.monPal(data, species, transformed)
-  local p = data.palettes
+  local p = PaletteFX.pack(data)
   if not p then return nil end
-  if transformed then return p.palettes.GRAYMON end
-  return p.palettes[p.pokemon[species] or "MEWMON"]
+  if transformed then
+    return p.palettes.GRAYMON
+        or (data and data.palettes and data.palettes.palettes.GRAYMON)
+  end
+  local name = p.pokemon[species] or "MEWMON"
+  local c = p.palettes[name]
+  if c then return c end
+  if PaletteFX.usesGbcPack() and data and data.palettes then
+    name = data.palettes.pokemon[species] or "MEWMON"
+    return data.palettes.palettes[name]
+  end
+  return nil
+end
+
+-- palette name a species currently resolves to (for image-cache keys)
+function PaletteFX.monPalName(data, species, transformed)
+  if transformed then return "GRAYMON" end
+  local p = PaletteFX.pack(data)
+  if p and p.pokemon[species] then return p.pokemon[species] end
+  if data and data.palettes and data.palettes.pokemon[species] then
+    return data.palettes.pokemon[species]
+  end
+  return "MEWMON"
 end
 
 -- GetHealthBarColor (home/palettes.asm) on the standard 48px bar
@@ -173,13 +227,21 @@ function PaletteFX.permute(colors, map)
 end
 
 function PaletteFX.setMode(mode)
+  local prev = PaletteFX.mode
+  local ok = false
   for _, m in ipairs(PaletteFX.MODES) do
     if m == mode then
       PaletteFX.mode = mode
-      return
+      ok = true
+      break
     end
   end
-  PaletteFX.mode = "gbc"
+  if not ok then PaletteFX.mode = "gbc" end
+  -- battle pics bake the active pack into ImageData; drop the cache when
+  -- the pack (or any COLORS mode) changes so the next draw re-tints
+  if prev ~= PaletteFX.mode then
+    pcall(function() require("src.battle.BattleState").invalidate() end)
+  end
 end
 
 function PaletteFX.cycleMode()
@@ -188,7 +250,7 @@ function PaletteFX.cycleMode()
   for i, m in ipairs(PaletteFX.MODES) do
     if m == cur then idx = i; break end
   end
-  PaletteFX.mode = PaletteFX.MODES[idx % #PaletteFX.MODES + 1]
+  PaletteFX.setMode(PaletteFX.MODES[idx % #PaletteFX.MODES + 1])
   return PaletteFX.mode
 end
 
@@ -202,7 +264,7 @@ end
 
 -- When a state exposes no SGB zones but COLORS needs a forced palette
 -- (OG / OG INV / CLASSIC), invent a whole-screen zone so the shade-remap
--- shader still runs.  GBC / GBC INV leave nil alone (raw DMG canvas).
+-- shader still runs.  GBC / RED++ / GBC INV leave nil alone (raw DMG canvas).
 function PaletteFX.ensureZones(zones)
   if zones and zones[1] then return zones end
   local mode = PaletteFX.mode or "gbc"
@@ -213,6 +275,8 @@ function PaletteFX.ensureZones(zones)
 end
 
 -- Transform a 4-color palette for the active COLORS display mode.
+-- GBC and RED++ pass the zone colors through (RED++ already swapped the
+-- pack in pal/monPal); OG* / CLASSIC replace; GBC INV permutes shades.
 function PaletteFX.effectiveColors(c)
   if not c then return nil end
   local mode = PaletteFX.mode or "gbc"

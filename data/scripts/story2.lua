@@ -417,6 +417,26 @@ M.BIKE_SHOP = {
 -- the Cinnabar lab (the wait is skipped).
 -- -------------------------------------------------------------------
 
+-- The Super Nerd (object index 1) claims both fossils and blocks the way
+-- to them. In scripts/MtMoonB2F.asm he isn't a sight-line trainer: his
+-- header carries no range, so MtMoonB2FDefaultScript force-triggers the
+-- battle the instant the player steps onto (13,8) -- the chokepoint tile
+-- to his right -- and reaching for a fossil intercepts you too.
+local function superNerdBeaten(ow)
+  local nerd = ow:npcByIndex(1)
+  return not nerd or ow:trainerDefeated(nerd)
+end
+
+local function engageSuperNerd(game, ow, onDone)
+  local nerd = ow:npcByIndex(1)
+  if not nerd or ow:trainerDefeated(nerd) then
+    if onDone then onDone() end
+    return
+  end
+  nerd:facePlayer(ow.player)
+  ow:engageTrainer(nerd, onDone)
+end
+
 local function mtMoonFossil(itemId, otherName)
   return function(game, ow, npc, done)
     local TextBox = require("src.render.TextBox")
@@ -425,7 +445,13 @@ local function mtMoonFossil(itemId, otherName)
       game.stack:push(TextBox.new(game, "You already took\na fossil.", done))
       return
     end
-    game.stack:push(TextBox.new(game, "You found a\nfossil! Take it?", function()
+    -- can't grab a fossil until the Super Nerd is beaten -- he intercepts
+    if not superNerdBeaten(ow) then
+      engageSuperNerd(game, ow, done)
+      return
+    end
+    local name = game.data.items[itemId].name
+    game.stack:push(TextBox.new(game, ("You want the\n%s?"):format(name), function()
       game.stack:push(ChoiceBox.new(game, function(yes)
         if not yes then done() return end
         game.save.inventory[itemId] = 1
@@ -434,7 +460,6 @@ local function mtMoonFossil(itemId, otherName)
         local ctx = { save = game.save, overworld = ow, game = game }
         Commands.hide_object(ctx, "MT_MOON_B2F", npc.def.name)
         Commands.hide_object(ctx, "MT_MOON_B2F", otherName)
-        local name = game.data.items[itemId].name
         game.stack:push(TextBox.new(game,
           ("%s got the\n%s!"):format(game.save.player.name, name), done))
       end))
@@ -443,6 +468,15 @@ local function mtMoonFossil(itemId, otherName)
 end
 
 M.MT_MOON_B2F = {
+  -- MtMoonB2FDefaultScript forces the Super Nerd battle when the player
+  -- steps onto (13,8), the tile beside him guarding the fossils.
+  onStep = function(game, ow, x, y)
+    if x == 13 and y == 8 and not superNerdBeaten(ow) then
+      engageSuperNerd(game, ow, nil)
+      return true
+    end
+    return false
+  end,
   talk = {
     TEXT_MTMOONB2F_DOME_FOSSIL = mtMoonFossil("DOME_FOSSIL", "MTMOONB2F_HELIX_FOSSIL"),
     TEXT_MTMOONB2F_HELIX_FOSSIL = mtMoonFossil("HELIX_FOSSIL", "MTMOONB2F_DOME_FOSSIL"),
