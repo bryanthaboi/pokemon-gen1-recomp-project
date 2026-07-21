@@ -616,6 +616,7 @@ MoveEffects.full = {
     -- roll is below opponentLevel/4.  Teleport's failure text is "But
     -- it failed!", Roar/Whirlwind's is DidntAffectText; in trainer
     -- battles Teleport fails and Roar/Whirlwind are "unaffected".
+    -- Fail paths DelayFrames then print -- no PlayCurrentMoveAnimation.
     perform = function(ctx)
       local battle, user, target, move = ctx.battle, ctx.user, ctx.target, ctx.move
       if battle.kind == "wild" then
@@ -635,13 +636,17 @@ MoveEffects.full = {
           battle.result = "run"
           battle.afterQueue = "finish"
         elseif move.id == "TELEPORT" then
+          battle:cancelMoveAnim()
           ctx.say("But, it failed!")
         else
+          battle:cancelMoveAnim()
           ctx.say(("It didn't affect\n%s!"):format(displayName(target)))
         end
       elseif move.id == "TELEPORT" then
+        battle:cancelMoveAnim()
         ctx.say("But, it failed!")
       else
+        battle:cancelMoveAnim()
         ctx.say(("%s\nis unaffected!"):format(displayName(target)))
       end
     end,

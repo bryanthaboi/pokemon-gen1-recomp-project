@@ -89,6 +89,8 @@ function EffectRegistry.runDamaging(battle, ctx, record)
   -- Swift ignores semi-invulnerability (MoveHitTest returns hit for
   -- SWIFT_EFFECT before the INVULNERABLE check)
   if target.invulnerable and not neverMiss then
+    -- Explosion/Selfdestruct still animate on a miss (HandleIfPlayerMoveMissed)
+    if not (record and record.explode) then battle:cancelMoveAnim() end
     battle:sayNext(("%s's\nattack missed!"):format(displayName(user)))
     return
   end
@@ -97,6 +99,7 @@ function EffectRegistry.runDamaging(battle, ctx, record)
   if record and record.gate then
     local ok, failMsg = record.gate(ctx)
     if not ok then
+      battle:cancelMoveAnim()
       if failMsg then battle:sayNext(failMsg) end
       return
     end
@@ -108,6 +111,8 @@ function EffectRegistry.runDamaging(battle, ctx, record)
 
   if not neverMiss then
     if not battle:accuracyRoll(move, user, target) then
+      -- Explosion/Selfdestruct still animate on a miss (HandleIfPlayerMoveMissed)
+      if not (record and record.explode) then battle:cancelMoveAnim() end
       battle:sayNext(("%s's\nattack missed!"):format(displayName(user)))
       -- Jump Kick crash, Explode self-destruct
       if record and record.onMiss then record.onMiss(ctx, "accuracy") end
@@ -134,6 +139,7 @@ function EffectRegistry.runDamaging(battle, ctx, record)
       end
     end
     if not counterable or (battle.lastDamage or 0) == 0 then
+      battle:cancelMoveAnim()
       battle:sayNext(("%s's\nattack missed!"):format(displayName(user)))
       return
     end
@@ -144,6 +150,7 @@ function EffectRegistry.runDamaging(battle, ctx, record)
     -- failed with that text already chosen
     local chosen, extra = record.chooseDamage(ctx)
     if not chosen then
+      battle:cancelMoveAnim()
       if extra then battle:sayNext(extra) end
       return
     end
@@ -154,12 +161,15 @@ function EffectRegistry.runDamaging(battle, ctx, record)
   end
 
   if info.typeMult == 0 then
+    -- type immunity zeros damage and sets wMoveMissed in Gen 1, so no anim
+    if not (record and record.explode) then battle:cancelMoveAnim() end
     battle:sayNext(("It doesn't affect\n%s!"):format(displayName(target)))
     if record and record.onMiss then record.onMiss(ctx, "immune") end
     return
   end
   if info.missed then
     -- 0.25x floored the damage to zero: the original registers a miss
+    if not (record and record.explode) then battle:cancelMoveAnim() end
     battle:sayNext(("%s's\nattack missed!"):format(displayName(user)))
     if record and record.onMiss then record.onMiss(ctx, "floored") end
     return

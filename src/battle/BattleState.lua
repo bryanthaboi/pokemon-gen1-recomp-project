@@ -1556,6 +1556,25 @@ function BattleState:animationsOn()
   return not o or o.animations ~= false
 end
 
+-- Drop the announcement-time move-anim row.  Gen 1 queues PlayMoveAnimation
+-- only after MoveHitTest / the effect lands (HandleIfPlayerMoveMissed skips
+-- it on a miss unless EXPLODE_EFFECT); we insert early for blink attachment
+-- and peel it back on miss/fail paths.
+function BattleState:cancelMoveAnim()
+  local row = self.moveAnimRow
+  if not row then return end
+  self.moveAnimRow = nil
+  for i, item in ipairs(self.queue) do
+    if item == row then
+      table.remove(self.queue, i)
+      if self.nextInsert and i <= self.nextInsert then
+        self.nextInsert = self.nextInsert - 1
+      end
+      return
+    end
+  end
+end
+
 -- ------------------------------------------------------------------
 -- special-effect (SE_*) implementations.  Palette effects are BGP
 -- shade maps ({[i] = shade color index i displays as}); on the SGB the
@@ -2160,6 +2179,20 @@ end
 -- Decomposed into a staged pipeline over the merged move_effects record:
 -- announcement -> callsMove -> charge -> perform -> primary run -> the
 -- damaging pipeline (EffectRegistry.runDamaging).
+
+-- Gen 1 status/stat primary effects call PlayCurrentMoveAnimation only
+-- after they land; these failure texts print with no animation.
+local function primaryEffectFailed(msgs)
+  if not msgs or #msgs == 0 then return true end
+  local m = msgs[1]
+  if m == "But, it failed!" or m == "Nothing happened!" then return true end
+  if m:find("didn't affect", 1, true) then return true end
+  if m:find("is unaffected", 1, true) then return true end
+  if m:find("protected by MIST", 1, true) then return true end
+  if m:find("Already", 1, true) then return true end
+  return false
+end
+
 function BattleState:performMove(user, target, moveInst, isCalled)
   local move = self:moveDef(moveInst)
   if not move then
@@ -2207,6 +2240,11 @@ function BattleState:performMove(user, target, moveInst, isCalled)
   -- already said its failure text
   if record and record.callsMove then
     local pick = record.callsMove(ctx)
+    -- Mirror Move never plays its own anim (MetronomePickMove does;
+    -- MirrorMoveCopyMove only reloads the copied move or prints fail)
+    if move.id == "MIRROR_MOVE" or not pick then
+      self:cancelMoveAnim()
+    end
     if pick then
       self:performMove(user, target, { id = pick, pp = 1 }, true)
     end
@@ -2249,10 +2287,19 @@ function BattleState:performMove(user, target, moveInst, isCalled)
     if record.accuracyChecked
        and (target.invulnerable
             or not self:accuracyRoll(move, user, target)) then
+      -- SleepEffect/PoisonEffect/... call PlayCurrentMoveAnimation only
+      -- after the effect lands; a miss skips it
+      self:cancelMoveAnim()
       self:sayNext(("%s's\nattack missed!"):format(displayName(user)))
       return
     end
-    for _, m in ipairs(record.run(ctx)) do
+    local msgs = record.run(ctx)
+    -- Gen 1 status/stat effects animate only when they take effect
+    -- (AlreadyAsleep / NothingHappened / ButItFailed print with no anim)
+    if primaryEffectFailed(msgs) then
+      self:cancelMoveAnim()
+    end
+    for _, m in ipairs(msgs) do
       self:sayNext(m)
     end
     self:drainNext() -- REST/RECOVER/SOFTBOILED move the user's bar
@@ -2260,6 +2307,7 @@ function BattleState:performMove(user, target, moveInst, isCalled)
   end
   if move.power == 0 and not (record and record.kind == "full") then
     MoveEffects.warnUnknown(move.effect)
+    self:cancelMoveAnim()
     self:sayNext("But, it failed!")
     return
   end
@@ -2299,6 +2347,7 @@ function BattleState:continueBide(user, target)
   local dmg = (user.bideDamage or 0) * 2
   user.bideTurns, user.bideDamage = nil, nil
   if dmg <= 0 then
+    self:cancelMoveAnim()
     self:sayNext("But, it failed!")
     return
   end

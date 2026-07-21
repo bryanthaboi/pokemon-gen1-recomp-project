@@ -854,6 +854,11 @@ do
     ab.rng = mkseq({ 255 }) -- the 1/256 miss
     ab:performMove(ab.player, ab.enemy, { id = "THUNDER_WAVE", pp = 10 })
     eq(ab.enemy.mon.status, nil, "THUNDER WAVE misses on the 255 roll")
+    local function hasAnim(b)
+      for _, r in ipairs(b.queue) do if r.anim then return true end end
+      return false
+    end
+    check(not hasAnim(ab), "a missed THUNDER WAVE plays no move animation")
     ab.rng = mkseq({ 254 })
     ab:performMove(ab.player, ab.enemy, { id = "THUNDER_WAVE", pp = 10 })
     eq(ab.enemy.mon.status, "PAR", "THUNDER WAVE lands on the 254 roll")
@@ -862,6 +867,33 @@ do
     sbst.rng = function() error("self move must not roll accuracy") end
     sbst:performMove(sbst.player, sbst.enemy, { id = "SHARPEN", pp = 10 })
     eq(sbst.player.stages.attack, 1, "SHARPEN skips the accuracy roll")
+  end
+
+  -- HandleIfPlayerMoveMissed: skip PlayMoveAnimation on a miss
+  -- (unless EXPLODE_EFFECT)
+  do
+    Game.save.party = { Pokemon.new(Data, "BULBASAUR", 20) }
+    local function hasAnim(b)
+      for _, r in ipairs(b.queue) do if r.anim then return true end end
+      return false
+    end
+    local function sawMiss(b)
+      for _, r in ipairs(b.queue) do
+        if r.text and r.text:find("attack missed!", 1, true) then return true end
+      end
+      return false
+    end
+    local mb = BattleState.newWild(Game, "RATTATA", 5)
+    mb.rng = function(a, b) return b end -- accuracy 255: miss
+    mb:performMove(mb.player, mb.enemy, { id = "TACKLE", pp = 10 })
+    check(sawMiss(mb), "TACKLE miss prints AttackMissedText")
+    check(not hasAnim(mb), "a missed TACKLE plays no move animation")
+    eq(mb.enemy.mon.hp, mb.enemy.mon.stats.hp, "a missed TACKLE deals no damage")
+
+    local hb = BattleState.newWild(Game, "RATTATA", 5)
+    hb.rng = function(a, b) return a end -- hit
+    hb:performMove(hb.player, hb.enemy, { id = "TACKLE", pp = 10 })
+    check(hasAnim(hb), "a landing TACKLE still queues its move animation")
   end
 
   -- #14: EXP.ALL second pass inherits the participant divisor and skips
