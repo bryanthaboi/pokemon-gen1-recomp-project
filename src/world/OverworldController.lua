@@ -1506,6 +1506,21 @@ function OverworldState:trySurf(fx, fy)
 end
 
 function OverworldState:tryCut(fx, fy)
+  -- UsedCut (engine/overworld/cut.asm) gates on the TILESET before
+  -- anything else: only OVERWORLD (tree tile $3d) and GYM (plant tile
+  -- $50) have cuttable anything. Matching raw block ids alone
+  -- false-positives on every other tileset -- block ids are only
+  -- meaningful within one tileset, so Route 23 (PLATEAU) had blocks
+  -- matching a swap's `before`, and applying it wrote a block id that
+  -- does not exist in PLATEAU's block table: the renderer indexed nil
+  -- and the game crashed. The same false match is what made the bot
+  -- chain-cut "ornamental bushes" around Saffron and Celadon.
+  local ts = self.map.def.tileset
+  local tile = self.map:cellTile(fx, fy)
+  if not ((ts == "OVERWORLD" and tile == 0x3d)
+          or (ts == "GYM" and tile == 0x50)) then
+    return false
+  end
   local bx, by = math.floor(fx / 2), math.floor(fy / 2)
   local block = self.map:blockAt(bx, by)
   local swap
@@ -1591,6 +1606,15 @@ function OverworldState:useCutFieldMove()
   if not self:partyKnows("CUT") then return "no_badge" end
   local fx, fy = self.player:facingCell()
   if not self.map:inBounds(fx, fy) then return "nothing" end
+  -- same tileset/tile gate as tryCut (UsedCut, engine/overworld/cut.asm):
+  -- a tree BLOCK also contains fence/path cells, and facing those is
+  -- "nothing to cut" in vanilla
+  local ts = self.map.def.tileset
+  local tile = self.map:cellTile(fx, fy)
+  if not ((ts == "OVERWORLD" and tile == 0x3d)
+          or (ts == "GYM" and tile == 0x50)) then
+    return "nothing"
+  end
   local bx, by = math.floor(fx / 2), math.floor(fy / 2)
   local block = self.map:blockAt(bx, by)
   local swap

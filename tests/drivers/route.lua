@@ -271,6 +271,27 @@ local function walk(dir, maxFrames)
     local p = ow().player
     if ow().map.id ~= smap then moved = true break end
     if (p.cellX ~= sx or p.cellY ~= sy) and not p.moving then moved = true break end
+    -- The step has COMMITTED (tween running toward a new cell): release
+    -- the key NOW and ride out the tween without it. Holding through the
+    -- landing frame attempts a further move the instant the tween ends,
+    -- and on an edge-collision warp cell that held press IS the warp
+    -- trigger (Warp.onCollision + extraCheck): walking DOWN onto Victory
+    -- Road 1F's entrance mat at (9,17) -- a waypoint the route walks
+    -- across horizontally, but our warp-averse BFS approaches from above
+    -- -- warped straight out to ROUTE_23, which is the "left
+    -- VICTORY_ROAD_1F partway through segment 183" exit. cellX commits
+    -- only at tween END (Player.lua), so committing is read off targetX.
+    if p.moving and p.targetX and (p.targetX ~= sx or p.targetY ~= sy) then
+      G.input.state[dir] = false
+      for _ = 1, 60 do
+        if ow().map.id ~= smap then break end
+        if not ow().player.moving then break end
+        coroutine.yield()
+      end
+      local q = ow().player
+      moved = ow().map.id ~= smap or q.cellX ~= sx or q.cellY ~= sy
+      break
+    end
     if busy() then
       -- A LEDGE HOP is performed with scriptMove, so it reads as "busy"
       -- exactly like a cutscene does -- and breaking here reported the hop
@@ -361,6 +382,30 @@ local function passableCell(map, x, y)
   return p.surfing == true and map:isWaterCell(x, y)
 end
 
+-- Tile-pair (elevation) collisions -- pokered's TilePairCollisionsLand /
+-- Water, the same data src/world/Collision.lua enforces per step. CAVERN
+-- and FOREST use these to fence off elevation shelves, so two adjacent
+-- WALKABLE cells can still be uncrossable: Victory Road 1F's (5,9) ->
+-- (5,8) is one, and a BFS that only checked walkability re-proposed that
+-- refused step for walkOntoWarp's whole budget -- "warp@1,1 did not
+-- move" x300 while travelTo ping-ponged ROUTE_23 <-> 1F. (Boulders are
+-- exempt: checkBoulderPush never consults tile pairs, matching
+-- push_boulder.asm, so only PLAYER movement models this.)
+local function pairBlockedStep(map, sx, sy, tx, ty, surfing)
+  local tp = G.data.field and G.data.field.tilePairs
+  local list = tp and (surfing and tp.water or tp.land)
+  if not list or #list == 0 then return false end
+  local ts = map.def.tileset
+  local a, b = map:cellTile(sx, sy), map:cellTile(tx, ty)
+  for _, p in ipairs(list) do
+    if p.tileset == ts
+       and ((p.a == a and p.b == b) or (p.a == b and p.b == a)) then
+      return true
+    end
+  end
+  return false
+end
+
 local function bfsNextKey(tx, ty, extra)
   local o = ow()
   local map, p = o.map, o.player
@@ -410,15 +455,19 @@ local function bfsNextKey(tx, ty, extra)
       -- route genuinely rides -- is untouched, and to elevator-destination
       -- warps so ordinary doors and stairs are untouched. The target cell
       -- is always allowed (never block where we are trying to go).
+      -- Never path THROUGH any warp cell -- stepping on one warps
+      -- (bug 10's warp parity), so a door mat on the walk line detours
+      -- the whole goto into a building. Saffron's segment 172 kept
+      -- diving into COPYCAT'S HOUSE exactly this way. The target cell is
+      -- always allowed: warps we MEAN to take are goto'd directly.
       local elevTrap = false
-      if tostring(map.id):find("CELADON_MART") and not (nx == tx and ny == ty) then
-        local wc = map.warpAtCell and map:warpAtCell(nx, ny)
-        local dm = wc and wc.def and wc.def.destMap
-        elevTrap = type(dm) == "string" and dm:find("ELEVATOR") ~= nil
+      if not (nx == tx and ny == ty) then
+        elevTrap = (map.warpAtCell and map:warpAtCell(nx, ny)) ~= nil
       end
       if nx >= 0 and ny >= 0 and nx < w and ny < map.heightCells
          and not prev[nid] and not blocked[nid] and not elevTrap
-         and (passableCell(map, nx, ny) or (nx == tx and ny == ty)) then
+         and (passableCell(map, nx, ny) or (nx == tx and ny == ty))
+         and not pairBlockedStep(map, cx, cy, nx, ny, p.surfing) then
         prev[nid] = cur
         queue[#queue + 1] = nid
       else
@@ -713,6 +762,17 @@ local LOW_HP_COVERED = 0.2  -- a nurse or a potion is within reach
 -- assigned below, once the healing helpers it needs exist
 local canRestoreHP = function() return false end
 
+-- Forward-declared: defined with the travel helpers, needed by stepUpTo.
+local reachableSet
+
+-- Forward-declared: defined with the party helpers; crossSeam and the
+-- surf-mount logic need it before its definition point.
+local slotKnowing
+
+-- Forward-declared: assigned after MANUAL.playPokeFlute exists. Wakes a
+-- SNORLAX that is blocking the current map when the POKE FLUTE is aboard.
+local wakeBlockingSnorlax
+
 -- true while deliberately farming encounters: fleeing earns no XP, which is
 -- the whole point of grinding, so the flee guard stands down
 local grinding = false
@@ -728,6 +788,13 @@ local healInBattle
 -- the static ghost MAROWAK, where fleeing leaves the blocker standing.
 local throwPokeDoll
 
+-- Drive a MoveLearnMenu HM-safely wherever one appears. LEVEL-UP learns
+-- open the same menu ops.teach handles, but they surface mid-battle and
+-- in mashUntilIdle -- whose blind A lands on row 1, which after Silph is
+-- SURF, and the engine's HM refusal loops forever. Defined after the
+-- cursor helpers; forward-declared for fightBattle/mashUntilIdle.
+local driveLearnMenu
+
 local function lowOnHP(battle)
   if grinding then return false end -- training: take the XP, not the exit
   local mon = battle.player and battle.player.mon
@@ -740,6 +807,10 @@ local function lowOnHP(battle)
   local covered = canRestoreHP() and dangerAt(ow().map.id) == 0
   return mon.hp / max < (covered and LOW_HP_COVERED or LOW_HP_EXPOSED)
 end
+
+-- the battle state seen hung on the last fightBattle timeout, for the
+-- engine-hang bailout at the bottom of fightBattle
+local hungBattle
 
 local function fightBattle(limit)
   limit = limit or 20000
@@ -881,13 +952,46 @@ local function fightBattle(limit)
       end
       press("a")
     else
-      press("a") -- intro / messages / anything else: advance
+      -- intro / messages / anything else: advance -- but never mash A
+      -- blind through a level-up MoveLearnMenu (the cursor sits on SURF)
+      if not (driveLearnMenu and driveLearnMenu()) then
+        press("a")
+      end
     end
     U.wait(3)
     frames = frames + 4
     ::continue::
   end
-  if frames >= limit then say("battle timed out") end
+  if frames >= limit then
+    say("battle timed out")
+    -- An engine hang: the battle stops responding to ANY input (seen
+    -- live vs Agatha -- GOLBAT sent out, an empty text frame, A/B dead,
+    -- while a clean A-mash of the same fight never reproduces it).
+    -- Every caller retries fightBattle, so a hung battle livelocks the
+    -- whole run: ops.goto_ alone re-enters it up to 600 times. On the
+    -- SECOND consecutive timeout of the SAME battle state, force the
+    -- state off the stack and let the overworld machinery re-engage
+    -- from scratch -- an unbeaten trainer is simply re-fought with
+    -- fresh RNG, a wild encounter is gone. Crude, but the alternative
+    -- is a dead run, and the route is built to recover from anything
+    -- the map throws at it.
+    if inBattle() then
+      local cur = G.stack:top()
+      if cur == hungBattle then
+        local foe = cur.enemy and cur.enemy.mon
+        say(("battle engine hang (phase=%s kind=%s foe=%s) -- forcing the "
+             .. "battle closed"):format(tostring(cur.phase),
+            tostring(cur.kind), tostring(foe and foe.species)))
+        hungBattle = nil
+        G.stack:pop()
+        U.wait(20)
+      else
+        hungBattle = cur
+      end
+    end
+  else
+    hungBattle = nil
+  end
 end
 
 -- ---------------------------------------------------------------------
@@ -904,9 +1008,23 @@ local function mashUntilIdle(limit)
     if replacementMenu() then sendOutHealthy() end
     if inBattle() then fightBattle() end
     if idle() then return true end
-    press("a")
+    if driveLearnMenu and driveLearnMenu() then
+      frames = frames + 10
+    else
+      press("a")
+      U.wait(6)
+      frames = frames + 7
+    end
+  end
+  -- A alone cannot close everything: a wedged START/party/submenu chain
+  -- cycles forever under A (seen as 25 consecutive timeouts during the
+  -- Saffron bush-cutting spree). Unwind with B before reporting failure --
+  -- B is safe everywhere mashUntilIdle is allowed (shops are B-only and
+  -- never come through here).
+  for _ = 1, 12 do
+    if idle() then return true end
+    press("b")
     U.wait(6)
-    frames = frames + 7
   end
   say("mashUntilIdle timed out")
   return false
@@ -960,6 +1078,27 @@ local travelDumped = false
 -- ops.fieldMove exists to do the cutting; declared here because ops.goto_
 -- calls it and comes first.
 local cutToward
+-- Open a Silph Co card-key door that is walling us off from (tx, ty).
+-- Assigned next to cutToward; declared here for the same reason.
+local openDoorToward
+-- Press a reachable Pokémon Mansion statue switch when the switch walls
+-- are what seals off (tx, ty). Assigned next to openDoorToward.
+local toggleMansionSwitch
+-- Bag-driven field item use / step-out-of-a-building helpers. Defined
+-- with the item helpers far below; declared here because ops.fieldMove's
+-- DIG fallback escape-ropes out of the Mansion.
+local useFieldItem, leaveByDoor
+-- Shove a STRENGTH boulder out of the walk to (tx, ty). Assigned next to
+-- toggleMansionSwitch; declared here because ops.goto_'s ladder calls it.
+local pushBoulderToward
+-- Victory Road boulder-switch solver + its switch table; declared here
+-- because walkOntoWarp's no-path ladder calls them.
+local VR_SWITCHES, solveVictoryRoadSwitches
+-- Mount SURF when land runs out. Defined after ops.fieldMove; used by
+-- ops.goto_'s unreachable ladder so the Pallet -> Route 21 -> Cinnabar
+-- water corridor is travellable (BFS is already water-aware WHILE
+-- surfing -- the mount was the missing action).
+local mountSurfToward
 
 -- Reach a warp cell by ARRIVING through it. Assigned below (it needs
 -- travelTo); declared here for the same reason as cutToward.
@@ -969,6 +1108,32 @@ local arriveByWarp
 -- (needs walkOntoWarp); declared here because ops.goto_ calls it.
 local reEnterThroughGate
 
+-- The border cell of `dir`'s edge that is WATER, nearest to (nearX,
+-- nearY). Some seams are only crossable by sea: Cinnabar's north border
+-- is land at x 10-13 with ocean beyond, so pushing off it just bumps the
+-- shore -- the crossing is the water strip at x 1-3.
+local function borderWaterCell(m, dir, nearX, nearY)
+  local best, bestD
+  if dir == "up" or dir == "down" then
+    local y = dir == "up" and 0 or m.heightCells - 1
+    for x = 0, m.widthCells - 1 do
+      if m:isWaterCell(x, y) then
+        local d = math.abs(x - nearX)
+        if not bestD or d < bestD then best, bestD = { x, y }, d end
+      end
+    end
+  else
+    local x = dir == "left" and 0 or m.widthCells - 1
+    for y = 0, m.heightCells - 1 do
+      if m:isWaterCell(x, y) then
+        local d = math.abs(y - nearY)
+        if not bestD or d < bestD then best, bestD = { x, y }, d end
+      end
+    end
+  end
+  return best
+end
+
 -- Walk to (x, y). Coordinates outside the map are the route's idiom for
 -- "leave through this edge into the connecting map", so we walk into the
 -- edge and let the connection carry us rather than pathfinding to a cell
@@ -976,6 +1141,19 @@ local reEnterThroughGate
 function ops.goto_(s, _where, isLast)
   local o = ow()
   local map = o.map
+  -- one surf mount per goto: walking ashore dismounts, so an unreachable
+  -- target beyond a pond can otherwise mount -> cross -> dismount -> fail
+  -- -> mount again forever (Celadon's pond, target (39,8))
+  local surfMounts = 0
+  -- ...and a small cut budget per goto: a pocket behind two trees opens
+  -- over two passes, but a target that stays unreachable must not
+  -- chain-cut every ornamental bush on the map (Saffron/Celadon cut-spam)
+  local cuts, CUT_BUDGET = 0, 3
+  -- one mansion-switch toggle per goto (see toggleMansionSwitch)
+  local switchToggles = 0
+  -- boulder shoves per goto: a push chain along a row is several calls
+  -- (shove, re-plan, shove), so this is roomier than the cut budget
+  local boulderPushes = 0
   local outside = s.x < 0 or s.y < 0
                   or s.x >= map.widthCells or s.y >= map.heightCells
   if outside then
@@ -993,6 +1171,7 @@ function ops.goto_(s, _where, isLast)
     local tx = math.max(0, math.min(s.x, map.widthCells - 1))
     local ty = math.max(0, math.min(s.y, map.heightCells - 1))
     local refusedEdge = knownWalls(map.id) or {}
+    for edgeTry = 1, 2 do
     for _ = 1, 300 do
       if ow().map.id ~= startMap then return true end
       local p = ow().player
@@ -1015,13 +1194,21 @@ function ops.goto_(s, _where, isLast)
           -- edge-exit branch is a separate path and never called it.
           local p2 = ow().player
           if p2.cellX ~= tx or p2.cellY ~= ty then
-            if cutToward(tx, ty) then
+            if cuts < CUT_BUDGET and cutToward(tx, ty) then
+              cuts = cuts + 1
               goto edgeStep -- re-plan now that the way is open
             end
             -- The border can also be walled off by a gate rather than a
             -- tree: ROUTE_16's east seam sits beyond the gate building, so
             -- leaving toward CELADON_CITY means going through it first.
             if reEnterThroughGate(tx, ty) then
+              goto edgeStep
+            end
+            -- ...or the border cell is on WATER (Pallet's south edge):
+            -- mount SURF at the shore and re-plan over the sea.
+            if surfMounts == 0 and mountSurfToward
+               and mountSurfToward(tx, ty) then
+              surfMounts = surfMounts + 1
               goto edgeStep
             end
           end
@@ -1060,6 +1247,24 @@ function ops.goto_(s, _where, isLast)
         end
       end
     end
+    -- The push stalled. Once per goto: if this edge has a WATER crossing
+    -- and the party can surf, mount and retry the whole exit over the
+    -- sea column instead of bumping the shore (Cinnabar -> Route 21).
+    if edgeTry == 1 and surfMounts == 0 and not ow().player.surfing
+       and slotKnowing("SURF") then
+      local wc = borderWaterCell(map, dir, tx, ty)
+      if wc and mountSurfToward and mountSurfToward(wc[1], wc[2]) then
+        surfMounts = surfMounts + 1
+        tx, ty = wc[1], wc[2]
+        say(("edge exit %s on %s: retrying over the water at (%d,%d)")
+            :format(dir, tostring(startMap), tx, ty))
+      else
+        break
+      end
+    else
+      break
+    end
+    end -- edgeTry
     say(("edge exit failed on %s: %s from (%d,%d) toward (%d,%d)")
         :format(tostring(startMap), dir,
                 ow().player.cellX, ow().player.cellY, s.x, s.y))
@@ -1078,6 +1283,25 @@ function ops.goto_(s, _where, isLast)
   -- then the script walks us straight back and we oscillate for the full
   -- 600 iterations. Bail once a cell has come round too many times.
   local visits, oscillating = {}, 12
+  -- Which cell each shove came from, so the plan can route AROUND the
+  -- trigger instead of merely giving up. A shove is a step that SUCCEEDS
+  -- and is then scripted back (Cinnabar's locked gym door at (18,4):
+  -- standing there without the SECRET_KEY prints "The door is locked..."
+  -- and walks you back down, and BFS -- deterministic, ties broken "up"
+  -- first -- re-proposed that exact step forever from (18,5)). Two
+  -- reverts on the same step target make it a refused cell for this trip;
+  -- per-call only, because the same cell is legitimately walkable later
+  -- (with the key in the bag the gate does not fire).
+  local reverts, lastFrom, lastTarget = {}, nil, nil
+  -- Whether the last successful step landed exactly ON the waypoint. A
+  -- SAME-MAP teleporter (Saffron Gym's warp pads) fires the moment that
+  -- step lands and moves us across the map, so the map-change guard never
+  -- returns and the loop hunts a waypoint it has already satisfied from
+  -- the far pocket -- which is how segment 173 wandered the gym, fought
+  -- two side trainers, and left without ever reaching Sabrina. A jump of
+  -- more than two cells distinguishes a pad from a gate-script shove
+  -- (which walks us back exactly one).
+  local steppedOnTarget = false
   for _ = 1, 600 do
     -- Stop the instant a warp changed the map under us.
     --
@@ -1094,6 +1318,14 @@ function ops.goto_(s, _where, isLast)
     -- must too, and the segment loop re-syncs to wherever the warp left us.
     if ow().map.id ~= map.id then return true end
     local p = ow().player
+    if steppedOnTarget then
+      local jump = math.abs(p.cellX - s.x) + math.abs(p.cellY - s.y)
+      if jump > 2 then
+        say(("goto (%d,%d): stepped on it and a pad moved us to (%d,%d) -- "
+             .. "waypoint done"):format(s.x, s.y, p.cellX, p.cellY))
+        return true
+      end
+    end
     if p.cellX == s.x and p.cellY == s.y then
       -- Arrived. If the tween into the cell is still running, wait it out
       -- rather than falling through to BFS -- bfsNextKey returns nil when
@@ -1154,6 +1386,18 @@ function ops.goto_(s, _where, isLast)
       -- cell -- not frames spent in a battle or waiting out a tween, which
       -- legitimately sit on one cell for a long time.
       local cell = p.cellY * ow().map.widthCells + p.cellX
+      -- Back where the last successful step started: that step was shoved.
+      if lastTarget and cell == lastFrom then
+        reverts[lastTarget] = (reverts[lastTarget] or 0) + 1
+        if reverts[lastTarget] >= 2 and not refused[lastTarget] then
+          local W = ow().map.widthCells
+          say(("goto (%d,%d): the step onto (%d,%d) keeps getting shoved "
+               .. "back -- planning around it")
+              :format(s.x, s.y, lastTarget % W, math.floor(lastTarget / W)))
+          refused[lastTarget] = true
+          visits = {} -- the new plan deserves a fresh oscillation budget
+        end
+      end
       visits[cell] = (visits[cell] or 0) + 1
       if visits[cell] > oscillating then
         say(("goto (%d,%d) gave up on %s: pathed away from (%d,%d) %d times "
@@ -1193,7 +1437,30 @@ function ops.goto_(s, _where, isLast)
           -- a cutTreeSwaps entry. So beating Surge, healing at the centre
           -- and then running segment 71 found `goto (12,20)` unreachable,
           -- every following segment skipped, and a won gym was thrown away.
-          if cutToward(s.x, s.y) then
+          --
+          -- Budgeted: on maps whose ornamental bushes match cutTreeSwaps
+          -- (Saffron, Celadon), a target that is walled off for some OTHER
+          -- reason otherwise chain-cuts every reachable bush before giving
+          -- up, and map re-entry regrows them all for the next pass.
+          if cuts < CUT_BUDGET and cutToward(s.x, s.y) then
+            cuts = cuts + 1
+            blocked = 0
+            goto keepGoing
+          end
+          -- ...or a Silph Co card-key door. The closed tile is not
+          -- walkable and only an A-press while facing it opens it
+          -- (OverworldState:tryCardKeyDoor), so to BFS every locked door
+          -- is a permanent wall -- which is how segment 148's walk to
+          -- Giovanni read "unreachable" and the Silph ending got skipped.
+          if openDoorToward(s.x, s.y) then
+            blocked = 0
+            goto keepGoing
+          end
+          -- ...or a Pokémon Mansion gate in the wrong switch state. ONE
+          -- toggle per goto: if the flipped state is still wrong, the
+          -- next call flips it back rather than this one oscillating.
+          if switchToggles == 0 and toggleMansionSwitch(s.x, s.y) then
+            switchToggles = switchToggles + 1
             blocked = 0
             goto keepGoing
           end
@@ -1210,6 +1477,24 @@ function ops.goto_(s, _where, isLast)
           -- ...or the way across is a gate whose warps all say LAST_MAP,
           -- which no plan can see through (ROUTE_16's two halves).
           if reEnterThroughGate(s.x, s.y) then
+            blocked = 0
+            goto keepGoing
+          end
+          -- ...or a sleeping SNORLAX is the wall and the POKE FLUTE is
+          -- aboard: wake it rather than report unreachable (the route's
+          -- own flute segment can get skipped in a desync).
+          if wakeBlockingSnorlax and wakeBlockingSnorlax("goto") then
+            blocked = 0
+            goto keepGoing
+          end
+          -- ...or a STRENGTH boulder is the wall. PokeBotBad's Victory
+          -- Road waypoints path straight through boulders, shoving them
+          -- a cell per step -- so both "the target is under a boulder"
+          -- and "a boulder sits on the only path" land here. One shove,
+          -- then re-plan; budgeted like the cuts.
+          if boulderPushes < 8 and pushBoulderToward
+             and pushBoulderToward(s.x, s.y) then
+            boulderPushes = boulderPushes + 1
             blocked = 0
             goto keepGoing
           end
@@ -1242,6 +1527,18 @@ function ops.goto_(s, _where, isLast)
               break
             end
           end
+          -- ...or the land simply ends and the rest of the way is WATER.
+          -- Mount SURF at the nearest shore and re-plan; bfsNextKey
+          -- treats water as passable while surfing. Last in the ladder so
+          -- an NPC-blocked target in a pond town does not trigger a
+          -- pointless swim, and ONCE per goto -- coming ashore dismounts,
+          -- so a still-unreachable target re-mounts forever otherwise.
+          if surfMounts == 0 and mountSurfToward
+             and mountSurfToward(s.x, s.y) then
+            surfMounts = surfMounts + 1
+            blocked = 0
+            goto keepGoing
+          end
           say(("goto (%d,%d) unreachable on %s; from (%d,%d); npcs: %s")
               :format(s.x, s.y, ow().map.id, p.cellX, p.cellY,
                       #who > 0 and table.concat(who, " ") or "none"))
@@ -1249,6 +1546,15 @@ function ops.goto_(s, _where, isLast)
         end
       elseif walk(key) then
         blocked = 0
+        -- remember the step for the shove detector above, target computed
+        -- from where we stood BEFORE the walk
+        local dv = DELTA[key]
+        if dv then
+          local W = ow().map.widthCells
+          lastFrom = cell
+          lastTarget = (math.floor(cell / W) + dv[2]) * W + (cell % W + dv[1])
+          steppedOnTarget = lastTarget == s.y * W + s.x
+        end
         -- proved passable: forget any refusal an earlier run recorded here
         local now = ow()
         if now.map.id == map.id then
@@ -1402,6 +1708,48 @@ end
 
 -- PokeBotBad's shop lists are exact counts tuned to a speedrun's money and
 -- damage breakpoints. We only need to stay alive and be able to catch
+-- HM-safe MoveLearnMenu handling, shared by fightBattle, mashUntilIdle
+-- and ops.teach's flow. Returns true if it did something (a learn menu is
+-- somewhere on the stack), false when there is nothing learn-related up.
+function driveLearnMenu()
+  local menu
+  for _, st in ipairs(G.stack.states or {}) do
+    if st.newMoveId and st.mon and st.index then menu = st break end
+  end
+  if not menu then return false end
+  local newId = tostring(menu.newMoveId or ""):upper()
+  local t = top()
+  if t == menu then
+    -- the forget list: pick the first move that is neither an HM field
+    -- move (the engine refuses, and they are the run's geography) nor
+    -- the move being learned
+    local UNFORGETTABLE = { SURF = true, CUT = true, STRENGTH = true,
+                            FLY = true, FLASH = true, DIG = true }
+    local row
+    for ri, mv in ipairs((menu.mon and menu.mon.moves) or {}) do
+      local id = tostring(mv.id or mv):upper()
+      if not UNFORGETTABLE[id] and id ~= newId then row = ri break end
+    end
+    if not row then
+      press("b") -- nothing safe to forget: give up on the new move
+      U.wait(8)
+      return true
+    end
+    if cursorTo("index", row) then press("a") end
+    U.wait(10)
+    return true
+  end
+  if isChoice() then
+    cursorTo("index", 1) -- YES, delete an older move
+    press("a")
+    U.wait(8)
+    return true
+  end
+  press("a") -- the surrounding text boxes
+  U.wait(6)
+  return true
+end
+
 -- things, so each stop buys a plain stock instead.
 local SHOP_STOCK = {
   -- Viridian Mart stocks POKE_BALL, ANTIDOTE, PARLYZ_HEAL, BURN_HEAL and
@@ -1452,6 +1800,20 @@ local SHOP_STOCK = {
   -- TM07 and the vending machine are speedrun tech (Horn Drill, drinks for
   -- the Saffron guards); the guards are handled by the giveWater handler
   tm07 = {}, vending = {}, water = {},
+  -- Saffron Mart (GREAT_BALL, HYPER_POTION, MAX_REPEL, ESCAPE_ROPE,
+  -- FULL_HEAL, REVIVE -- marts.asm). Not a route stop; the segment loop
+  -- shops here when the heal-point anchor finds the bag out of HP items,
+  -- because Silph's 7F rival sits right above and a checkpoint-resumed
+  -- bag arrives empty -- five wipes' worth of empty.
+  saffronRestock = { { "HYPER_POTION", 3 }, { "MAX_REPEL", 3 },
+                     { "FULL_HEAL", 2 } },
+  -- Cinnabar Mart (ULTRA_BALL, GREAT_BALL, HYPER_POTION, MAX_REPEL,
+  -- ESCAPE_ROPE, FULL_HEAL, REVIVE). The Mansion sits next door and its
+  -- B1F is chained wild fights: arriving with an empty bag drained the
+  -- lead to 2/182 and the blackout threw the arc away. The repels feed
+  -- the route's own useItem super_repel steps (segments 155/162).
+  cinnabarRestock = { { "HYPER_POTION", 4 }, { "MAX_REPEL", 3 },
+                      { "FULL_HEAL", 2 } },
   -- The Indigo lobby mart (ULTRA_BALL, GREAT_BALL, FULL_RESTORE,
   -- MAX_POTION, FULL_HEAL, REVIVE, MAX_REPEL). Not a route stop -- the
   -- speedrun arrives provisioned -- but our bot arrives with whatever
@@ -1484,6 +1846,80 @@ local function qtyTo(want, tries)
   return t ~= nil and t.qty == want
 end
 
+-- Items we can always part with when the 20-slot bag is full. Money or
+-- dead weight only: the NUGGET exists to be sold, TM_BIDE / TM_TOXIC /
+-- TM_MEGA_DRAIN are never taught by the route, and status heals are
+-- covered by FULL_HEALs. Nothing here gates progress.
+local SELLABLE_JUNK = { "NUGGET", "TM_BIDE", "TM_TOXIC", "TM_MEGA_DRAIN",
+                        "ANTIDOTE", "BURN_HEAL", "ICE_HEAL", "AWAKENING" }
+
+-- Sell the full stack of `id` from the shop's BUY/SELL/QUIT menu. Returns
+-- with the menu back on top.
+local function sellItem(id)
+  if not isMenu() then return false end
+  if not cursorTo("index", 2) then return false end -- SELL
+  press("a")
+  U.wait(10)
+  if not pressUntil(isList, "a", 30) then
+    press("b")
+    U.wait(6)
+    return false
+  end
+  local idx
+  for i, row in ipairs(rows()) do
+    if row.value == id then idx = i break end
+  end
+  local sold = false
+  if idx and cursorTo("index", idx) then
+    press("a")
+    U.wait(6)
+    if isQty() then
+      qtyTo(top().max or 1) -- the whole stack
+      press("a")
+      U.wait(6)
+    end
+    if isChoice() then
+      cursorTo("index", 1) -- YES
+      press("a")
+      U.wait(10)
+    end
+    pressUntil(isList, "a", 20)
+    sold = ((G.save.inventory or {})[id] or 0) == 0
+  end
+  -- back out of the sell list to the BUY/SELL menu
+  for _ = 1, 10 do
+    if isMenu() then break end
+    press("b")
+    U.wait(6)
+  end
+  return sold
+end
+
+-- Free up bag slots so `needed` NEW item kinds fit (Bag.CAPACITY is 20
+-- slots; a stack of an item already held costs nothing). This is why
+-- every restock had been reporting "HYPER_POTION x0": the buy list
+-- opened, the quantity was set, the engine said "no room" -- and the run
+-- walked into the Mansion with FULL_HEALs but not one HP restore.
+local function freeBagSlots(needed, where)
+  local used = #(G.save.bagOrder or {})
+  local free = 20 - used
+  for _, id in ipairs(SELLABLE_JUNK) do
+    if free >= needed then break end
+    if ((G.save.inventory or {})[id] or 0) > 0 then
+      if sellItem(id) then
+        free = free + 1
+        say(("shop: sold the %s to free a bag slot (%d free)")
+            :format(id, free))
+      end
+    end
+  end
+  if free < needed then
+    say(("shop %s: bag still short %d slot(s) after selling junk")
+        :format(tostring(where), needed - free))
+  end
+  return free
+end
+
 -- Buy `qty` of `id` from an open buy list. Leaves the list open.
 local function buyItem(id, qty, where)
   if not isList() then return false end
@@ -1493,13 +1929,18 @@ local function buyItem(id, qty, where)
   end
   if not idx then
     note("shop: no " .. id, where)
+    say(("shop: %s is not on this buy list"):format(id))
     return false
   end
-  if not cursorTo("index", idx) then return false end
+  if not cursorTo("index", idx) then
+    say(("shop: could not reach the %s row"):format(id))
+    return false
+  end
   press("a")
   U.wait(6)
   if not isQty() then
     note("shop: no quantity box for " .. id, where)
+    say(("shop: no quantity box opened for %s"):format(id))
     return false
   end
   -- QuantityBox caps at .max (what we can afford), so never ask for more
@@ -1519,6 +1960,15 @@ local function buyItem(id, qty, where)
   end
   -- back to the list (the purchase text may need clearing first)
   pressUntil(isList, "a", 20)
+  -- Trust the BAG, not the menu flow: with all 20 slots used the engine
+  -- answers "You have no room for this!" through exactly the same
+  -- screens, and this function reported success while buying nothing --
+  -- which is how every restock came back "HYPER_POTION x0" with no
+  -- failure line and the Mansion was fought without a single HP item.
+  if ((G.save.inventory or {})[id] or 0) < 1 then
+    say(("shop: %s purchase did not reach the bag (no room?)"):format(id))
+    return false
+  end
   return true
 end
 
@@ -1549,36 +1999,37 @@ end
 -- of why the party kept arriving at Brock with nothing to heal with.
 local function stepUpTo(ox, oy)
   local m = ow().map
+  local startMap = m.id
+  -- Candidates in preference order: beside the object, then TWO cells
+  -- away across a counter (mart clerks stand behind one -- Map's
+  -- counterTiles are talked across, same as the nurse's desk).
+  --
+  -- Filtered by what we can ACTUALLY WALK TO, not just what is walkable.
+  -- Celadon Mart 4F is why: the clerk's own aisle (0-8,7) is sealed
+  -- behind the counter, so its cells are walkable-but-unreachable -- and
+  -- handing one to ops.goto_ fired its unreachable-recovery ladder
+  -- (arriveByWarp), which warped the bot clear off the floor hunting a
+  -- way in and left it "arrived" at the same coordinates on 1F, talking
+  -- to a wall. The shop then failed, no POKE_DOLL was bought, and the
+  -- ghost MAROWAK sealed the tower.
+  local reach, W = reachableSet()
   for _, d in ipairs({ { 1, 0, "left" }, { -1, 0, "right" },
-                       { 0, 1, "up" }, { 0, -1, "down" } }) do
-    local cx, cy = ox + d[1], oy + d[2]
-    if m:inBounds(cx, cy) and m:isWalkableCell(cx, cy)
-       and not ow():npcAtCell(cx, cy) then
-      local p = ow().player
-      if not (p.cellX == cx and p.cellY == cy) then
-        ops.goto_({ x = cx, y = cy })
-        p = ow().player
-      end
-      if p.cellX == cx and p.cellY == cy then
-        faceDir(d[3])
-        return true
-      end
-    end
-  end
-  -- No walkable cell touches the object: it stands BEHIND A COUNTER, the
-  -- normal case for every mart clerk (Celadon 2F/4F is where this bit --
-  -- "FAILED at reaching the clerk" cost the run its SUPER_POTIONs and the
-  -- POKE_DOLL the MAROWAK strategy depends on). Counter tiles are talked
-  -- across (Map's counterTiles, same as the nurse's desk), so stand TWO
-  -- cells away with the counter between us and face the object.
-  for _, d in ipairs({ { 0, 2, "up" }, { 0, -2, "down" },
+                       { 0, 1, "up" }, { 0, -1, "down" },
+                       { 0, 2, "up" }, { 0, -2, "down" },
                        { 2, 0, "left" }, { -2, 0, "right" } }) do
     local cx, cy = ox + d[1], oy + d[2]
-    if m:inBounds(cx, cy) and m:isWalkableCell(cx, cy) then
+    if m:inBounds(cx, cy) and m:isWalkableCell(cx, cy)
+       and not ow():npcAtCell(cx, cy)
+       and reach[cy * W + cx] then
       local p = ow().player
       if not (p.cellX == cx and p.cellY == cy) then
         ops.goto_({ x = cx, y = cy })
         p = ow().player
+      end
+      if ow().map.id ~= startMap then
+        say(("stepUpTo (%d,%d): a warp moved us to %s -- giving up")
+            :format(ox, oy, tostring(ow().map.id)))
+        return false
       end
       if p.cellX == cx and p.cellY == cy then
         faceDir(d[3])
@@ -1595,7 +2046,19 @@ function ops.shop(s, where)
   -- Stand next to the clerk first; the route's waypoint may not be
   -- adjacent to them (see stepUpTo).
   local clerk = findObject("CLERK") or findObject("CASHIER")
-  if clerk then stepUpTo(clerk.x, clerk.y) end
+  do
+    local p = ow().player
+    say(("shop %s: on %s at (%d,%d); clerk %s"):format(
+        tostring(s.list), tostring(ow().map.id), p.cellX, p.cellY,
+        clerk and ("@(%d,%d)"):format(clerk.x, clerk.y) or "NOT FOUND"))
+  end
+  if clerk then
+    local reached = stepUpTo(clerk.x, clerk.y)
+    local p = ow().player
+    say(("shop %s: stepUpTo %s; now on %s at (%d,%d) facing %s"):format(
+        tostring(s.list), reached and "ok" or "FAILED",
+        tostring(ow().map.id), p.cellX, p.cellY, tostring(p.facing)))
+  end
   -- Shops failed silently into `note` for a long time, and a note only
   -- surfaces in the end-of-run summary -- long after the empty bag has
   -- already cost a catch or a gym. Name the stage that failed, live.
@@ -1620,6 +2083,20 @@ function ops.shop(s, where)
     closeShop()
     mashUntilIdle()
     return false
+  end
+  -- Make room BEFORE buying: count the list entries that would need a NEW
+  -- bag slot and sell junk until they fit (see freeBagSlots).
+  do
+    local newKinds = 0
+    for _, want in ipairs(stock) do
+      if ((G.save.inventory or {})[want[1]] or 0) == 0 then
+        newKinds = newKinds + 1
+      end
+    end
+    local used = #(G.save.bagOrder or {})
+    if newKinds > 0 and 20 - used < newKinds then
+      freeBagSlots(newKinds, where)
+    end
   end
   if not cursorTo("index", 1) then
     stageFailed("cursor to BUY")
@@ -1949,6 +2426,19 @@ end
 local function walkOntoWarp(wx, wy)
   local from = ow().map.id
   local stuckOnWarp = 0
+  local bfsNil = 0
+  local cuts = 0
+  -- Shove learning, same as ops.goto_: a coordinate-trigger script that
+  -- walks the player back (Cinnabar's locked gym door at (18,4)) makes a
+  -- deterministic BFS re-propose the same shoved step for the whole loop
+  -- ("warp@6,3 did not move" x300, seen live from (18,5)). Refuse the
+  -- cell after two reverts and plan around; per-call, since the trigger
+  -- stops firing once its condition is met.
+  local refused, reverts, lastFrom, lastTarget = {}, {}, nil, nil
+  -- one mansion-switch toggle per call (see toggleMansionSwitch)
+  local toggledSwitch = false
+  -- one Victory Road switch solve per call (see solveVictoryRoadSwitches)
+  local solvedVR = false
   for _ = 1, 300 do
     if ow().map.id ~= from then return true end
     if inBattle() then fightBattle()
@@ -2000,19 +2490,93 @@ local function walkOntoWarp(wx, wy)
           stuckOnWarp = 0
         end
       else
-        local key = bfsNextKey(wx, wy)
+        local m = ow().map
+        local cell = p.cellY * m.widthCells + p.cellX
+        if lastTarget and cell == lastFrom then
+          reverts[lastTarget] = (reverts[lastTarget] or 0) + 1
+          if reverts[lastTarget] >= 2 and not refused[lastTarget] then
+            say(("walkOntoWarp (%d,%d): the step onto (%d,%d) keeps getting "
+                 .. "shoved back -- planning around it")
+                :format(wx, wy, lastTarget % m.widthCells,
+                        math.floor(lastTarget / m.widthCells)))
+            refused[lastTarget] = true
+          end
+        end
+        local key = bfsNextKey(wx, wy, refused)
         if not key then
           -- The warp may be walled off by a Cut tree -- the Vermilion Gym
           -- door at (12,19) sits behind one -- so walkOntoWarp could never
           -- reach it and travelTo(VERMILION_GYM) spun "did not move"
           -- forever. Cut a blocking tree and retry; only give up if there
           -- is none (a genuinely unreachable warp).
-          if cutToward and cutToward(wx, wy) then
-            -- way opened; loop re-paths
+          --
+          -- And do NOT give up on the first nil. bfsNextKey walls off
+          -- every NPC cell -- including the TARGET -- and NPCs wander: a
+          -- villager standing on (or stepping toward) the door mat makes
+          -- it "unreachable" for exactly as long as their pause lasts.
+          -- Giving up instantly is how every Poké Center anchor at
+          -- Lavender failed ("could not walk onto the door at (3,5)")
+          -- while the heal point silently stayed a town behind, and tower
+          -- deaths then replayed the whole Celadon->Lavender walk. Wait
+          -- them out; only a path that stays missing is real.
+          if cuts < 3 and cutToward and cutToward(wx, wy) then
+            cuts = cuts + 1
+            bfsNil = 0 -- way opened; loop re-paths
+          -- ...or by a Silph Co card-key door: the stairs the map planner
+          -- routes through sit behind locked doors on most Silph floors,
+          -- so travelTo(SILPH_CO_11F) could never re-climb the building
+          -- after a death broke the route's own segment sequence.
+          elseif openDoorToward and openDoorToward(wx, wy) then
+            bfsNil = 0
+          -- ...or by a Pokémon Mansion gate in the wrong switch state
+          -- (segment 162 stranded the bot at B1F (4,11) exactly here).
+          elseif not toggledSwitch and toggleMansionSwitch
+                 and toggleMansionSwitch(wx, wy) then
+            toggledSwitch = true
+            bfsNil = 0
+          -- ...or a Victory Road barrier whose boulder switch is not
+          -- pressed. travelTo aims at the 1F ladder warp@1,1 straight
+          -- through the closed barrier block; solve the floor's switches
+          -- and re-path. Once per call.
+          elseif not solvedVR and solveVictoryRoadSwitches
+                 and VR_SWITCHES and VR_SWITCHES[ow().map.id] then
+            solvedVR = true
+            solveVictoryRoadSwitches()
+            bfsNil = 0
           else
-            return false
+            bfsNil = (bfsNil or 0) + 1
+            if bfsNil >= 8 then
+              -- One actionable blocker before giving up: a sleeping
+              -- SNORLAX with the POKE FLUTE aboard. The route's own
+              -- flute segment can get skipped in a desync, after which
+              -- every trip past Route 16's junction dead-ends here
+              -- ("no path ... SPRITE_SNORLAX@(26,10)") forever.
+              if wakeBlockingSnorlax and wakeBlockingSnorlax("walkOntoWarp") then
+                bfsNil = 0
+              else
+                local p2 = ow().player
+                local who = {}
+                for _, npc in ipairs(ow().npcs) do
+                  who[#who + 1] = ("%s@(%d,%d)"):format(
+                    tostring(npc.def and (npc.def.id or npc.def.sprite) or "?"),
+                    npc.cellX, npc.cellY)
+                end
+                say(("walkOntoWarp (%d,%d) on %s: no path from (%d,%d); npcs: %s")
+                    :format(wx, wy, tostring(ow().map.id), p2.cellX, p2.cellY,
+                            #who > 0 and table.concat(who, " ") or "none"))
+                return false
+              end
+            end
+            U.wait(20) -- let wanderers step aside / transitions settle
           end
-        elseif not walk(key) then
+        elseif walk(key) then
+          local dv = DELTA[key]
+          if dv then
+            local W = m.widthCells
+            lastFrom = cell
+            lastTarget = (math.floor(cell / W) + dv[2]) * W + (cell % W + dv[1])
+          end
+        else
           U.wait(4)
         end
       end
@@ -2439,7 +3003,13 @@ local function planMapRoute(from, to, banned)
       -- a specific warp that just looped us back must not be re-planned, but
       -- its siblings across the same seam stay available. Across trips the
       -- memory only makes a seam dearer -- see seamCost.
-      if not (banned and banned[k]) then
+      --
+      -- The caller stores map-planner bans under "<from>|map|<edgeId>"
+      -- (namespaced away from the region planner's keys); checking only
+      -- the bare edgeId here meant NO map-plan ban ever matched, and a
+      -- warp that could not be reached was re-proposed for the whole
+      -- 90-hop budget -- the Mansion 1F "warp@4,27 did not move" loop.
+      if not (banned and (banned[k] or banned[cur .. "|map|" .. k])) then
         local nd = best + e.cost + seamCost(cur, e.to)
         if dist[e.to] == nil or nd < dist[e.to] then
           dist[e.to] = nd
@@ -2479,6 +3049,24 @@ local function crossSeam(edge)
       local bx = (edge.dir == "left") and 0 or W - 1
       for y = 0, H - 1 do
         if m:isWalkableCell(bx, y) then cands[#cands + 1] = { bx, y } end
+      end
+    end
+  end
+  -- A seam whose border is ALL SEA (Pallet -> Route 21, the only way to
+  -- Cinnabar) has no walkable candidates at all. With SURF aboard the
+  -- water cells are candidates too: ops.goto_'s unreachable ladder mounts
+  -- at the shore (mountSurfToward) and BFS is water-aware once up.
+  if #cands == 0 and slotKnowing("SURF")
+     and (G.save.inventory or {}).SOULBADGE then
+    if edge.dir == "up" or edge.dir == "down" then
+      local by = (edge.dir == "up") and 0 or H - 1
+      for x = 0, W - 1 do
+        if m:isWaterCell(x, by) then cands[#cands + 1] = { x, by } end
+      end
+    else
+      local bx = (edge.dir == "left") and 0 or W - 1
+      for y = 0, H - 1 do
+        if m:isWaterCell(bx, y) then cands[#cands + 1] = { bx, y } end
       end
     end
   end
@@ -2529,6 +3117,29 @@ local CONNECTION_CROSS_TRIES = 3
 
 -- Execute one graph hop -- a warp, a connection cross, or a ledge hop --
 -- the same way for a region edge or a map edge.
+-- Wait until the player is standing on a real, in-bounds cell. A seam
+-- crossing has a window where map.id has flipped but the position has not
+-- been remapped yet -- travelTo read "SAFFRON_CITY:-1:22" and
+-- "ROUTE_7:20:14" there, poisoning its visited/ban sets and leaving BFS
+-- planning from an out-of-bounds origin, which is what "cross left did
+-- not move x90" after Silph actually was.
+local function settleCell()
+  for _ = 1, 90 do
+    local o = ow()
+    local p = o.player
+    if inBattle() then fightBattle()
+    elseif busy() then mashUntilIdle()
+    elseif p.cellX >= 0 and p.cellY >= 0
+       and p.cellX < o.map.widthCells and p.cellY < o.map.heightCells
+       and not p.moving then
+      return true
+    else
+      U.wait(4)
+    end
+  end
+  return false
+end
+
 local function doHop(edge)
   if edge.warp then
     walkOntoWarp(edge.warp.x, edge.warp.y)
@@ -2577,8 +3188,11 @@ local function travelTo(dest, where)
   -- a row fail to move, drop to the map planner for the rest of the trip:
   -- region planning where it helps, the proven map planner as the floor, so
   -- this never leaves the run worse than the map-only baseline.
-  local REGION_FAIL_LIMIT = 3
+  local REGION_FAIL_LIMIT = 6
   local regionFails, useMap = 0, false
+  local secondWind = false
+  local gateRescued = {} -- edges already given their one gate rescue
+  local ropedOut = false -- one ESCAPE_ROPE bail per trip (see below)
   for _ = 1, MAX_TRAVEL_HOPS do
     local here = ow().map.id
     if not mapsSeen[here] then
@@ -2615,10 +3229,29 @@ local function travelTo(dest, where)
       end
     end
     if not hop then
-      say(("travelTo %s: no way there from %s"):format(tostring(dest), tostring(here)))
-      note("travelTo: no route to " .. tostring(dest), where)
-      return false
+      -- Dead-ended inside a dungeon with an ESCAPE ROPE aboard: rope to
+      -- the heal point and re-plan from there, exactly what a lost player
+      -- does. The Mansion's switch-gate deadlock (1F stairs room vs B1F
+      -- return path wanting opposite states) is the case; the engine
+      -- refuses the rope anywhere it is illegal, so this cannot fire in
+      -- the overworld.
+      if not ropedOut and (heldCount("ESCAPE_ROPE") or 0) > 0
+         and useFieldItem("ESCAPE_ROPE", where) then
+        ropedOut = true
+        local landed = ow().map.id
+        say(("travelTo %s: no way there from %s -- escape-roped to %s")
+            :format(tostring(dest), tostring(here), tostring(landed)))
+        if tostring(landed):find("POKECENTER") then leaveByDoor(landed) end
+        banned = {}
+      else
+        say(("travelTo %s: no way there from %s"):format(tostring(dest), tostring(here)))
+        note("travelTo: no route to " .. tostring(dest), where)
+        return false
+      end
     end
+    -- roped out above with no hop chosen: re-enter the loop and plan
+    -- from wherever the rope landed us
+    if not hop then goto nextTravelHop end
 
     local hopDesc = hop.warp and ("warp@" .. hop.warp.x .. "," .. hop.warp.y)
                     or hop.ledge and ("ledge@" .. hop.ledge.x .. "," .. hop.ledge.y)
@@ -2650,12 +3283,52 @@ local function travelTo(dest, where)
              tostring(reachMaps.SAFFRON_CITY ~= nil)))
       end
     end
+    settleCell()
     local before = posKey()
     doHop(hop)
+    settleCell()
     local pk = posKey()
     if pk == before then
       -- did not move at all: this hop is shut from here, ban and re-plan
       banned[banKey] = true
+      -- A connection can be unreachable from THIS half of a gate-split
+      -- map. The map planner sees both halves as one node, so from Route
+      -- 7's east half it proposed the WEST seam into Celadon ninety times
+      -- running -- the seam only touches the west half, and the gate in
+      -- the middle is the only way across. Step through the gate toward
+      -- a walkable cell on the seam's border, then let the re-plan try
+      -- again from the far side.
+      local gx, gy
+      if hop.cells and hop.cells[1] then
+        gx, gy = hop.cells[1][1], hop.cells[1][2]
+      elseif hop.dir then
+        -- no walkable seam pair recorded: scan this edge for any
+        -- walkable border cell to aim the gate crossing at
+        local m2 = ow().map
+        local W2, H2 = m2.widthCells, m2.heightCells
+        if hop.dir == "left" or hop.dir == "right" then
+          local bx = hop.dir == "left" and 0 or W2 - 1
+          for y2 = 0, H2 - 1 do
+            if m2:isWalkableCell(bx, y2) then gx, gy = bx, y2 break end
+          end
+        else
+          local by = hop.dir == "up" and 0 or H2 - 1
+          for x2 = 0, W2 - 1 do
+            if m2:isWalkableCell(x2, by) then gx, gy = x2, by break end
+          end
+        end
+      end
+      -- ONE gate rescue per edge. reEnterThroughGate can report success
+      -- for a walk that changed nothing (no gate on the map), and
+      -- un-banning the edge every time re-proposed the same dead hop
+      -- forever -- Cinnabar's "cross up" was retried for the full 90-hop
+      -- budget while the sea sat uncrossed to the west.
+      if gx and not gateRescued[banKey] and reEnterThroughGate(gx, gy) then
+        gateRescued[banKey] = true
+        banned[banKey] = nil
+        say(("travelTo %s: crossed a gate on %s toward the seam; retrying")
+            :format(tostring(dest), here))
+      end
       if fromRegion then
         regionFails = regionFails + 1
         if regionFails >= REGION_FAIL_LIMIT and not useMap then
@@ -2684,13 +3357,30 @@ local function travelTo(dest, where)
         end
       end
       -- Hard anti-livelock: the same cell revisited far too many times means
-      -- neither planner is getting anywhere. Give up rather than spin.
+      -- neither planner is getting anywhere. One SECOND WIND first: the
+      -- fallback to the map planner is trip-wide, and on a cut-tree-split
+      -- map (Route 2's Diglett pocket, on the only land route to Pallet)
+      -- it is blind to the region bridges the region planner knows -- so a
+      -- few flaky early hops used to condemn the whole trip to a planner
+      -- that could never finish it. Reset to region planning once, with
+      -- clean slates, before actually giving up.
       revisits[pk] = (revisits[pk] or 0) + 1
       if revisits[pk] > MAX_TRAVEL_REVISITS then
-        say(("travelTo %s: stuck revisiting %s -- giving up")
-            :format(tostring(dest), pk))
-        note("travelTo: livelocked reaching " .. tostring(dest), where)
-        return false
+        if not secondWind then
+          secondWind = true
+          useMap = false
+          regionFails = 0
+          banned = {}
+          visited = {}
+          revisits = {}
+          say(("travelTo %s: second wind -- back to region planning from %s")
+              :format(tostring(dest), tostring(ow().map.id)))
+        else
+          say(("travelTo %s: stuck revisiting %s -- giving up")
+              :format(tostring(dest), pk))
+          note("travelTo: livelocked reaching " .. tostring(dest), where)
+          return false
+        end
       end
       say(("travelTo %s: looped back to %s; trying another way")
           :format(tostring(dest), pk))
@@ -2700,6 +3390,7 @@ local function travelTo(dest, where)
       visited[pk] = true
     end
     visited._last = pk
+    ::nextTravelHop::
   end
   say(("travelTo %s: gave up after %d hops, on %s")
       :format(tostring(dest), MAX_TRAVEL_HOPS, ow().map.id))
@@ -2723,7 +3414,7 @@ end
 -- instead of failing to walk to it.
 -- Cells we can currently walk to, NPCs counted as walls exactly as
 -- bfsNextKey sees them. Shared by the "walled off" recoveries below.
-local function reachableSet()
+function reachableSet()
   local m, p = ow().map, ow().player
   local W, H = m.widthCells, m.heightCells
   local blocked = {}
@@ -2741,7 +3432,8 @@ local function reachableSet()
       local nx, ny = c[1] + d[1], c[2] + d[2]
       local id = ny * W + nx
       if nx >= 0 and ny >= 0 and nx < W and ny < H and not seen[id]
-         and not blocked[id] and passableCell(m, nx, ny) then
+         and not blocked[id] and passableCell(m, nx, ny)
+         and not pairBlockedStep(m, c[1], c[2], nx, ny, p.surfing) then
         seen[id] = true
         q[#q + 1] = { nx, ny }
       end
@@ -2806,7 +3498,11 @@ function reEnterThroughGate(tx, ty)
       if (back == hereId or back == "LAST_MAP")
          and not (w2.x == ow().player.cellX and w2.y == ow().player.cellY) then
         tried = tried + 1
-        if tried > 4 then break end
+        -- 8, not 4: ROUTE_16_GATE_1F has EIGHT LAST_MAP doors back to
+        -- ROUTE_16 -- four per half, north half listed first -- so a cap
+        -- of 4 tried only the side we came in from and the crossing
+        -- always "failed" while the south doors sat untried.
+        if tried > 8 then break end
         if walkOntoWarp(w2.x, w2.y) and ow().map.id == hereId then
           local seen2, W2 = reachableSet()
           if seen2[ty * W2 + tx] then
@@ -3112,7 +3808,7 @@ local function slotForSpecies(prefs)
   return nil
 end
 
-local function slotKnowing(moveId)
+function slotKnowing(moveId)
   for i, mon in ipairs(party()) do
     for _, mv in ipairs(mon.moves or {}) do
       if tostring(mv.id):upper() == moveId then return i end
@@ -3126,6 +3822,14 @@ function ops.teach(s, where)
   local key = tostring(s.move or ""):lower()
   local item = TEACH_ITEMS[key]
   if not item then note("teach:" .. key, where) return true end
+  -- Idempotent: a blackout replays the segment, and a TM is consumed on
+  -- use -- so the second pass found "no TM_EARTHQUAKE in the bag" and
+  -- failed a step whose work was already done (the move was on the lead
+  -- from the first pass). Somebody already knowing the move IS success.
+  if slotKnowing(key:upper()) then
+    say(("teach %s: already known -- skipping"):format(key))
+    return true
+  end
   if (heldCount(item) or 0) <= 0 then
     note("teach: no " .. item, where)
     say(("teach %s: no %s in the bag"):format(key, item))
@@ -3190,8 +3894,23 @@ function ops.teach(s, where)
       if not menu then break end
       local t = top()
       if t == menu then
-        -- the move list itself: forget slot 1, the starter's weakest filler
-        if not cursorTo("index", 1) then break end
+        -- Forget the first move that is NEITHER an HM field move NOR the
+        -- move being taught. "Slot 1" was blind: after SURF replaced the
+        -- lead's first move, the next teach (EARTHQUAKE) put the cursor
+        -- on SURF, the engine refused ("HM moves can't be forgotten")
+        -- and the menu wedged with the TM half-spent. HM moves are also
+        -- the run's GEOGRAPHY -- losing SURF strands the Cinnabar leg.
+        local UNFORGETTABLE = { SURF = true, CUT = true, STRENGTH = true,
+                                FLY = true, FLASH = true, DIG = true }
+        local row = 1
+        for ri, mv in ipairs((menu.mon and menu.mon.moves) or {}) do
+          local id = tostring(mv.id or mv):upper()
+          if not UNFORGETTABLE[id] and id ~= key:upper() then
+            row = ri
+            break
+          end
+        end
+        if not cursorTo("index", row) then break end
         press("a")
         U.wait(10)
       elseif isChoice() then
@@ -3237,6 +3956,23 @@ function ops.fieldMove(s, where)
     -- won gym behind it. Walking there is slower and always available.
     if (move == "DIG" or move == "FLY") and nextMapWanted
        and ow().map.id ~= nextMapWanted then
+      -- DIG out of a dungeon has an item equivalent we may be carrying:
+      -- the ESCAPE ROPE warps to the heal point exactly as DIG does. The
+      -- Mansion is why this matters: segment 162 ends `fieldMove dig`
+      -- and WALKING out instead runs into the switch-gate deadlock (the
+      -- 1F stairs room and the B1F return path want opposite states, so
+      -- the cross-floor statue press ping-pongs forever). The engine
+      -- refuses the rope on maps where it is illegal, so a failed use
+      -- falls through to the walk unharmed.
+      if move == "DIG" and (heldCount("ESCAPE_ROPE") or 0) > 0 then
+        if useFieldItem("ESCAPE_ROPE", where) then
+          local landed = ow().map.id
+          say(("fieldMove DIG: nobody knows it -- escape-roped to %s")
+              :format(tostring(landed)))
+          if tostring(landed):find("POKECENTER") then leaveByDoor(landed) end
+          if ow().map.id == nextMapWanted then return true end
+        end
+      end
       say(("fieldMove %s: nobody knows it -- walking to %s instead")
           :format(move, tostring(nextMapWanted)))
       if travelTo(nextMapWanted, where) then return true end
@@ -3394,6 +4130,17 @@ end
 -- cell -- the same test ops.fieldMove uses to find one to face.)
 local function cuttableCell(m, cx, cy)
   if not m:inBounds(cx, cy) or m:isWalkableCell(cx, cy) then return false end
+  -- Mirror the engine's UsedCut gate (OverworldState:tryCut): CUT only
+  -- works on the OVERWORLD tree tile and the GYM plant tile. Block ids
+  -- are per-tileset, so matching them alone made every look-alike block
+  -- on other tilesets read as a tree -- the Saffron/Celadon bush-spam,
+  -- and a Route 23 (PLATEAU) "tree" whose swap crashed the renderer.
+  local ts = m.def and m.def.tileset
+  local tile = m:cellTile(cx, cy)
+  if not ((ts == "OVERWORLD" and tile == 0x3d)
+          or (ts == "GYM" and tile == 0x50)) then
+    return false
+  end
   local block = m:blockAt(math.floor(cx / 2), math.floor(cy / 2))
   for _, sw in ipairs(G.data.field.cutTreeSwaps or {}) do
     if sw.before == block then return true end
@@ -3462,6 +4209,586 @@ function cutToward(tx, ty)
   return ok and not cuttableCell(ow().map, best[1], best[2])
 end
 
+-- Open a Silph Co card-key door that is walling us off from (tx, ty).
+--
+-- The locked-door tile is not walkable and only opens on an A-press while
+-- FACING it (OverworldState:tryCardKeyDoor, engine/events/card_key.asm),
+-- so to BFS every closed door is a permanent wall. PokeBotBad opens them
+-- by bonking A on its way through, so the route has no explicit
+-- open-the-door steps -- without this rung, segment 148's walk to
+-- Giovanni reported "goto (2,15) unreachable" and the whole Silph ending
+-- was silently skipped (which is why the save had CARD_KEY, the beaten
+-- 11F trainers, and no EVENT_BEAT_SILPH_CO_GIOVANNI).
+--
+-- Same contract as cutToward: one door per call, NPCs are walls, the
+-- caller re-plans afterwards. Door positions come from
+-- field.cardKeyDoors.doors (data/events/card_key.asm), so this is a
+-- lookup, not a tile scan; a door whose tile has already swapped to the
+-- open block is skipped.
+local openingDoor = false
+function openDoorToward(tx, ty)
+  if openingDoor then return false end
+  local ck = G.data.field.cardKeyDoors
+  local m = ow().map
+  local doors = ck and ck.doors and ck.doors[m.id]
+  if not doors then return false end
+  if not G.save.inventory.CARD_KEY then return false end
+  local W, H = m.widthCells, m.heightCells
+  local p = ow().player
+  local blockedBy = {}
+  for _, npc in ipairs(ow().npcs) do
+    if npc.cellX >= 0 and npc.cellY >= 0 and npc.cellX < W and npc.cellY < H then
+      blockedBy[npc.cellY * W + npc.cellX] = true
+    end
+  end
+  local seen = { [p.cellY * W + p.cellX] = true }
+  local queue, head = { { p.cellX, p.cellY } }, 1
+  while head <= #queue do
+    local c = queue[head]; head = head + 1
+    for _, d in ipairs(DIRS) do
+      local nx, ny = c[1] + d[1], c[2] + d[2]
+      local id = ny * W + nx
+      if nx >= 0 and ny >= 0 and nx < W and ny < H and not seen[id]
+         and not blockedBy[id] and m:isWalkableCell(nx, ny) then
+        seen[id] = true
+        queue[#queue + 1] = { nx, ny }
+      end
+    end
+  end
+  if seen[ty * W + tx] then return false end -- not a door problem
+  local function closedDoor(dx, dy)
+    local tile = m:cellTile(dx, dy)
+    if m.id == "SILPH_CO_11F" then
+      return tile == ck.silphCo11F.doorTile
+    end
+    for _, t in ipairs(ck.doorTiles) do
+      if tile == t then return true end
+    end
+    return false
+  end
+  local best, bestD, stand, standFace
+  for _, d in ipairs(doors) do
+    if closedDoor(d.x, d.y) then
+      for _, dv in ipairs(DIRS) do
+        local ax, ay = d.x + dv[1], d.y + dv[2]
+        if seen[ay * W + ax] then
+          local dist = math.abs(d.x - tx) + math.abs(d.y - ty)
+          if not bestD or dist < bestD then
+            -- face the OPPOSITE of the offset that took us to the stand
+            -- cell: standing below the door means facing up
+            local face = (dv[3] == "up" and "down") or (dv[3] == "down" and "up")
+                         or (dv[3] == "left" and "right") or "left"
+            best, bestD, stand, standFace = d, dist, { ax, ay }, face
+          end
+        end
+      end
+    end
+  end
+  if not best then return false end
+  say(("goto (%d,%d) is behind a card-key door; opening the one at "
+       .. "(%d,%d) from (%d,%d)"):format(tx, ty, best.x, best.y,
+                                         stand[1], stand[2]))
+  openingDoor = true
+  ops.goto_({ x = stand[1], y = stand[2] })
+  local ok = false
+  local p2 = ow().player
+  if ow().map.id == m.id and p2.cellX == stand[1] and p2.cellY == stand[2] then
+    faceDir(standFace)
+    press("a")
+    U.wait(10)
+    mashUntilIdle() -- "Bingo! The CARD KEY opened the door!"
+    ok = not closedDoor(best.x, best.y)
+  end
+  openingDoor = false
+  if not ok then
+    say(("card-key door at (%d,%d) on %s did not open")
+        :format(best.x, best.y, m.id))
+  end
+  return ok
+end
+
+-- Press a Pokémon Mansion statue switch when its walls seal off (tx, ty).
+--
+-- One shared toggle, EVENT_MANSION_SWITCH_ON, opens/closes gate blocks on
+-- all four floors (data/scripts/story6.lua MANSION_BLOCKS, from pokered's
+-- Mansion*CheckReplaceSwitchDoorBlocks). The route flips it via its own
+-- talk steps, but a missed talk or a re-planned walk leaves the floor in
+-- the wrong state and every plan across a closed gate reads "no path" --
+-- segment 162 sealed the bot at B1F (4,11) with the exit stairs behind a
+-- gate, and travelTo burned every rewind against it.
+--
+-- Statue cells from story6.lua's mansionFloor registrations; the player
+-- stands on the cell BELOW and faces up (all mansion switches face up).
+-- The press is TextBox -> ChoiceBox(YES) -> TextBox, which one A plus
+-- mashUntilIdle drives. One toggle per call: the caller re-plans, and if
+-- the flipped state is still wrong the NEXT call flips it back -- states
+-- alternate until the target's side is open.
+local MANSION_SWITCHES = {
+  POKEMON_MANSION_1F = { { 2, 5 } },
+  POKEMON_MANSION_2F = { { 2, 11 } },
+  POKEMON_MANSION_3F = { { 10, 5 } },
+  POKEMON_MANSION_B1F = { { 20, 3 }, { 18, 25 } },
+}
+local togglingSwitch = false
+
+-- Reachable set from where we stand, NPCs as walls (cutToward's fill).
+local function mansionReach()
+  local m = ow().map
+  local W, H = m.widthCells, m.heightCells
+  local p = ow().player
+  local blockedBy = {}
+  for _, npc in ipairs(ow().npcs) do
+    if npc.cellX >= 0 and npc.cellY >= 0 and npc.cellX < W and npc.cellY < H then
+      blockedBy[npc.cellY * W + npc.cellX] = true
+    end
+  end
+  local seen = { [p.cellY * W + p.cellX] = true }
+  local queue, head = { { p.cellX, p.cellY } }, 1
+  while head <= #queue do
+    local c = queue[head]; head = head + 1
+    for _, d in ipairs(DIRS) do
+      local nx, ny = c[1] + d[1], c[2] + d[2]
+      local id = ny * W + nx
+      if nx >= 0 and ny >= 0 and nx < W and ny < H and not seen[id]
+         and not blockedBy[id] and m:isWalkableCell(nx, ny) then
+        seen[id] = true
+        queue[#queue + 1] = { nx, ny }
+      end
+    end
+  end
+  return seen, W
+end
+
+-- Press any statue on the CURRENT floor that we can reach. All mansion
+-- switches are faced upward from the cell below.
+local function pressStatueHere()
+  local m = ow().map
+  local switches = MANSION_SWITCHES[m.id]
+  if not switches then return false end
+  local seen, W = mansionReach()
+  for _, c in ipairs(switches) do
+    local sx, sy = c[1], c[2] + 1
+    if seen[sy * W + sx] then
+      ops.goto_({ x = sx, y = sy })
+      local p = ow().player
+      if ow().map.id == m.id and p.cellX == sx and p.cellY == sy then
+        faceDir("up")
+        press("a")
+        U.wait(10)
+        mashUntilIdle() -- "Press it?" -> YES -> "Who wouldn't?"
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- Push a STRENGTH boulder that blocks the walk to (tx, ty).
+--
+-- PokeBotBad moves boulders by WALKING INTO them -- its Victory Road
+-- waypoints path straight "through" a boulder, shoving it a cell at a
+-- time -- but our BFS treats every NPC as a wall, so the route's pushes
+-- never happened: segment 183's boulder sat at (5,15) untouched, the 1F
+-- switch was never pressed, and 184-186 skipped against the closed
+-- barrier forever.
+--
+-- One shove per call, the caller re-plans (the same contract as
+-- cutToward). The boulder chosen is the one nearest the straight line to
+-- the target; the push direction is the one whose landing cell is free
+-- and moves the boulder toward/past the target side, preferring the axis
+-- we approach on. STRENGTH is armed on demand (it clears on every map
+-- load -- push_boulder.asm).
+local pushingBoulder = false
+function pushBoulderToward(tx, ty)
+  if pushingBoulder then return false end
+  if not slotKnowing("STRENGTH") then return false end
+  local m = ow().map
+  local p = ow().player
+  -- The boulder that matters is the one ON the waypoint (the route walks
+  -- straight through boulders, so its gotos name the boulder's own cell
+  -- while shoving it along) or, failing that, the one nearest the
+  -- TARGET. Nearest-to-player picked Victory Road 1F's far corner
+  -- boulder and shoved it around while the one the route was actually
+  -- pushing sat untouched.
+  local boulder, bestD
+  for _, npc in ipairs(ow().npcs) do
+    if tostring(npc.def and npc.def.sprite or ""):find("BOULDER") then
+      if npc.cellX == tx and npc.cellY == ty then
+        boulder, bestD = npc, 0
+        break
+      end
+      local d = math.abs(npc.cellX - tx) + math.abs(npc.cellY - ty)
+      if not bestD or d < bestD then boulder, bestD = npc, d end
+    end
+  end
+  if not boulder or bestD > 8 then return false end
+  local bx, by = boulder.cellX, boulder.cellY
+  pushingBoulder = true
+  local ok = false
+  if not ow().strengthActive then
+    ops.fieldMove({ move = "strength" }, ow().map.id)
+  end
+  -- candidate push directions: stand on the opposite side, landing free
+  local cands = {}
+  for _, d in ipairs(DIRS) do
+    local sx, sy = bx - d[1], by - d[2] -- stand cell
+    local lx, ly = bx + d[1], by + d[2] -- landing cell
+    if m:inBounds(sx, sy) and m:isWalkableCell(sx, sy)
+       and not ow():npcAtCell(sx, sy)
+       and m:inBounds(lx, ly) and m:isWalkableCell(lx, ly)
+       and not ow():npcAtCell(lx, ly) then
+      -- score: prefer the direction that carries the boulder toward the
+      -- target (or onto it), and the stand cell being where we already are
+      local score = 0
+      local dNow = math.abs(bx - tx) + math.abs(by - ty)
+      local dAfter = math.abs(lx - tx) + math.abs(ly - ty)
+      if dAfter < dNow then score = score + 2 end
+      if p.cellX == sx and p.cellY == sy then score = score + 1 end
+      cands[#cands + 1] = { d = d, sx = sx, sy = sy, score = score }
+    end
+  end
+  table.sort(cands, function(a, b) return a.score > b.score end)
+  for _, c in ipairs(cands) do
+    local reached = p.cellX == c.sx and p.cellY == c.sy
+    if not reached then
+      ops.goto_({ x = c.sx, y = c.sy })
+      local q = ow().player
+      reached = ow().map.id == m.id and q.cellX == c.sx and q.cellY == c.sy
+    end
+    if reached then
+      say(("pushing the boulder at (%d,%d) %s (toward (%d,%d))")
+          :format(bx, by, c.d[3], tx, ty))
+      for _ = 1, 8 do
+        faceDir(c.d[3])
+        walk(c.d[3], 12)
+        if not ow():npcAtCell(bx, by) then ok = true break end
+        U.wait(4)
+      end
+      break
+    end
+  end
+  pushingBoulder = false
+  return ok
+end
+
+-- ---------------------------------------------------------------------
+-- Victory Road boulder switches, solved DIRECTLY.
+--
+-- The route moves boulders by walking through them (PokeBotBad's
+-- collision model lets it), and reproducing that shove-by-shove through
+-- the goto ladder proved fragile: one wrong first push and the whole
+-- choreography is dead, the switch never presses, and the floor's
+-- barrier block stays down while segments 184+ skip against it.
+--
+-- These puzzles are static, so plan them outright: a single-boulder
+-- sokoban BFS over (boulder cell, player region) that returns the shove
+-- list onto the switch cell, executed one stand-face-push at a time.
+-- Switch cells and barrier flags from data/scripts/story.lua
+-- (scripts/VictoryRoad1F/2F/3F.asm); the 3F hole at (23,15) drops a
+-- boulder down beside 2F's second switch, which is where its boulder
+-- comes from.
+-- ---------------------------------------------------------------------
+
+VR_SWITCHES = {
+  VICTORY_ROAD_1F = {
+    { flag = "EVENT_VICTORY_ROAD_1_BOULDER_ON_SWITCH", x = 17, y = 13 },
+  },
+  VICTORY_ROAD_2F = {
+    { flag = "EVENT_VICTORY_ROAD_2_BOULDER_ON_SWITCH1", x = 1, y = 16 },
+    { flag = "EVENT_VICTORY_ROAD_2_BOULDER_ON_SWITCH2", x = 9, y = 16 },
+  },
+  VICTORY_ROAD_3F = {
+    { flag = "EVENT_VICTORY_ROAD_3_BOULDER_ON_SWITCH1", x = 3, y = 5 },
+    -- the hole: press only while 2F's dropped boulder has not appeared
+    { hole = true, x = 23, y = 15 },
+  },
+}
+
+-- Shove plan for one boulder onto (tx, ty): BFS over boulder positions,
+-- with the player's reachable region (boulder + other NPCs as walls)
+-- deciding which sides can be pushed from. Returns { {sx,sy,dir}, ... }.
+local function planShoves(m, boulder, tx, ty)
+  local W, H = m.widthCells, m.heightCells
+  local walls = {}
+  for _, npc in ipairs(ow().npcs) do
+    if npc ~= boulder and npc.cellX >= 0 and npc.cellY >= 0
+       and npc.cellX < W and npc.cellY < H then
+      walls[npc.cellY * W + npc.cellX] = true
+    end
+  end
+  local function open(x, y, bx, by)
+    if x < 0 or y < 0 or x >= W or y >= H then return false end
+    if x == bx and y == by then return false end
+    local id = y * W + x
+    return not walls[id] and m:isWalkableCell(x, y)
+  end
+  -- reachable-region representative for the player with the boulder at
+  -- (bx,by): the smallest cell id in the flood fill from (px,py)
+  local function regionRep(px, py, bx, by)
+    local seen = { [py * W + px] = true }
+    local q, h, rep = { { px, py } }, 1, py * W + px
+    while h <= #q do
+      local c = q[h]; h = h + 1
+      for _, d in ipairs(DIRS) do
+        local nx, ny = c[1] + d[1], c[2] + d[2]
+        local id = ny * W + nx
+        -- the player's steps respect tile-pair (elevation) collisions;
+        -- the BOULDER's landing does not (checkBoulderPush never checks
+        -- pairs), so only this flood fill filters on them
+        if not seen[id] and open(nx, ny, bx, by)
+           and not pairBlockedStep(m, c[1], c[2], nx, ny, false) then
+          seen[id] = true
+          if id < rep then rep = id end
+          q[#q + 1] = { nx, ny }
+        end
+      end
+    end
+    return rep, seen
+  end
+  local p = ow().player
+  local startRep, startSeen = regionRep(p.cellX, p.cellY, boulder.cellX, boulder.cellY)
+  local start = { bx = boulder.cellX, by = boulder.cellY, rep = startRep,
+                  seen = startSeen, path = {} }
+  local visited = { [start.bx .. "," .. start.by .. "," .. start.rep] = true }
+  local queue, head = { start }, 1
+  while head <= #queue do
+    local n = queue[head]; head = head + 1
+    if n.bx == tx and n.by == ty then return n.path end
+    if #n.path < 60 then
+      for _, d in ipairs(DIRS) do
+        local sx, sy = n.bx - d[1], n.by - d[2]
+        local lx, ly = n.bx + d[1], n.by + d[2]
+        if open(lx, ly, n.bx, n.by) and n.seen[sy * W + sx] then
+          local rep2, seen2 = regionRep(n.bx, n.by, lx, ly)
+          local key = lx .. "," .. ly .. "," .. rep2
+          if not visited[key] then
+            visited[key] = true
+            local path = {}
+            for i, s in ipairs(n.path) do path[i] = s end
+            path[#path + 1] = { sx = sx, sy = sy, dir = d[3] }
+            queue[#queue + 1] = { bx = lx, by = ly, rep = rep2,
+                                  seen = seen2, path = path }
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
+-- The solver's stand-cell walks must NEVER leave the floor. ops.goto_'s
+-- unreachable ladder (arriveByWarp, reEnterThroughGate, the surf mount)
+-- deliberately warps/walks off the map and can report the goto "done"
+-- from elsewhere -- which is how three consecutive runs went from
+-- "18 shove(s) ... (attempt 1)" to standing on ROUTE_23 with no
+-- shove-failure line and no attempt-2 line: a stand cell read
+-- unreachable for a moment (the boulder itself, a wanderer, a stale
+-- refused cell) and the ladder marched the bot out the entrance. The
+-- floor and every path are fully known at plan time, so walk with plain
+-- BFS and FAIL FAST; a false return sends the solver back to re-plan
+-- from live state, which is cheap. bfsNextKey never paths through a
+-- warp cell, so this walker cannot step out of the cave by accident.
+local function solverWalkTo(tx, ty)
+  local m = ow().map
+  local refused = {}
+  local stuck = 0
+  for _ = 1, 300 do
+    if ow().map.id ~= m.id then return false end
+    local p = ow().player
+    if p.cellX == tx and p.cellY == ty then
+      if not p.moving then return true end
+      U.wait(2)
+    elseif inBattle() then
+      fightBattle()
+    elseif busy() then
+      mashUntilIdle()
+    else
+      local key = bfsNextKey(tx, ty, refused)
+      if not key then
+        -- a wanderer parked on the path (or the target) may step off;
+        -- give it a moment, then hand the failure to the solver's retry
+        stuck = stuck + 1
+        if stuck >= 4 then return false end
+        U.wait(30)
+      elseif walk(key) then
+        stuck = 0
+      else
+        -- the engine refused the step: plan around that cell, never
+        -- escalate
+        local dv = DELTA[key]
+        if dv then
+          refused[(p.cellY + dv[2]) * m.widthCells + (p.cellX + dv[1])] = true
+        end
+        stuck = stuck + 1
+        if stuck >= 8 then return false end
+      end
+    end
+  end
+  return false
+end
+
+-- Solve every unpressed switch on the current Victory Road floor.
+local solvingBoulders = false
+function solveVictoryRoadSwitches()
+  if solvingBoulders then return end
+  local m = ow().map
+  local entries = VR_SWITCHES[m.id]
+  if not entries then return end
+  solvingBoulders = true
+  -- the solver's own gotos must not trigger the ladder's ad-hoc shover
+  pushingBoulder = true
+  for _, sw in ipairs(entries) do
+    local needed
+    if sw.hole then
+      local t = (G.save.objectToggles or {}).VICTORY_ROAD_2F
+      needed = not (t and t.VICTORYROAD2F_BOULDER)
+    else
+      needed = not G.save.flags[sw.flag]
+    end
+    if needed then
+      -- A trainer battle or a wanderer can interrupt the execution and
+      -- leave everything mid-pose (the first live run fought two
+      -- COOLTRAINERs during shove 1 and drifted out the entrance), so
+      -- plan-and-execute is retried from LIVE state a few times; the
+      -- plan is cheap and the switch flag tells us when we are done.
+      for attempt = 1, 3 do
+        if ow().map.id ~= m.id then break end
+        -- try each boulder; the puzzles have exactly one that works
+        local plan
+        for _, npc in ipairs(ow().npcs) do
+          if tostring(npc.def and npc.def.sprite or ""):find("BOULDER") then
+            plan = planShoves(m, npc, sw.x, sw.y)
+            if plan then break end
+          end
+        end
+        if not plan then
+          say(("victory road: no boulder can reach (%d,%d) on %s")
+              :format(sw.x, sw.y, m.id))
+          break
+        end
+        say(("victory road: %d shove(s) to put the boulder on (%d,%d)"
+             .. " (attempt %d)"):format(#plan, sw.x, sw.y, attempt))
+        if not ow().strengthActive then
+          ops.fieldMove({ move = "strength" }, m.id)
+        end
+        local clean = true
+        for i, shove in ipairs(plan) do
+          local done = false
+          solverWalkTo(shove.sx, shove.sy)
+          local q = ow().player
+          if ow().map.id == m.id and q.cellX == shove.sx and q.cellY == shove.sy then
+            local dv = DELTA[shove.dir]
+            local bx, by = shove.sx + dv[1], shove.sy + dv[2]
+            local lx, ly = bx + dv[1], by + dv[2]
+            faceDir(shove.dir)
+            -- Press INTO the boulder one frame at a time and STOP the
+            -- instant it starts moving. A held key chain-pushes -- the
+            -- first bump arms (BIT_TRIED_PUSH_BOULDER), the next frame
+            -- pushes, and if we keep holding, the player follows the
+            -- boulder in and shoves it again -- which scatters it cells
+            -- past where the plan wants it. (The arm survives released
+            -- frames; it only resets when a move attempt finds no
+            -- boulder in front.)
+            for _ = 1, 120 do
+              table.insert(G.input.pressQueue, shove.dir)
+              G.input.state[shove.dir] = true
+              coroutine.yield()
+              G.input.state[shove.dir] = false
+              if inBattle() then fightBattle() faceDir(shove.dir) end
+              if not ow():npcAtCell(bx, by) then break end
+            end
+            -- let the slide + dust finish, and confirm it landed where
+            -- the plan expects (not chained past it)
+            for _ = 1, 90 do
+              if not busy() and ow():npcAtCell(lx, ly) then break end
+              U.wait(2)
+            end
+            done = ow():npcAtCell(lx, ly) ~= nil
+                   and not ow():npcAtCell(bx, by)
+          end
+          if not done then
+            say(("victory road: shove %d/%d (%s from (%d,%d)) did not move "
+                 .. "the boulder -- re-planning"):format(i, #plan, shove.dir,
+                shove.sx, shove.sy))
+            clean = false
+            break
+          end
+        end
+        -- drifted out of the cave mid-solve: come back before retrying
+        if ow().map.id ~= m.id then
+          local back
+          for _, w in ipairs(ow().map.def.warps or {}) do
+            if tostring(w.destMap or "") == m.id then back = w break end
+          end
+          if back then walkOntoWarp(back.x, back.y) end
+          if ow().map.id ~= m.id then break end
+        end
+        local pressed
+        if sw.hole then
+          local t = (G.save.objectToggles or {}).VICTORY_ROAD_2F
+          pressed = t and t.VICTORYROAD2F_BOULDER
+        else
+          pressed = G.save.flags[sw.flag]
+        end
+        if pressed then
+          say(("victory road: switch at (%d,%d) pressed"):format(sw.x, sw.y))
+          break
+        end
+        if clean then
+          -- executed fully yet no flag: geometry bug, stop -- and say so,
+          -- because a silent return here reads as "the solver never came
+          -- back" (three runs were mis-diagnosed exactly that way)
+          say(("victory road: all shoves landed yet (%d,%d) never set its "
+               .. "flag -- geometry bug, giving up"):format(sw.x, sw.y))
+          break
+        end
+      end
+    end
+  end
+  pushingBoulder = false
+  solvingBoulders = false
+end
+
+function toggleMansionSwitch(tx, ty)
+  if togglingSwitch then return false end
+  local m = ow().map
+  if not MANSION_SWITCHES[m.id] then return false end
+  local seen, W = mansionReach()
+  if seen[ty * W + tx] then return false end -- not a switch problem
+  togglingSwitch = true
+  say(("goto (%d,%d) is sealed by the mansion gates; looking for a switch")
+      :format(tx, ty))
+  local ok = pressStatueHere()
+  if not ok then
+    -- No statue on this side of the gates. The 1F basement-stairs room is
+    -- the case: its only statue sits OUTSIDE the room, but the B1F stairs
+    -- are inside it -- go down, press one of B1F's two statues, and come
+    -- back up. (A vanilla player stuck there does exactly this.)
+    for _, w in ipairs(m.def.warps or {}) do
+      local dm = tostring(w.destMap or "")
+      if MANSION_SWITCHES[dm] and seen[w.y * W + w.x] then
+        local fromMap = m.id
+        say(("no reachable switch on %s; pressing one on %s instead")
+            :format(fromMap, dm))
+        if walkOntoWarp(w.x, w.y) and MANSION_SWITCHES[ow().map.id]
+           and ow().map.id ~= fromMap then
+          ok = pressStatueHere()
+          -- back through the stairs we came down
+          local back
+          for _, w2 in ipairs(ow().map.def.warps or {}) do
+            if tostring(w2.destMap or "") == fromMap then back = w2 break end
+          end
+          if back then walkOntoWarp(back.x, back.y) end
+          ok = ok and ow().map.id == fromMap
+        end
+        break
+      end
+    end
+  end
+  togglingSwitch = false
+  return ok
+end
+
 -- Push a Strength boulder (Victory Road's four, segments 183-186).
 --
 -- Two things here are easy to get wrong, both from push_boulder.asm
@@ -3511,6 +4838,56 @@ function ops.push(s, where)
   return false
 end
 
+-- Mount SURF at the nearest shore cell, so an over-water target becomes
+-- plannable. Only fires when the party can actually surf (SURF known --
+-- taught at Silph 10F -- and SOULBADGE held); returns true once
+-- player.surfing is up, after which bfsNextKey's passableCell opens the
+-- water and the caller's re-plan does the rest. The Pallet -> Route 21 ->
+-- Cinnabar corridor is why this exists: travelTo could plan the seams but
+-- nothing ever stepped OFF the beach.
+local mountingSurf = false
+function mountSurfToward(tx, ty)
+  if mountingSurf then return false end
+  local p = ow().player
+  if p.surfing then return false end -- already up; not the problem
+  if not slotKnowing("SURF") then
+    say("mountSurf: nobody knows SURF")
+    return false
+  end
+  if not (G.save.inventory or {}).SOULBADGE then
+    say("mountSurf: no SOULBADGE")
+    return false
+  end
+  mountingSurf = true
+  local m = ow().map
+  -- water tilesets only (water_tilesets.asm); a cave with no water would
+  -- scan every cell for nothing
+  local seen, W = reachableSet()
+  -- nearest reachable land cell with water beside it
+  local best, bestD
+  for cellId in pairs(seen) do
+    local cx, cy = cellId % W, math.floor(cellId / W)
+    for _, d in ipairs(DIRS) do
+      local wx, wy = cx + d[1], cy + d[2]
+      if m:inBounds(wx, wy) and m:isWaterCell(wx, wy) then
+        local dist = math.abs(cx - p.cellX) + math.abs(cy - p.cellY)
+        if not bestD or dist < bestD then best, bestD = { cx, cy }, dist end
+        break
+      end
+    end
+  end
+  if not best then mountingSurf = false return false end
+  if not ops.goto_({ x = best[1], y = best[2] }) then
+    mountingSurf = false
+    return false
+  end
+  say(("land ran out on the way to (%d,%d) -- surfing from (%d,%d)")
+      :format(tx, ty, best[1], best[2]))
+  ops.fieldMove({ move = "surf" }, ow().map.id)
+  mountingSurf = false
+  return ow().player.surfing == true
+end
+
 -- FLY between towns -- by walking, because we can never actually Fly.
 --
 -- HM02 is picked up at segment 104 (ROUTE_16_FLY_HOUSE) and taught at 105,
@@ -3544,6 +4921,18 @@ function ops.fly(s, where)
   end
   if ow().map.id == dest then return true end
   say(("fly to %s: walking there instead"):format(dest))
+  -- CINNABAR is an ISLAND: every approach is by sea. Left to itself the
+  -- planner hunts a land bridge across the northern half of the map and
+  -- micro-loops in Saffron's houses. Stage through FUCHSIA -- a proven
+  -- land trip -- and from there the shortest plan is the Route 19/20
+  -- water corridor, which crossSeam can now surf.
+  if dest == "CINNABAR_ISLAND"
+     and ow().map.id ~= "FUCHSIA_CITY"
+     and not tostring(ow().map.id):find("ROUTE_19")
+     and not tostring(ow().map.id):find("ROUTE_20") then
+    say("staging through FUCHSIA_CITY for the sea route")
+    travelTo("FUCHSIA_CITY", where)
+  end
   if travelTo(dest, where) then return true end
   note("fly: could not reach " .. dest, where)
   return false
@@ -4166,7 +5555,7 @@ function MANUAL.catchOddish(where) return catchWild(CATCH_SPECIES.oddish, where)
 --
 -- Same bag walk as useItemOn, but there is no party menu at the end: the
 -- item just fires and warps us to the last heal point.
-local function useFieldItem(itemId, where)
+function useFieldItem(itemId, where)
   press("start")
   U.wait(8)
   local menu = top()
@@ -4226,7 +5615,7 @@ end
 -- ESCAPE ROPE: it does not land us where the route expects, but standing
 -- still inside a house guarantees the attempt dies, and walking out at
 -- least gives the segment loop a chance to re-sync.
-local function leaveByDoor(where)
+function leaveByDoor(where)
   local out = findWarpTo("LAST_MAP") or findWarpTo("")
   if out and walkOntoWarp(out.x, out.y) then
     say(("left %s by the door (no ESCAPE ROPE)"):format(tostring(where)))
@@ -4246,6 +5635,24 @@ function ops.useItem(s, where)
     local key = tostring(s.move):upper()
     if slotKnowing(key) then return true end
     return ops.teach({ move = s.move, mon = s.mon }, where)
+  end
+  if item == "REPEL" or item == "SUPER_REPEL" or item == "MAX_REPEL" then
+    -- The route repels through every dungeon it crosses, and the engine
+    -- honours it (save.repelSteps). We fight most encounters anyway, but
+    -- inside the Mansion / Victory Road the attrition is what kills runs:
+    -- B1F drained BLASTOISE to 2/182 across chained wild fights with an
+    -- empty bag and the blackout threw the whole arc away. Use whichever
+    -- repel is actually aboard, strongest first.
+    for _, id in ipairs({ "MAX_REPEL", "SUPER_REPEL", "REPEL" }) do
+      if (heldCount(id) or 0) > 0 then
+        if useFieldItem(id, where) then
+          say(("used %s on %s"):format(id, ow().map.id))
+          return true
+        end
+      end
+    end
+    note("useItem: no repel aboard", where)
+    return true -- never blocks the route
   end
   if item ~= "ESCAPE_ROPE" then
     -- the other useItem steps are speedrun stat items and X ATTACKs
@@ -4316,6 +5723,24 @@ function MANUAL.playPokeFlute(where)
   end
   say("SNORLAX woke up and the way is clear")
   return true
+end
+
+-- The movement layer's answer to a SNORLAX in the way (walkOntoWarp and
+-- ops.goto_ both call this before giving up): with the POKE FLUTE aboard
+-- the blocker is an errand, not a wall. The route's own `playPokeFlute`
+-- segment is easy to lose to a desync, and without this every later trip
+-- past Route 16's junction dead-ends on "SPRITE_SNORLAX@(26,10)" forever.
+function wakeBlockingSnorlax(whereFor)
+  if (heldCount("POKE_FLUTE") or 0) <= 0 then return false end
+  local found = false
+  for _, npc in ipairs(ow().npcs) do
+    local id = tostring((npc.def and (npc.def.id or npc.def.sprite)) or "")
+    if id:find("SNORLAX") then found = true break end
+  end
+  if not found then return false end
+  say(("a sleeping SNORLAX blocks %s and the POKE FLUTE is aboard -- waking it")
+      :format(tostring(whereFor)))
+  return MANUAL.playPokeFlute(whereFor)
 end
 
 function ops.manual(s, where)
@@ -4593,6 +6018,8 @@ end
 
 local function runRoute(startIndex)
   local failures, skips = 0, 0
+  -- one walk-back attempt per segment index before a skip is allowed
+  local travelSkipTriedFor = nil
   -- the last segment we actually ran: a blackout only shows up once we are
   -- already at the heal point, so this is what the death gets attributed to
   local lastRanMap
@@ -4634,6 +6061,27 @@ local function runRoute(startIndex)
   function recoverFromBlackout(i, wokeOn, diedMap)
     blackedOut = false
     diedOn[i] = (diedOn[i] or 0) + 1
+
+    -- Wait out the respawn BEFORE deciding anything from the map.
+    --
+    -- world.blacked_out fires when the battle decides, not when the warp
+    -- to the heal point lands, so a caller that reads ow().map.id right
+    -- away hands us the DEATH map as the wake map. Seen live: "wiped on
+    -- CELADON_GYM -- woke on CELADON_GYM, resuming from segment 164",
+    -- after which the gym segment's waypoints ran on whatever map the
+    -- respawn then delivered and the bot spent minutes cutting trees in
+    -- circles around Celadon. The respawn always ends inside a Poké
+    -- Center (or the Pallet bedroom on a fresh save), so wait for the
+    -- map to actually change / a centre to appear, clearing the blackout
+    -- text as it comes.
+    for _ = 1, 200 do
+      local m = tostring(ow().map.id)
+      if m:find("POKECENTER") or (m ~= tostring(diedMap) and idle()) then
+        break
+      end
+      if busy() then mashUntilIdle() else U.wait(10) end
+    end
+    wokeOn = ow().map.id
 
     -- Losing the lab rival costs nothing in the original: the battle counts
     -- either way (oaks_lab.lua sets EVENT_BATTLED_RIVAL_IN_OAKS_LAB on a
@@ -4685,7 +6133,14 @@ local function runRoute(startIndex)
     -- beat us again in the same way, and levels are the only variable we
     -- control. Brock took seven deaths in a row at ten-per-grind, each one
     -- a free walk back to the same loss.
-    local gymHere = tostring(ROUTE[i] and ROUTE[i].map):find("GYM") ~= nil
+    -- Silph Co. counts as a gym for grind cadence: the 7F rival is a
+    -- fixed roster fought at full heal, exactly the "wall, not variance"
+    -- shape -- and the wake town (Saffron) has no wild mons, so the
+    -- ten-death route cadence meant SEVEN potion-stocked wipes before
+    -- the first level was bought.
+    local segMapName = tostring(ROUTE[i] and ROUTE[i].map)
+    local gymHere = segMapName:find("GYM") ~= nil
+                    or segMapName:find("SILPH") ~= nil
     local everyN = gymHere and DEATHS_PER_GRIND_GYM or DEATHS_PER_GRIND
     if diedOn[i] % everyN == 0 then
       say(("segment %d/%d has killed us %dx this attempt -- training before "
@@ -4822,6 +6277,20 @@ local function runRoute(startIndex)
     -- wants us; set it up here so both can see it from the loop's top.
     nextMapWanted = ROUTE[i + 1] and ROUTE[i + 1].map or nil
 
+    -- On-demand checkpoint: `touch /tmp/pokeport_route_savenow` and the
+    -- run banks its progress (game save + segment) at the next segment
+    -- boundary. Exists because a driver fix mid-run used to mean killing
+    -- the process -- and with it every level the Silph attrition war had
+    -- bought since the last stuck-checkpoint.
+    do
+      local marker = io.open("/tmp/pokeport_route_savenow", "r")
+      if marker then
+        marker:close()
+        os.remove("/tmp/pokeport_route_savenow")
+        saveCheckpoint(i, "requested via savenow marker")
+      end
+    end
+
     -- Standing in an elevator? Ride out to the floor we need, before the
     -- map-wait can react to a bounce.
     --
@@ -4948,6 +6417,27 @@ local function runRoute(startIndex)
             goto runSegment
           end
         end
+      end
+      -- WALK to the segment before skipping it -- once per segment index.
+      --
+      -- Skipping exists for segments a cutscene already carried us past.
+      -- But the route revisits maps, so a run of skips re-enters at the
+      -- first segment matching wherever we STAND -- which can be a LATER
+      -- twin of the same map, silently dropping everything between.
+      -- ROUTE_16_GATE_1F appears at both ~102 and 120: standing there
+      -- after a stall skipped 112-119 in one burst, and with them the
+      -- POKE_DOLL, the MAROWAK, and Mr. Fuji's POKE_FLUTE -- after which
+      -- the SNORLAX is unpassable and the run is dead anyway. A travel
+      -- that works costs a walk; a skip that is wrong costs the game.
+      if travelSkipTriedFor ~= i then
+        travelSkipTriedFor = i
+        say(("segment %d/%d expects %s -- travelling there before skipping")
+            :format(i, #ROUTE, seg.map))
+        if travelTo(seg.map, here) and ow().map.id == seg.map then
+          skips = 0
+          goto runSegment
+        end
+        here = ow().map.id -- a failed trip still moves us
       end
       say(("skipping segment %d/%d: expects %s, on %s")
           :format(i, #ROUTE, seg.map, here))
@@ -5116,6 +6606,33 @@ local function runRoute(startIndex)
         talkToNurse(seg.map)
       end
       ops.shop({ list = "indigo" }, seg.map)
+    end
+    -- Saffron is the Silph staging town, and a checkpoint-resumed bag
+    -- arrives EMPTY -- the shop segments live behind the checkpoint, so
+    -- the 7F rival was fought potion-less five wipes in a row. When the
+    -- bag has no HP item, buy some next door before climbing the tower
+    -- of trainers.
+    -- Victory Road floors: put the boulders on their switches FIRST,
+    -- before the segment's own steps walk into (or shove apart) the
+    -- puzzle. Idempotent -- each switch is guarded by its event flag.
+    if VR_SWITCHES[seg.map] and ow().map.id == seg.map then
+      solveVictoryRoadSwitches()
+    end
+    local RESTOCK_TOWNS = { SAFFRON_CITY = "saffronRestock",
+                            CINNABAR_ISLAND = "cinnabarRestock" }
+    local restockList = RESTOCK_TOWNS[seg.map]
+    if restockList and ow().map.id == seg.map then
+      local hpItems = 0
+      for _, id in ipairs(HP_ITEMS) do hpItems = hpItems + (heldCount(id) or 0) end
+      if hpItems < 2 then
+        local mart = findWarpTo("MART")
+        if mart and walkOntoWarp(mart.x, mart.y) then
+          say(("bag is out of HP items -- restocking (%s)"):format(restockList))
+          ops.shop({ list = restockList }, seg.map)
+          local out = findWarpTo("LAST_MAP") or findWarpTo("")
+          if out then walkOntoWarp(out.x, out.y) end
+        end
+      end
     end
     if centerCooldown > 0 then centerCooldown = centerCooldown - 1 end
     -- the one place a nurse detour is safe: between segments, where the

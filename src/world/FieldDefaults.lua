@@ -92,6 +92,12 @@ local LAST_MAP_REWRITES = {
   UNDERGROUND_PATH_ROUTE_6 = { rules = { { map = "ROUTE_6" } } },
   UNDERGROUND_PATH_ROUTE_7 = { rules = { { map = "ROUTE_7" } } },
   UNDERGROUND_PATH_ROUTE_8 = { rules = { { map = "ROUTE_8" } } },
+  -- DiglettsCaveRoute{2,11}_Script are the same pattern for the cave's two
+  -- entrance houses.  Without these, crossing the cave and taking the far
+  -- house's LAST_MAP door warps you back to the route you ENTERED from --
+  -- the whole cave was a one-way trip that always returned to its start.
+  DIGLETTS_CAVE_ROUTE_2 = { rules = { { map = "ROUTE_2" } } },
+  DIGLETTS_CAVE_ROUTE_11 = { rules = { { map = "ROUTE_11" } } },
 }
 
 FieldDefaults.FIELD = {

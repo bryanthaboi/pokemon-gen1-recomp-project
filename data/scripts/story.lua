@@ -252,7 +252,17 @@ M.POKEMON_TOWER_7F = {
       { "show_object", "MR_FUJIS_HOUSE", "MRFUJISHOUSE_MR_FUJI" },   -- 5
       { "hide_object", "SAFFRON_CITY", "SAFFRONCITY_ROCKET8" },      -- 6
       { "show_object", "SAFFRON_CITY", "SAFFRONCITY_ROCKET9" },      -- 7
-      { "warp", "MR_FUJIS_HOUSE", 3, 3, "down" },         -- 8
+      -- pokered warps to wDestinationWarpID $1 (0-based) -- the house's
+      -- SECOND warp, the door mat at (3,7) -- facing UP
+      -- (PokemonTower7FWarpToMrFujiHouseScript: SPRITE_FACING_UP +
+      -- hWarpDestinationMap MR_FUJIS_HOUSE). Landing (3,3) instead put
+      -- the player at the Pokédex table, and the route's first waypoint
+      -- (3,7) then stepped onto a LIVE door mat and exited the house
+      -- before ever talking to Fuji -- so the POKE_FLUTE was never
+      -- collected and the Route 16 SNORLAX sealed the map. The arrival
+      -- mat itself is inert until stepped off (warpEntryCell), which is
+      -- what makes the vanilla coordinates safe.
+      { "warp", "MR_FUJIS_HOUSE", 3, 7, "up" },           -- 8
     },
   },
 }
@@ -387,6 +397,50 @@ M.WARDENS_HOUSE = {
 -- -------------------------------------------------------------------
 
 M.SILPH_CO_11F = {
+  -- Giovanni's battle is a COORDINATE TRIGGER, not a talk.
+  -- SilphCo11FDefaultScript (scripts/SilphCo11F.asm) checks
+  -- .PlayerCoordsArray -- (6,13) and (7,12) -- every frame while
+  -- EVENT_BEAT_SILPH_CO_GIOVANNI is unset: standing there shows his text,
+  -- walks him three tiles down (.GiovanniMovement), and starts the fight.
+  -- He also has no trainer-header entry, so sight engagement never fires
+  -- either. Without this hook he was a talk-only statue four tiles away
+  -- from anything the route (or a vanilla-faithful player walking the same
+  -- line) would touch, and the whole Silph ending -- the flag, the Master
+  -- Ball, the Saffron streets clearing -- silently never happened.
+  --
+  -- engageTrainer shows TEXT_SILPHCO11F_GIOVANNI as the battle text and,
+  -- via victories.lua OPP_GIOVANNI#2, sets the event on a win; a loss
+  -- sets nothing, so the trigger re-arms exactly as vanilla does.
+  onStep = function(game, ow, x, y)
+    if game.save.flags.EVENT_BEAT_SILPH_CO_GIOVANNI then return false end
+    if not ((x == 6 and y == 13) or (x == 7 and y == 12)) then return false end
+    local gio
+    for _, npc in ipairs(ow.npcs) do
+      if npc.def and npc.def.name == "SILPHCO11F_GIOVANNI" then gio = npc break end
+    end
+    if not gio or ow:trainerDefeated(gio) then return false end
+    ow:scriptMove(gio, "down", 3, function()
+      gio:facePlayer(ow.player)
+      ow:engageTrainer(gio, function()
+        -- SilphCo11FTeamRocketLeavesScript: Giovanni leaves the floor
+        -- after the loss (the street rockets are handled by
+        -- M.SAFFRON_CITY.onEnter in story4.lua).
+        if game.save.flags.EVENT_BEAT_SILPH_CO_GIOVANNI then
+          local Commands = require("src.script.Commands")
+          local ctx = { game = game, save = game.save, overworld = ow }
+          Commands.hide_object(ctx, "SILPH_CO_11F", "SILPHCO11F_GIOVANNI")
+        end
+      end)
+    end)
+    return true
+  end,
+  onEnter = function(game, ow)
+    if game.save.flags.EVENT_BEAT_SILPH_CO_GIOVANNI then
+      local Commands = require("src.script.Commands")
+      local ctx = { game = game, save = game.save, overworld = ow }
+      Commands.hide_object(ctx, "SILPH_CO_11F", "SILPHCO11F_GIOVANNI")
+    end
+  end,
   talk = {
     TEXT_SILPHCO11F_SILPH_PRESIDENT = {
       { "face_player" },                                                     -- 1

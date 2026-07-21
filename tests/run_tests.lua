@@ -731,6 +731,9 @@ do
     { map = "UNDERGROUND_PATH_ROUTE_6", route = "ROUTE_6", x = 17, y = 13 },
     { map = "UNDERGROUND_PATH_ROUTE_7", route = "ROUTE_7", x = 5, y = 13 },
     { map = "UNDERGROUND_PATH_ROUTE_8", route = "ROUTE_8", x = 13, y = 3 },
+    -- DiglettsCaveRoute{2,11}_Script: same pattern for the cave's two ends
+    { map = "DIGLETTS_CAVE_ROUTE_2", route = "ROUTE_2", x = 12, y = 9 },
+    { map = "DIGLETTS_CAVE_ROUTE_11", route = "ROUTE_11", x = 4, y = 5 },
   }
   for _, c in ipairs(cases) do
     local rewrite = rewrites[c.map]

@@ -633,4 +633,94 @@ M.BRUNOS_ROOM = e4ExitSeal("EVENT_BEAT_BRUNOS_ROOM_TRAINER_0", 0x24, 0x05,
 M.AGATHAS_ROOM = e4ExitSeal("EVENT_BEAT_AGATHAS_ROOM_TRAINER_0", 0x3b, 0x0e,
   "_AgathasRoomAgathaDontRunAwayText", "EVENT_AUTOWALKED_INTO_AGATHAS_ROOM")
 
+-- -------------------------------------------------------------------
+-- Lance's room (scripts/LancesRoom.asm). Unlike the other three E4
+-- rooms this one gates its ENTRANCE, not its exit: the .blk ships with
+-- the arena doorway CLOSED (blocks $72/$73 at block (2,6)/(3,6), cells
+-- (4-7,12-13)), and LanceShowOrHideEntranceBlocks OPENS it ($31/$32)
+-- on every map load while EVENT_LANCES_ROOM_LOCK_DOOR is unset.
+-- Without this script the doorway never opened, so the whole arena --
+-- Lance AND both CHAMPIONS_ROOM warps at (5,0)/(6,0) -- was sealed off
+-- from the entrance hall and the league dead-ended here ("goto (6,11)
+-- unreachable on LANCES_ROOM").
+--
+-- LancesRoomDefaultScript's coordinate triggers, all inert once
+-- EVENT_BEAT_LANCE is set:
+--   (5,1)/(6,2)   beside Lance -> his battle starts (a coordinate
+--                 trigger, not a talk; victories.lua OPP_LANCE#1 sets
+--                 EVENT_BEAT_LANCE on the win, so a loss re-arms)
+--   (5,11)/(6,11) the doorway -> CheckAndSetEvent
+--                 EVENT_LANCES_ROOM_LOCK_DOOR: first crossing seals
+--                 the door behind the player with SFX_GO_INSIDE
+--   (24,16)       the entrance staircase -> WalkToLance: an auto-walk
+--                 (up 12, left 12, down 7, left 6) landing on (6,11).
+--                 It marches straight across the room's water decor:
+--                 pokered's CollisionCheckOnLand skips collision
+--                 entirely while simulated joypad states run, and our
+--                 scriptMove is collision-free the same way.
+-- -------------------------------------------------------------------
+
+local function lanceEntranceBlocks(game, ow)
+  local locked = game.save.flags.EVENT_LANCES_ROOM_LOCK_DOOR
+  ow:replaceBlock(2, 6, locked and 0x72 or 0x31)
+  ow:replaceBlock(3, 6, locked and 0x73 or 0x32)
+end
+
+local function lanceLockDoor(game, ow)
+  if game.save.flags.EVENT_LANCES_ROOM_LOCK_DOOR then return end
+  game.save.flags.EVENT_LANCES_ROOM_LOCK_DOOR = true
+  require("src.core.Sound").play(game.data, "Go_Inside")
+  lanceEntranceBlocks(game, ow)
+end
+
+local function lanceWalkIn(game, ow)
+  ow:scriptMove(ow.player, "up", 12, function()
+    ow:scriptMove(ow.player, "left", 12, function()
+      ow:scriptMove(ow.player, "down", 7, function()
+        ow:scriptMove(ow.player, "left", 6, function()
+          -- the walk lands on (6,11); vanilla's per-frame coord poll
+          -- then locks the door at once. scriptMove landings do not
+          -- fire onStep, so lock here.
+          lanceLockDoor(game, ow)
+        end)
+      end)
+    end)
+  end)
+end
+
+M.LANCES_ROOM = {
+  onEnter = function(game, ow)
+    lanceEntranceBlocks(game, ow)
+    -- the warp arrival lands ON the staircase trigger, and onStep only
+    -- fires for completed steps -- start the walk-in here, the same
+    -- way Lorelei's auto walk-in runs from its onEnter
+    if not game.save.flags.EVENT_BEAT_LANCE
+       and ow.player.cellX == 24 and ow.player.cellY == 16 then
+      lanceWalkIn(game, ow)
+    end
+  end,
+  onStep = function(game, ow, x, y)
+    if game.save.flags.EVENT_BEAT_LANCE then return false end
+    if (x == 5 and y == 1) or (x == 6 and y == 2) then
+      local lance
+      for _, npc in ipairs(ow.npcs) do
+        if npc.def and npc.def.name == "LANCESROOM_LANCE" then lance = npc break end
+      end
+      if not lance or ow:trainerDefeated(lance) then return false end
+      lance:facePlayer(ow.player)
+      ow:engageTrainer(lance, function() end)
+      return true
+    end
+    if (x == 5 or x == 6) and y == 11 then
+      lanceLockDoor(game, ow)
+      return false
+    end
+    if x == 24 and y == 16 then
+      lanceWalkIn(game, ow)
+      return true
+    end
+    return false
+  end,
+}
+
 return M
