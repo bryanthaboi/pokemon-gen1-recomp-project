@@ -1,7 +1,7 @@
 -- Title screen (engine/movie/title.asm + engine/menus/main_menu.asm):
 -- the logo (or a text fallback while the asset is missing), a cycling
 -- Pokémon front sprite, the copyright line, and the CONTINUE / NEW GAME
--- / OPTION main menu on START or A.
+-- / OPTION / EXIT GAME main menu on START or A.
 
 local Font = require("src.render.Font")
 local Music = require("src.core.Music")
@@ -164,6 +164,11 @@ function TitleState:openMenu()
   end })
   table.insert(items, { label = "OPTION", onSelect = function()
     require("src.ui.Screens").push(game, "OptionsMenu")
+  end })
+  table.insert(items, { label = "EXIT GAME", onSelect = function()
+    if love.event and love.event.quit then
+      love.event.quit()
+    end
   end })
   game.stack:push(Menu.new(game, items,
                            { tx = 0, ty = 0, tw = 13, th = #items * 2 + 2 }))

@@ -37,8 +37,11 @@ end
 -- on the raw blocks, honoring the surf rule (water/shore passable only
 -- while surfing, same fallbacks as Map.new).
 function Map.defPassable(def, tilesetDef, cx, cy, surfing)
+  -- Fail closed: a missing tileset used to return true and re-open the
+  -- Pallet south-shore stranding (cross onto ROUTE_21 solids). No data
+  -- means we cannot prove the landing is safe, so the step bumps.
   if not (def and tilesetDef and tilesetDef.blocks and tilesetDef.walkable) then
-    return true -- no data to judge with: keep the old permissive behavior
+    return false
   end
   local tx, ty = cx * 2, cy * 2 + 1
   local bx, by = math.floor(tx / 4), math.floor(ty / 4)

@@ -196,6 +196,114 @@ function PaletteFX.monPalName(data, species, transformed)
   return "MEWMON"
 end
 
+-- ------- true GBC overworld coloring (color/loadpalettes.asm,
+-- color/data/*, color/sprites.asm ColorOverworldSprite) -------------------
+--
+-- RED++ pairs its named-palette battle/mon colors above with pokered-gbc's
+-- real per-tile system: LoadTilesetPalette assigns one of 8 four-color BG
+-- palettes to every tile GRAPHIC in a tileset (by tile id, not by map
+-- position), and LoadTownPalette swaps just the ROOF slot (index 6) per
+-- town/route. `data/palettes_gbc.lua`'s `world` table holds the extracted
+-- data (tools/extract/palettes.py extract_gbc_world); these queries are
+-- mode-independent (only check the pack exists) so TileRenderer can
+-- precompute geometry once regardless of the active COLORS mode -- callers
+-- that resolve to actual on-screen COLOR should gate on usesGbcPack()
+-- themselves, the same way they already gate other RED++-only behavior.
+--
+-- LoadTilesetPalette's 3 hardcoded single-tile fixes (Celadon Mart) and
+-- LoadTownPalette's Route 6/Saffron y<2 roof split are control flow, not
+-- data, so they are not in the extracted pack -- they live here instead.
+local TILE_GROUP_EXCEPTIONS = {
+  -- tile ids $4b-$4f -> BLUE (outside sky, seen through the mart's roof)
+  CELADON_MART_ROOF = { tiles = { [0x4b] = true, [0x4c] = true, [0x4d] = true,
+                                  [0x4e] = true, [0x4f] = true }, group = 3 },
+  -- tile $37 -> BROWN (counter miscoloration fix)
+  CELADON_MART_3F   = { tiles = { [0x37] = true }, group = 5 },
+  -- tiles $07/$08/$17/$18 -> YELLOW (bench, blue by default)
+  CELADON_MART_1F   = { tiles = { [0x07] = true, [0x08] = true,
+                                  [0x17] = true, [0x18] = true }, group = 4 },
+}
+local ROOF_GROUP = 6
+local ROUTE_6_SAFFRON = { mapId = "ROUTE_6", useMapId = "SAFFRON_CITY", cellYBelow = 2 }
+
+-- whether the extracted pack has real per-tile GBC data for this tileset
+-- (false for a mod tileset with no pokered-gbc counterpart, or when the
+-- pack failed to load at all)
+function PaletteFX.hasWorldTileset(tileset)
+  local pack = PaletteFX.gbcPack()
+  local w = pack and pack.world
+  return (w and w.tileGroups[tileset]) ~= nil
+end
+
+-- the palette-group (0-7) a tile GRAPHIC id resolves to in this tileset,
+-- with the current map's tile-id exceptions (if any) applied first
+function PaletteFX.worldGroupAt(tileset, mapId, tileId)
+  local pack = PaletteFX.gbcPack()
+  local w = pack and pack.world
+  local groups = w and w.tileGroups[tileset]
+  if not groups then return nil end
+  local exc = TILE_GROUP_EXCEPTIONS[mapId]
+  if exc and exc.tiles[tileId] then return exc.group end
+  return groups[tileId] or 7 -- TEXT: tile ids past the tileset's 96 (menus)
+end
+
+-- this tileset's resolved 8-entry {r,g,b}x4 palette array, with the ROOF
+-- slot swapped to the current town/route (Route 6's north end uses
+-- Saffron's roof colors while the player stands in its top 2 cell rows,
+-- like pokered's wYCoord check -- data is Game.data, for the map lookup)
+function PaletteFX.worldGroupColors(data, tileset, mapId, playerCellY)
+  local pack = PaletteFX.gbcPack()
+  local w = pack and pack.world
+  local base = w and w.groupColors[tileset]
+  if not base then return nil end
+  if not w.roofGroup[tileset] then return base end
+  local roofMapId = mapId
+  if mapId == ROUTE_6_SAFFRON.mapId and playerCellY
+     and playerCellY < ROUTE_6_SAFFRON.cellYBelow then
+    roofMapId = ROUTE_6_SAFFRON.useMapId
+  end
+  local roofMap = data and data.maps and data.maps[roofMapId]
+  local roof = roofMap and w.roofByMapIndex[roofMap.index]
+  if not roof then return base end
+  local out = {}
+  for i = 1, 8 do out[i] = base[i] end
+  -- LoadTownPalette only overwrites W2_BgPaletteData + $32, i.e. colors 1
+  -- and 2 (0-indexed) of the 4-color ROOF slot -- color 0 (background,
+  -- typically the sky-through-gaps white) and color 3 (outline black) keep
+  -- the tileset's own OUTDOOR_ROOF/INDOOR_ROOF base, only the roof
+  -- material's 2 middle shades are town-specific
+  local base4 = base[ROOF_GROUP + 1]
+  out[ROOF_GROUP + 1] = { base4[1], roof[1], roof[2], base4[4] }
+  return out
+end
+
+-- an overworld sprite's resolved 4-color OBJ palette (ColorOverworldSprite),
+-- or nil when unassigned/unavailable, plus the resolved group index (for
+-- callers that want a stable cache key without hashing the colors table).
+-- spriteDef carries the ROM picture-id crosswalk in its `source` field
+-- ("ROM:SpriteSheetPointerTable[N]"); seed (any stable per-instance value,
+-- e.g. an NPC's `id`) resolves the "random" sentinel -- a deliberate
+-- approximation of ColorOverworldSprite's per-OAM-slot pseudo-random pick
+-- (`swap a; and 3` on the sprite's OAM offset, which has no equivalent
+-- here): a stable hash instead, so the same NPC instance always shows the
+-- same one of the 4 SPR_PAL_* colors.
+function PaletteFX.spriteObp(spriteDef, seed)
+  local pack = PaletteFX.gbcPack()
+  local w = pack and pack.world
+  local src = spriteDef and spriteDef.source
+  if not (w and src) then return nil end
+  local idx = tonumber(src:match("%[(%d+)%]"))
+  local group = idx and w.spriteAssignment[idx]
+  if group == nil then return nil end
+  if group == "random" then
+    local h = 0
+    seed = tostring(seed or "")
+    for i = 1, #seed do h = (h * 31 + seed:byte(i)) % 4294967296 end
+    group = h % 4
+  end
+  return w.spritePalettes[group], group
+end
+
 -- GetHealthBarColor (home/palettes.asm) on the standard 48px bar
 function PaletteFX.barPalName(hp, maxHp)
   local px = maxHp > 0 and math.floor(hp * 48 / maxHp) or 0
@@ -237,10 +345,24 @@ function PaletteFX.setMode(mode)
     end
   end
   if not ok then PaletteFX.mode = "gbc" end
-  -- battle pics bake the active pack into ImageData; drop the cache when
-  -- the pack (or any COLORS mode) changes so the next draw re-tints
+  -- battle pics and overworld sprites bake the active pack into ImageData;
+  -- drop those caches when the pack (or any COLORS mode) changes so the
+  -- next draw re-tints
   if prev ~= PaletteFX.mode then
     pcall(function() require("src.battle.BattleState").invalidate() end)
+    pcall(function() require("src.render.SpriteRenderer").invalidate() end)
+    -- RED++'s baked tileset atlas (TileRenderer.getGbcAtlas) is built once
+    -- per loaded map, so a mode toggle needs every cached Map/TileRenderer
+    -- dropped and the currently-visible one rebuilt in place -- otherwise
+    -- the on-screen map keeps its stale (wrong-mode) atlas until the next
+    -- map transition happens to reload it.
+    pcall(function()
+      require("src.world.MapLoader").invalidateAll()
+      local Game = require("src.core.Game")
+      if Game.overworld and Game.overworld.map and Game.overworld.reloadMap then
+        Game.overworld:reloadMap(Game.overworld.map.id, "colors")
+      end
+    end)
   end
 end
 

@@ -388,8 +388,25 @@ end
 -- which recolored the whole screen per map -- see the survey zoom
 -- entry in docs/known-differences.md).  Border fill inherits the
 -- current map's palette.
+--
+-- RED++ true overworld coloring does NOT go through this zone/shader
+-- system at all: TileRenderer bakes real per-tile GBC colors straight into
+-- a recolored tileset atlas (see TileRenderer's gbcAtlas), and
+-- SpriteRenderer bakes sprites' OBP colors the same way, so the world
+-- canvas is already final RGB by the time this runs. Returning an EMPTY
+-- list here (when the current map has that baked atlas) skips the shader
+-- entirely -- Renderer:endFrame's blit sees zoneList[1] == nil and falls
+-- back to a plain, unshaded draw. Returning plain `nil` would NOT do this:
+-- endFrame treats a nil worldZones as "no world-specific zones, reuse the
+-- UI pass's zones" (sgbPalettes' whole-screen named-palette zone), which
+-- would re-run the DMG shade-remap over already-true-color pixels using
+-- an unrelated 4-color palette -- exactly the "colors are wrong" bug this
+-- fixes.
 function OverworldState:sgbWorldZones()
   local PaletteFX = require("src.render.PaletteFX")
+  if PaletteFX.usesGbcPack() and self.map.renderer and self.map.renderer.gbcAtlas then
+    return {}
+  end
   local base = PaletteFX.pal(Game.data, self:paletteNameFor(self.map))
   if not base then return nil end
   local vw, vh = Game.renderer:worldViewSize()
@@ -2023,6 +2040,8 @@ function OverworldState:engageTrainer(npc, onDone)
 end
 
 -- Badges/items awarded after specific battles (data/scripts/victories.lua).
+-- `deactivate` retires unfought gym/dojo trainers the way the originals'
+-- SetEvent / SetEventRange do after the leader victory.
 function OverworldState:checkVictoryRewards(trainerClass, partyIndex)
   local victories = require("data.scripts.victories")
   local reward = victories[trainerClass .. "#" .. tostring(partyIndex or 1)]
@@ -2030,6 +2049,11 @@ function OverworldState:checkVictoryRewards(trainerClass, partyIndex)
   if reward.flag then
     if Game.save.flags[reward.flag] then return self:runVictoryHook() end
     Game.save.flags[reward.flag] = true
+  end
+  if reward.deactivate then
+    for _, flag in ipairs(reward.deactivate) do
+      Game.save.flags[flag] = true
+    end
   end
   local lines = {}
   if reward.badge then

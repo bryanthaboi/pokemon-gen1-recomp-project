@@ -425,6 +425,14 @@ function BattleState.newTrainer(game, oppClass, partyIndex)
   self.oppClass = oppClass
   self.trainer = game.data.trainers[oppClass]
   assert(self.trainer, "unknown trainer class " .. tostring(oppClass))
+  -- pret GetTrainerName_: RIVAL1/2/3 copy wRivalName into wTrainerName
+  -- instead of TrainerNames ("RIVAL1" etc.).  Overlay so we don't mutate
+  -- the shared data table.
+  if oppClass == "OPP_RIVAL1" or oppClass == "OPP_RIVAL2"
+     or oppClass == "OPP_RIVAL3" then
+    local rivalName = (game.save.player and game.save.player.rival) or "BLUE"
+    self.trainer = setmetatable({ name = rivalName }, { __index = self.trainer })
+  end
   self.enemyAIMods = self.trainer.aiMods
   local partyDef = self.trainer.parties[partyIndex or 1]
   assert(partyDef, ("trainer %s has no party %s"):format(oppClass, tostring(partyIndex)))

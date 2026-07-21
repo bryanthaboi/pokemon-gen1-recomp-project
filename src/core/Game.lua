@@ -68,6 +68,10 @@ function Game:load()
   local OverworldState = require("src.world.OverworldController")
   self.overworld = OverworldState
 
+  -- Discord Rich Presence: map name / battle status on the player's profile.
+  -- Soft-fail: missing Discord / IPC errors must never block boot.
+  pcall(function() require("src.core.DiscordPresence").init(self) end)
+
   -- every service is up but nothing is on the stack yet; this payload is
   -- the sanctioned way for a mod to obtain the Game object
   ModRuntime.emit("game.ready", { game = self })
@@ -103,7 +107,7 @@ end
 function Game:makeTitleState()
   local OverworldState = require("src.world.OverworldController")
   local factory = Screens.get(self, bootScreens(self).title or "TitleState")
-  return factory.new(self, {
+  local title = factory.new(self, {
     onNewGame = function()
       while self.stack:top() do self.stack:pop() end
       -- New Game keeps the standalone options.lua preferences
@@ -126,6 +130,8 @@ function Game:makeTitleState()
       end
     end,
   })
+  title.screenId = title.screenId or "TitleState"
+  return title
 end
 
 -- QUIT from the START menu: back to the title like a power-cycle,
@@ -187,6 +193,7 @@ function Game:update(dt)
   -- Overworld tilt toggle tween: presentational, so it runs on the real
   -- frame dt (not the fixed logic step) for a smooth ~0.25s glide.
   require("src.render.Tilt").update(dt)
+  pcall(function() require("src.core.DiscordPresence").update(dt) end)
 end
 
 -- render.zones' identity default: unhooked, the zone list reaches the blit
@@ -391,6 +398,7 @@ function Game:applyOptions(opts)
   require("src.render.PaletteFX").applyOptions(opts)
   require("src.render.Tilt").applyOptions(opts)
   require("src.render.GBCFX").applyOptions(opts)
+  require("src.core.VideoMode").applyOptions(opts)
 end
 
 function Game:restoreSave(loaded, recovered)

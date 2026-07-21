@@ -97,6 +97,30 @@ function Data:seedDefaults()
   -- the overworld's Kanto literals, same fill-if-absent contract; required
   -- here rather than at the top so core keeps out of src/world at load time
   require("src.world.FieldDefaults").seed(self)
+  -- Cinnabar's quiz trainers are text_asm (no def_trainers), so the
+  -- extractor never writes headers for them.  Seed the EVENT_BEAT_* /
+  -- after-battle rows so Blaine's SetEventRange deactivation and talk
+  -- after-text work like the other gyms (scripts/CinnabarGym.asm).
+  self:seedCinnabarGymTrainerHeaders()
+end
+
+function Data:seedCinnabarGymTrainerHeaders()
+  local headers = self.trainer_headers
+  if not headers or headers.CinnabarGym then return end
+  local gym = {}
+  for i = 0, 6 do
+    local n = i + 1
+    -- object indices 2..8 are SUPER_NERD1..7; range 0 -- they only
+    -- engage via talk / wrong quiz answer, never sight lines
+    gym[i + 2] = {
+      event = "EVENT_BEAT_CINNABAR_GYM_TRAINER_" .. i,
+      range = 0,
+      battle = "_CinnabarGymSuperNerd" .. n .. "BattleText",
+      won = "_CinnabarGymSuperNerd" .. n .. "EndBattleText",
+      after = "_CinnabarGymSuperNerd" .. n .. "AfterBattleText",
+    }
+  end
+  headers.CinnabarGym = gym
 end
 
 -- POKEPORT_DATA_DIR points a test runner at another dataset root (the
