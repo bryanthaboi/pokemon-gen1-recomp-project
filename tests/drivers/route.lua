@@ -1104,6 +1104,9 @@ local mountSurfToward
 -- travelTo); declared here for the same reason as cutToward.
 local arriveByWarp
 
+-- pickupBlockingBall (defined below, next to reachableSet) is a GLOBAL,
+-- like cutToward: the main chunk is at LuaJIT's 200-local ceiling.
+
 -- Cross to another region of the same map through a gate. Assigned below
 -- (needs walkOntoWarp); declared here because ops.goto_ calls it.
 local reEnterThroughGate
@@ -1141,10 +1144,14 @@ end
 function ops.goto_(s, _where, isLast)
   local o = ow()
   local map = o.map
-  -- one surf mount per goto: walking ashore dismounts, so an unreachable
-  -- target beyond a pond can otherwise mount -> cross -> dismount -> fail
-  -- -> mount again forever (Celadon's pond, target (39,8))
-  local surfMounts = 0
+  -- surf mounts per goto, BUDGETED: walking ashore dismounts, so an
+  -- unreachable target beyond a pond can mount -> cross -> dismount ->
+  -- fail -> mount forever (Celadon's pond, target (39,8)) -- but a hard
+  -- cap of ONE stranded the bot on Route 20's mid-island strip, where a
+  -- legitimate crossing is surf -> beach -> surf again. Three mounts
+  -- covers every real island-hop; a still-unreachable target then fails
+  -- the goto as before.
+  local surfMounts, SURF_BUDGET = 0, 3
   -- ...and a small cut budget per goto: a pocket behind two trees opens
   -- over two passes, but a target that stays unreachable must not
   -- chain-cut every ornamental bush on the map (Saffron/Celadon cut-spam)
@@ -1171,6 +1178,8 @@ function ops.goto_(s, _where, isLast)
     local tx = math.max(0, math.min(s.x, map.widthCells - 1))
     local ty = math.max(0, math.min(s.y, map.heightCells - 1))
     local refusedEdge = knownWalls(map.id) or {}
+    -- one border-cell retarget per goto (see the fenced-lane rung below)
+    local edgeRetargeted = false
     for edgeTry = 1, 2 do
     for _ = 1, 300 do
       if ow().map.id ~= startMap then return true end
@@ -1206,10 +1215,42 @@ function ops.goto_(s, _where, isLast)
             end
             -- ...or the border cell is on WATER (Pallet's south edge):
             -- mount SURF at the shore and re-plan over the sea.
-            if surfMounts == 0 and mountSurfToward
+            if surfMounts < SURF_BUDGET and mountSurfToward
                and mountSurfToward(tx, ty) then
               surfMounts = surfMounts + 1
               goto edgeStep
+            end
+            -- ...or THIS border column is fenced off while another of
+            -- the same edge is open. Viridian's south border is three
+            -- fenced lanes and only x20-21 connects to the city; the
+            -- planner's seam cell (15,35) is statically walkable-paired
+            -- but dynamically sealed, so the exit spun cutting
+            -- ornamental bushes and surfing the pond. Retarget ONCE to
+            -- the nearest border cell that is BOTH reachable right now
+            -- and has a walkable far side.
+            if not edgeRetargeted then
+              local compass = (dir == "up" and "north")
+                              or (dir == "down" and "south")
+                              or (dir == "left" and "west") or "east"
+              local conn = map.def.connections and map.def.connections[compass]
+              if conn and seamCells and reachableSet then
+                local seen, WW = reachableSet()
+                local bestAlt, bestD
+                for _, c in ipairs(seamCells(map.def, compass, conn)) do
+                  if seen[c[2] * WW + c[1]] and (c[1] ~= tx or c[2] ~= ty) then
+                    local d2 = math.abs(c[1] - tx) + math.abs(c[2] - ty)
+                    if not bestD or d2 < bestD then bestAlt, bestD = c, d2 end
+                  end
+                end
+                if bestAlt then
+                  say(("edge exit %s on %s: border cell (%d,%d) is walled "
+                       .. "off; crossing at (%d,%d) instead"):format(dir,
+                      tostring(map.id), tx, ty, bestAlt[1], bestAlt[2]))
+                  tx, ty = bestAlt[1], bestAlt[2]
+                  edgeRetargeted = true
+                  goto edgeStep
+                end
+              end
             end
           end
           break -- already there, or genuinely no path
@@ -1250,7 +1291,7 @@ function ops.goto_(s, _where, isLast)
     -- The push stalled. Once per goto: if this edge has a WATER crossing
     -- and the party can surf, mount and retry the whole exit over the
     -- sea column instead of bumping the shore (Cinnabar -> Route 21).
-    if edgeTry == 1 and surfMounts == 0 and not ow().player.surfing
+    if edgeTry == 1 and surfMounts < SURF_BUDGET and not ow().player.surfing
        and slotKnowing("SURF") then
       local wc = borderWaterCell(map, dir, tx, ty)
       if wc and mountSurfToward and mountSurfToward(wc[1], wc[2]) then
@@ -1353,12 +1394,21 @@ function ops.goto_(s, _where, isLast)
           for _ = 1, 8 do
             if ow().map.id ~= from then return true end
             local m = ow().map
-            -- only a warp ON the map border needs the held direction; an
-            -- interior door fires on its own and has no "outward" to push
-            local outward = (s.x >= m.widthCells - 1 and "right")
-                            or (s.x <= 0 and "left")
-                            or (s.y >= m.heightCells - 1 and "down")
-                            or (s.y <= 0 and "up")
+            -- A warp needing a held press: mirror the engine's
+            -- Warp.extraCheck -- facing the map edge, OR a warp-carpet
+            -- door tile in front (Route 16's gate mats: plain path
+            -- tiles whose warp fires only pressing INTO the building).
+            -- A true interior door fires on its own; no direction
+            -- passes extraCheck there and we stop pushing.
+            local WarpMod = require("src.world.Warp")
+            local carpets = G.data.field and G.data.field.warpCarpets
+            local outward
+            for _, dd in ipairs(DIRS) do
+              if WarpMod.extraCheck(m, carpets, s.x, s.y, dd[3]) then
+                outward = dd[3]
+                break
+              end
+            end
             if not outward then break end
             pushed = true
             faceDir(outward)
@@ -1464,6 +1514,15 @@ function ops.goto_(s, _where, isLast)
             blocked = 0
             goto keepGoing
           end
+          -- ...or an item ball is the wall (Pokémon Tower 6F's
+          -- RARE_CANDY sits in the floor's only crossing corridor).
+          -- Tried BEFORE arriveByWarp: taking the ball keeps the walk on
+          -- this floor, while arriveByWarp warps clear off it hunting
+          -- the far end.
+          if pickupBlockingBall and pickupBlockingBall(s.x, s.y) then
+            blocked = 0
+            goto keepGoing
+          end
           -- ...or the target is in a part of this map no walk connects.
           --
           -- Cave floors are not one connected room. MT_MOON_B1F is four
@@ -1533,7 +1592,7 @@ function ops.goto_(s, _where, isLast)
           -- an NPC-blocked target in a pond town does not trigger a
           -- pointless swim, and ONCE per goto -- coming ashore dismounts,
           -- so a still-unreachable target re-mounts forever otherwise.
-          if surfMounts == 0 and mountSurfToward
+          if surfMounts < SURF_BUDGET and mountSurfToward
              and mountSurfToward(s.x, s.y) then
             surfMounts = surfMounts + 1
             blocked = 0
@@ -2439,6 +2498,8 @@ local function walkOntoWarp(wx, wy)
   local toggledSwitch = false
   -- one Victory Road switch solve per call (see solveVictoryRoadSwitches)
   local solvedVR = false
+  -- one blocking-item-ball pickup per call (see pickupBlockingBall)
+  local tookBall = false
   for _ = 1, 300 do
     if ow().map.id ~= from then return true end
     if inBattle() then fightBattle()
@@ -2456,11 +2517,28 @@ local function walkOntoWarp(wx, wy)
         -- "leave by this edge" idiom -- which is Red shoving downward into
         -- the wall below the door instead of walking out of it.
         local m = ow().map
-        local outward = (wy >= m.heightCells - 1 and "down")
-                        or (wy <= 0 and "up")
-                        or (wx <= 0 and "left")
-                        or (wx >= m.widthCells - 1 and "right")
-                        or "down"
+        -- Which press can actually FIRE this warp? Mirror the engine:
+        -- Warp.extraCheck says whether pressing `dir` from this cell can
+        -- warp -- facing the map edge, OR a warp-carpet door tile in
+        -- front. Route 16's gate mats are the latter: plain path tiles
+        -- whose warp fires only pressing INTO the building ($4B door to
+        -- the LEFT), and the old edge-based guess pushed "down" forever
+        -- ("the step onto (24,10) keeps getting shoved back").
+        local WarpMod = require("src.world.Warp")
+        local carpets = G.data.field and G.data.field.warpCarpets
+        local outward
+        for _, d in ipairs(DIRS) do
+          if WarpMod.extraCheck(m, carpets, wx, wy, d[3]) then
+            outward = d[3]
+            break
+          end
+        end
+        outward = outward
+                  or (wy >= m.heightCells - 1 and "down")
+                  or (wy <= 0 and "up")
+                  or (wx <= 0 and "left")
+                  or (wx >= m.widthCells - 1 and "right")
+                  or "down"
         faceDir(outward)
         walk(outward)
         -- If pushing outward does nothing, the warp we are standing on is
@@ -2542,6 +2620,12 @@ local function walkOntoWarp(wx, wy)
                  and VR_SWITCHES and VR_SWITCHES[ow().map.id] then
             solvedVR = true
             solveVictoryRoadSwitches()
+            bfsNil = 0
+          -- ...or an item ball on the only corridor (Pokémon Tower 6F's
+          -- RARE_CANDY): take it and re-path.
+          elseif not tookBall and pickupBlockingBall
+                 and pickupBlockingBall(wx, wy) then
+            tookBall = true
             bfsNil = 0
           else
             bfsNil = (bfsNil or 0) + 1
@@ -2638,7 +2722,10 @@ end
 -- pairing is exact and a seam with no walkable pair can never be crossed
 -- however hard we push at it. This is what keeps the search from planning
 -- Vermilion -> Saffron -> Cerulean through a walled city.
-local function seamCells(def, dir, conn)
+-- GLOBAL (not local): ops.goto_'s edge-exit retarget below needs it and
+-- is defined earlier in the file; the main chunk is also at LuaJIT's
+-- 200-local ceiling.
+function seamCells(def, dir, conn)
   local dest = G.data.maps and G.data.maps[conn.map]
   if not dest then return {} end
   local aW, aH = def.width * 2, def.height * 2
@@ -2770,14 +2857,16 @@ local function regionGraph()
           local dw = maps[src].warps and maps[src].warps[w.destWarp]
           local dr = dw and cellRegionOf(src, dw.x, dw.y)
           if sr and dr then
+            local c = (id:find("^SEAFOAM") or src:find("^SEAFOAM")) and 43 or 3
             add(regionNode(id, sr), regionNode(src, dr),
-                { warp = { x = w.x, y = w.y }, cost = 3, dynamic = true })
+                { warp = { x = w.x, y = w.y }, cost = c, dynamic = true })
           end
         end
       elseif type(d) == "string" and maps[d] then
         local dw = maps[d].warps and maps[d].warps[w.destWarp]
         local dr = dw and cellRegionOf(d, dw.x, dw.y)
-        if sr and dr then
+        if sr and dr and not (d:find("^SEAFOAM") and not id:find("^SEAFOAM")) then
+          -- entering Seafoam pruned, same reason as the map graph
           local c = (id:find("ELEVATOR") or d:find("ELEVATOR")) and 50 or 1
           add(regionNode(id, sr), regionNode(d, dr),
               { warp = { x = w.x, y = w.y }, cost = c })
@@ -2802,8 +2891,13 @@ local function regionGraph()
           local k = tostring(sr) .. ">" .. tostring(dr)
           if sr and dr and not seen[k] then
             seen[k] = true
-            add(regionNode(id, sr), regionNode(conn.map, dr),
-                { dir = COMPASS_DIR[dir], cells = cells, cost = 1 })
+            -- ROUTE_20 <-> CINNABAR: pruned, same reason as the map
+            -- graph (the east and west seas never connect)
+            if not ((id == "ROUTE_20" and conn.map == "CINNABAR_ISLAND")
+                    or (id == "CINNABAR_ISLAND" and conn.map == "ROUTE_20")) then
+              add(regionNode(id, sr), regionNode(conn.map, dr),
+                  { dir = COMPASS_DIR[dir], cells = cells, cost = 1 })
+            end
           end
         end
       end
@@ -2945,7 +3039,17 @@ local function mapGraph()
         -- rather than deleted so a floor only the elevator can reach (Silph's
         -- top) is still on the graph.
         local elev = (id:find("ELEVATOR") or d:find("ELEVATOR")) and 50 or 1
-        g[id][#g[id] + 1] = { to = d, warp = w, cost = elev }
+        -- ENTERING Seafoam is pruned outright: 1F's two door pockets
+        -- only connect through the BASEMENT floors, which hop execution
+        -- cannot thread, so every plan through the islands ping-ponged
+        -- the Route 20 doors -- pricing alone lost to a wall of banned
+        -- alternatives after hours of wandering. The route never uses
+        -- Seafoam (Cinnabar is reached by sea from Pallet). Exits (the
+        -- LAST_MAP door edges) are kept so a bot stranded inside can
+        -- always leave.
+        if not (d:find("^SEAFOAM") and not id:find("^SEAFOAM")) then
+          g[id][#g[id] + 1] = { to = d, warp = w, cost = elev }
+        end
         into[d] = into[d] or {}
         into[d][id] = true
       end
@@ -2958,8 +3062,23 @@ local function mapGraph()
         -- gate script can open one later, and a wrongly deleted edge is
         -- an unreachable map, while a wrongly costly one is a detour.
         local cells = seamCells(def, dir, c)
-        g[id][#g[id] + 1] = { to = c.map, dir = COMPASS_DIR[dir],
-                              cells = cells, cost = #cells > 0 and 1 or 8 }
+        -- ROUTE_20's east and west seas NEVER connect on the map: a
+        -- walled channel splits them at Seafoam, and the only crossing
+        -- is through the islands' basement, which hop execution cannot
+        -- thread. The map graph sees one ROUTE_20 node, so from the
+        -- east side the CINNABAR seam looked one hop away, and one
+        -- travelTo(PALLET_TOWN) spent HOURS banning its way across
+        -- Kanto until this impossible seam was the cheapest edge left,
+        -- then camped it. PRUNED, not priced -- this is a hard physical
+        -- fact, not a maybe-a-tree-opens-it seam, and both sides stay
+        -- reachable without it (CINNABAR via ROUTE_21, ROUTE_20 via
+        -- ROUTE_19). The executable Cinnabar path is Pallet ->
+        -- ROUTE_21 south, the HOF run's own.
+        if not ((id == "ROUTE_20" and c.map == "CINNABAR_ISLAND")
+                or (id == "CINNABAR_ISLAND" and c.map == "ROUTE_20")) then
+          g[id][#g[id] + 1] = { to = c.map, dir = COMPASS_DIR[dir],
+                                cells = cells, cost = #cells > 0 and 1 or 8 }
+        end
       end
     end
   end
@@ -2972,7 +3091,8 @@ local function mapGraph()
     for _, w in ipairs(def.warps or {}) do
       if w.destMap == "LAST_MAP" then
         for src in pairs(into[id] or {}) do
-          g[id][#g[id] + 1] = { to = src, warp = w, dynamic = true, cost = 3 }
+          local c = (id:find("^SEAFOAM") or src:find("^SEAFOAM")) and 43 or 3
+          g[id][#g[id] + 1] = { to = src, warp = w, dynamic = true, cost = c }
         end
       end
     end
@@ -3436,10 +3556,72 @@ function reachableSet()
          and not pairBlockedStep(m, c[1], c[2], nx, ny, p.surfing) then
         seen[id] = true
         q[#q + 1] = { nx, ny }
+      elseif nx >= 0 and ny >= 0 and nx < W and ny < H
+             and not passableCell(m, nx, ny) then
+        -- ledge hops, so this set matches what bfsNextKey can walk
+        -- (see cutToward for the ROUTE_9 case this fixed)
+        local lx, ly = ledgeLanding(m, c[1], c[2], d[3], d[1], d[2])
+        if lx then
+          local lid = ly * W + lx
+          if not seen[lid] and not blocked[lid] then
+            seen[lid] = true
+            q[#q + 1] = { lx, ly }
+          end
+        end
       end
     end
   end
   return seen, W
+end
+
+-- Pick up an item ball that is walling off the walk to (tx, ty).
+--
+-- An item ball is an NPC and therefore a BFS wall -- and Pokémon Tower
+-- 6F's RARE_CANDY at (6,8) stands in the ONLY corridor between the
+-- floor's east and west halves. Vanilla players grab it in passing (the
+-- ball despawns, opening the way) and the route's own pickup steps do
+-- the same -- but a resume desync that skips those steps leaves the
+-- floor severed for good: "goto (6,14) unreachable on POKEMON_TOWER_6F"
+-- with a fresh save's balls all standing. So: when the target is
+-- outside the reachable set and a ball sits on its frontier, stand
+-- beside it, take it, and let the caller re-plan. Same one-per-call
+-- contract as cutToward.
+pickingBall = false -- global: the main chunk is at the 200-local ceiling
+function pickupBlockingBall(tx, ty)
+  if pickingBall then return false end
+  local m = ow().map
+  local seen, W = reachableSet()
+  if seen[ty * W + tx] then return false end -- not a blocking-ball problem
+  for _, npc in ipairs(ow().npcs) do
+    if tostring(npc.def and npc.def.sprite or "") == "SPRITE_POKE_BALL" then
+      local bx, by = npc.cellX, npc.cellY
+      for _, d in ipairs(DIRS) do
+        local ax, ay = bx + d[1], by + d[2]
+        if ax >= 0 and ay >= 0 and ax < W and ay < m.heightCells
+           and seen[ay * W + ax] then
+          pickingBall = true
+          local took = false
+          ops.goto_({ x = ax, y = ay })
+          local p = ow().player
+          if ow().map.id == m.id and p.cellX == ax and p.cellY == ay then
+            faceDir((by < ay and "up") or (by > ay and "down")
+                    or (bx < ax and "left") or "right")
+            press("a")
+            U.wait(20)
+            mashUntilIdle()
+            took = not ow():npcAtCell(bx, by)
+          end
+          pickingBall = false
+          if took then
+            say(("picked up the item ball at (%d,%d) that was walling off "
+                 .. "(%d,%d)"):format(bx, by, tx, ty))
+            return true
+          end
+        end
+      end
+    end
+  end
+  return false
 end
 
 -- Reach another region of THIS map by going through a gate and out its far
@@ -3945,6 +4127,8 @@ end
 -- CASCADEBADGE (src/ui/PartyMenu.lua:342).
 function ops.fieldMove(s, where)
   local move = tostring(s.move or ""):upper()
+  -- the tree cell CUT will face, for the post-use verification below
+  local cutCellX, cutCellY
   local slot = slotKnowing(move)
   if not slot then
     -- DIG and FLY are TRANSPORT, and a transport step we cannot perform is
@@ -3981,6 +4165,21 @@ function ops.fieldMove(s, where)
     say(("fieldMove %s: nobody in the party knows it"):format(move))
     return false
   end
+  -- The knower must also be CONSCIOUS: the party submenu hides field
+  -- moves on a fainted mon (vanilla -- partyKnows requires hp > 0), so
+  -- the menu walk below finds only STATS/SWITCH and fails. Route 23's
+  -- mandatory surf strip is where this bit: WARTORTLE arrived dead from
+  -- the Viridian Gym attrition, "no SURF entry" x3, the water was never
+  -- crossed, and the whole league skip-cascaded with all eight badges
+  -- in the bag. Heal, fail this attempt loudly, and let the caller's
+  -- retry run the step again with a live user.
+  local knower = (G.save.party or {})[slot]
+  if knower and (knower.hp or 0) <= 0 then
+    say(("fieldMove %s: its only user has fainted -- visiting a centre "
+         .. "before retrying"):format(move))
+    visitPokeCenter(where)
+    return false
+  end
   -- CUT acts on the tile the player is FACING (OverworldState:tryCut), and
   -- a `goto` leaves us facing whatever direction we last stepped. Without
   -- turning to the tree first the move fires into empty ground, the game
@@ -3991,6 +4190,19 @@ function ops.fieldMove(s, where)
     local m = ow().map
     local function cuttable(cx, cy)
       if not m:inBounds(cx, cy) or m:isWalkableCell(cx, cy) then return false end
+      -- The same FACE gate as the engine (tryCut): a tree BLOCK is 2x2
+      -- cells and only the tree-tile half is cuttable -- facing the
+      -- fence/sign half answers "Nothing to CUT". Without this the scan
+      -- below picked whichever unwalkable half it met first: Route 9's
+      -- tree at (5,8) has the block's sign half at (4,9), DOWN is
+      -- scanned before RIGHT, and the run cut "the tree" twenty times
+      -- from (4,8) without ever opening the way east.
+      local ts = m.def and m.def.tileset
+      local tile = m:cellTile(cx, cy)
+      if not ((ts == "OVERWORLD" and tile == 0x3d)
+              or (ts == "GYM" and tile == 0x50)) then
+        return false
+      end
       local block = m:blockAt(math.floor(cx / 2), math.floor(cy / 2))
       for _, sw in ipairs(G.data.field.cutTreeSwaps or {}) do
         if sw.before == block then return true end
@@ -4001,7 +4213,11 @@ function ops.fieldMove(s, where)
     local facing
     for _, d in ipairs({ { 0, 1, "down" }, { 0, -1, "up" },
                          { -1, 0, "left" }, { 1, 0, "right" } }) do
-      if cuttable(p.cellX + d[1], p.cellY + d[2]) then facing = d[3] break end
+      if cuttable(p.cellX + d[1], p.cellY + d[2]) then
+        facing = d[3]
+        cutCellX, cutCellY = p.cellX + d[1], p.cellY + d[2]
+        break
+      end
     end
     if not facing then
       note("fieldMove: no tree adjacent", where)
@@ -4102,6 +4318,19 @@ function ops.fieldMove(s, where)
   press("a")
   U.wait(12)
   mashUntilIdle()
+  -- CUT is verifiable: the faced tree cell must be walkable afterwards.
+  -- "used CUT" used to print regardless, so an engine refusal ("Nothing
+  -- to CUT") looked like success and the caller re-cut the same tree
+  -- for its whole budget.
+  if move == "CUT" and cutCellX then
+    local now = ow().map
+    if now:inBounds(cutCellX, cutCellY)
+       and not now:isWalkableCell(cutCellX, cutCellY) then
+      say(("fieldMove CUT: the tree at (%d,%d) is still standing -- the "
+           .. "cut did not land"):format(cutCellX, cutCellY))
+      return false
+    end
+  end
   say(("used %s on %s"):format(move, tostring(where)))
 
   -- DIG and FLY are the route's long-distance travel, and neither lands
@@ -4182,6 +4411,22 @@ function cutToward(tx, ty)
          and not blockedBy[id] and m:isWalkableCell(nx, ny) then
         seen[id] = true
         queue[#queue + 1] = { nx, ny }
+      elseif nx >= 0 and ny >= 0 and nx < W and ny < H
+             and not m:isWalkableCell(nx, ny) then
+        -- ledge hops reach cells this flood otherwise misses -- and
+        -- bfsNextKey WALKS them, so leaving them out makes the two
+        -- disagree: from ROUTE_9 (46,9) the regrown west tree's face is
+        -- only ledge-reachable, cutToward found "no tree", and
+        -- travelTo(CINNABAR_ISLAND) died -- taking Blaine, the 7-badge
+        -- Viridian Gym and the whole league gate with it.
+        local lx, ly = ledgeLanding(m, c[1], c[2], d[3], d[1], d[2])
+        if lx then
+          local lid = ly * W + lx
+          if not seen[lid] and not blockedBy[lid] then
+            seen[lid] = true
+            queue[#queue + 1] = { lx, ly }
+          end
+        end
       end
     end
   end
@@ -4863,14 +5108,21 @@ function mountSurfToward(tx, ty)
   -- water tilesets only (water_tilesets.asm); a cave with no water would
   -- scan every cell for nothing
   local seen, W = reachableSet()
-  -- nearest reachable land cell with water beside it
+  -- The shore to mount from is the reachable land-beside-water cell
+  -- nearest the TARGET, with the player's own distance only breaking
+  -- ties. Nearest-to-player was a trap on Route 20's mid-island strip:
+  -- a rock wall splits the strip's shores, and the bot re-mounted on
+  -- the west shore every time, surfed back over ground it had already
+  -- crossed, dismounted in the same spot and burned the whole mount
+  -- budget without ever entering the water that leads east.
   local best, bestD
   for cellId in pairs(seen) do
     local cx, cy = cellId % W, math.floor(cellId / W)
     for _, d in ipairs(DIRS) do
       local wx, wy = cx + d[1], cy + d[2]
       if m:inBounds(wx, wy) and m:isWaterCell(wx, wy) then
-        local dist = math.abs(cx - p.cellX) + math.abs(cy - p.cellY)
+        local dist = (math.abs(cx - tx) + math.abs(cy - ty)) * 4
+                     + math.abs(cx - p.cellX) + math.abs(cy - p.cellY)
         if not bestD or dist < bestD then best, bestD = { cx, cy }, dist end
         break
       end
@@ -6024,6 +6276,26 @@ local function runRoute(startIndex)
   -- already at the heal point, so this is what the death gets attributed to
   local lastRanMap
   local diedOn = {} -- segment index -> deaths this attempt
+  -- Badge go-back (see the league-gate check in the loop): badges whose
+  -- gym segment this attempt has already rewound to, so a gym that
+  -- cannot be won does not loop the rewind forever.
+  local badgeRescued = {}
+  local LEAGUE_GATE_MAPS = {
+    ROUTE_22_GATE = true, ROUTE_23 = true, VICTORY_ROAD_1F = true,
+    VICTORY_ROAD_2F = true, VICTORY_ROAD_3F = true,
+    INDIGO_PLATEAU = true, INDIGO_PLATEAU_LOBBY = true,
+  }
+  -- route order; badge names are inventory keys, gyms are segment maps
+  local BADGE_GYM_SEGMENTS = {
+    { "BOULDERBADGE", "PEWTER_GYM" },
+    { "CASCADEBADGE", "CERULEAN_GYM" },
+    { "THUNDERBADGE", "VERMILION_GYM" },
+    { "RAINBOWBADGE", "CELADON_GYM" },
+    { "SOULBADGE", "FUCHSIA_GYM" },
+    { "MARSHBADGE", "SAFFRON_GYM" },
+    { "VOLCANOBADGE", "CINNABAR_GYM" },
+    { "EARTHBADGE", "VIRIDIAN_GYM" },
+  }
   -- segment index -> deaths in a row where training gained no levels.
   -- Reported, not acted on: no death count writes off a segment any more.
   -- A long barren streak means the grind cannot reach a training ground
@@ -6288,6 +6560,54 @@ local function runRoute(startIndex)
         marker:close()
         os.remove("/tmp/pokeport_route_savenow")
         saveCheckpoint(i, "requested via savenow marker")
+      end
+    end
+
+    -- Rolling checkpoint every 10 segments, no external toucher needed.
+    -- A run once reached segment 182 with all eight badges and then
+    -- "completed" by skipping the sealed league -- and NOTHING was on
+    -- disk: no toucher was running, no abandon fired, and route
+    -- completion never saved. Hours of progress, gone at exit. Never
+    -- again: the driver banks its own progress as it goes.
+    if i % 10 == 0 then
+      saveCheckpoint(i, "rolling (every 10 segments)")
+    end
+
+    -- GO BACK FOR A MISSING BADGE before the league gate can wall us.
+    --
+    -- Route 22/23's guards badge-check in order and shove the player
+    -- back (vanilla), and the route only ever moves FORWARD -- so a run
+    -- that lost a gym segment to a travel failure (Blaine's whole
+    -- island skipped over a failed sea trip, once) used to reach the
+    -- gate with seven badges and thrash against the shove until the
+    -- attempt died. The badges are ordinary inventory; when a league
+    -- segment comes up short, rewind the index to the missing badge's
+    -- own gym segment and let the ordinary mismatch->travelTo machinery
+    -- carry us there. Earliest missing badge first (Cinnabar's segment
+    -- sits before Viridian's, and Viridian Gym itself only unlocks at
+    -- seven badges). Once per badge per attempt, so a gym that
+    -- genuinely cannot be won does not loop the rewind forever.
+    if LEAGUE_GATE_MAPS[seg.map] then
+      local missing
+      for _, bg in ipairs(BADGE_GYM_SEGMENTS) do
+        if not (G.save.inventory or {})[bg[1]] and not badgeRescued[bg[1]] then
+          missing = bg
+          break
+        end
+      end
+      if missing then
+        local back
+        for j = i - 1, 1, -1 do
+          if ROUTE[j].map == missing[2] then back = j break end
+        end
+        if back then
+          badgeRescued[missing[1]] = true
+          say(("the league gate is ahead but %s is missing -- rewinding "
+               .. "to segment %d/%d (%s) to earn it")
+              :format(missing[1], back, #ROUTE, missing[2]))
+          i = back - 1
+          goto nextSegment
+        end
       end
     end
 
@@ -6694,6 +7014,9 @@ local function runRoute(startIndex)
 
   say("---- route complete ----")
   say(("segments: %d   failures: %d"):format(#ROUTE, failures))
+  -- bank the final state whatever happened: a "complete" run that
+  -- skip-cascaded its tail used to exit with nothing on disk
+  saveCheckpoint(#ROUTE, "route complete")
   return true
 end
 

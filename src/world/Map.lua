@@ -29,6 +29,46 @@ local function hashSet(list, into)
   return into
 end
 
+-- Passability of a cell of an UNLOADED map def -- the connected neighbor
+-- during an edge crossing.  pokered's collision check reads the neighbor
+-- strip's tile bytes, so a step off the map edge onto a solid tile of
+-- the connected map bumps exactly like an in-map wall; the port needs
+-- the same read without building the whole Map.  Same math as cellTile
+-- on the raw blocks, honoring the surf rule (water/shore passable only
+-- while surfing, same fallbacks as Map.new).
+function Map.defPassable(def, tilesetDef, cx, cy, surfing)
+  if not (def and tilesetDef and tilesetDef.blocks and tilesetDef.walkable) then
+    return true -- no data to judge with: keep the old permissive behavior
+  end
+  local tx, ty = cx * 2, cy * 2 + 1
+  local bx, by = math.floor(tx / 4), math.floor(ty / 4)
+  local id
+  if bx < 0 or by < 0 or bx >= def.width or by >= def.height then
+    id = def.borderBlock
+  else
+    id = def.blocks[by * def.width + bx + 1]
+  end
+  local block = tilesetDef.blocks[(id or 0) + 1]
+  if not block then return false end
+  local tile = block[(ty % 4) * 4 + (tx % 4) + 1]
+  for _, t in ipairs(tilesetDef.walkable) do
+    if t == tile then return true end
+  end
+  if surfing then
+    for _, t in ipairs(tilesetDef.waterTiles or WATER_TILES) do
+      if t == tile then return true end
+    end
+    local shore = tilesetDef.shoreTiles
+    if shore == nil and not NO_SHORE_TILESETS[def.tileset] then
+      shore = SHORE_TILES
+    end
+    for _, t in ipairs(shore or {}) do
+      if t == tile then return true end
+    end
+  end
+  return false
+end
+
 function Map.new(def, tilesetDef)
   local self = setmetatable({}, Map)
   self.def = def

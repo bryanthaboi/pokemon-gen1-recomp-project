@@ -170,7 +170,11 @@ function Game:update(dt)
   -- deferred A and edge pulses land in Input's press queue for this step.
   TouchInput:update(dt)
   -- Fast-forward scales only the logic clock (see src/core/GameSpeed.lua).
-  FixedStep:update(dt * self:logicSpeed())
+  -- Give the accumulator room for one full frame at the current speed,
+  -- or the anti-spiral clamp quietly caps every level above ~15X.
+  local speed = self:logicSpeed()
+  FixedStep.maxAccum = math.max(0.25, speed * FixedStep.STEP * 1.5)
+  FixedStep:update(dt * speed)
   -- Audio runs off real time at a fixed 60Hz regardless of game speed or
   -- display refresh, so fades and chip synthesis keep their intended tempo
   -- whether we are at 1X, 10X, or running with vsync disabled.

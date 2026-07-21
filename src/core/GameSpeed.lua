@@ -18,7 +18,7 @@ local GameSpeed = {}
 -- attempt is long enough that the iteration loop, not the engine, is the
 -- bottleneck. Vsync caps how much a real frame can do, so past 10X the
 -- multiplier is increasingly a ceiling rather than a rate.
-GameSpeed.LEVELS = { 1, 2, 4, 10, 20, 30, 50, 75 }
+GameSpeed.LEVELS = { 1, 2, 4, 10, 20, 30, 50, 75, 100,500 }
 GameSpeed.DEFAULT = 1
 
 function GameSpeed.levelLabel(v)

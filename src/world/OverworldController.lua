@@ -883,8 +883,7 @@ function OverworldState:checkEdgeExit(dir)
 
   local conn = self.map:connection(COMPASS[dir])
   if conn then
-    self:crossConnection(dir, conn)
-    return true
+    return self:crossConnection(dir, conn)
   end
   return false
 end
@@ -898,7 +897,7 @@ function OverworldState:crossConnection(dir, conn)
   local dest = Game.data.maps[conn.map]
   if not dest then
     Logger.warn("connection to unknown map %s", tostring(conn.map))
-    return
+    return false
   end
   local p = self.player
   local x, y = p.cellX, p.cellY
@@ -914,6 +913,15 @@ function OverworldState:crossConnection(dir, conn)
   end
   x = math.max(0, math.min(destW - 1, x))
   y = math.max(0, math.min(destH - 1, y))
+  -- pokered's collision check reads the NEIGHBOR strip's tile bytes, so
+  -- stepping off the edge onto a solid tile of the connected map bumps
+  -- exactly like an in-map wall. Without this read, Pallet's south
+  -- shore (land at x2-3) walked straight onto ROUTE_21 (3,0) -- a
+  -- collision tile -- stranding the player on a cell no walk can leave.
+  if not Map.defPassable(dest, Game.data.tilesets[dest.tileset], x, y,
+                         p.surfing) then
+    return false
+  end
   self:setMap(conn.map, x, y, p.facing, { seamless = true })
   -- place the player one cell before the seam (their old world spot,
   -- which the neighbor strip renders identically) and start the step
@@ -931,6 +939,7 @@ function OverworldState:crossConnection(dir, conn)
   p.stepFramesCur = Game.save.onBike
     and (FieldDefaults.world(Game.data, "bikeStepFrames") or 8)
     or (FieldDefaults.world(Game.data, "stepFrames") or 16)
+  return true
 end
 
 -- -------------------------------------------------------------------------
