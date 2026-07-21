@@ -26,12 +26,12 @@ function Player.new(data, cx, cy, facing)
   local walkId = FieldDefaults.fieldValue(data, "playerSprites", "walk")
   local surfId = FieldDefaults.fieldValue(data, "playerSprites", "surf")
   local bikeId = FieldDefaults.fieldValue(data, "playerSprites", "bike")
-  self.sprite = SpriteRenderer.new(data.sprites[walkId])
+  self.sprite = SpriteRenderer.new(data.sprites[walkId], "player")
   if surfId and data.sprites[surfId] then
-    self.surfSprite = SpriteRenderer.new(data.sprites[surfId])
+    self.surfSprite = SpriteRenderer.new(data.sprites[surfId], "player")
   end
   if bikeId and data.sprites[bikeId] then
-    self.bikeSprite = SpriteRenderer.new(data.sprites[bikeId])
+    self.bikeSprite = SpriteRenderer.new(data.sprites[bikeId], "player")
   end
   -- the ledge-hop shadow quarter-tile (gfx/overworld/shadow.png,
   -- LedgeHoppingShadow, engine/overworld/ledges.asm)

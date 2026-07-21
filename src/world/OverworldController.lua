@@ -388,8 +388,25 @@ end
 -- which recolored the whole screen per map -- see the survey zoom
 -- entry in docs/known-differences.md).  Border fill inherits the
 -- current map's palette.
+--
+-- RED++ true overworld coloring does NOT go through this zone/shader
+-- system at all: TileRenderer bakes real per-tile GBC colors straight into
+-- a recolored tileset atlas (see TileRenderer's gbcAtlas), and
+-- SpriteRenderer bakes sprites' OBP colors the same way, so the world
+-- canvas is already final RGB by the time this runs. Returning an EMPTY
+-- list here (when the current map has that baked atlas) skips the shader
+-- entirely -- Renderer:endFrame's blit sees zoneList[1] == nil and falls
+-- back to a plain, unshaded draw. Returning plain `nil` would NOT do this:
+-- endFrame treats a nil worldZones as "no world-specific zones, reuse the
+-- UI pass's zones" (sgbPalettes' whole-screen named-palette zone), which
+-- would re-run the DMG shade-remap over already-true-color pixels using
+-- an unrelated 4-color palette -- exactly the "colors are wrong" bug this
+-- fixes.
 function OverworldState:sgbWorldZones()
   local PaletteFX = require("src.render.PaletteFX")
+  if PaletteFX.usesGbcPack() and self.map.renderer and self.map.renderer.gbcAtlas then
+    return {}
+  end
   local base = PaletteFX.pal(Game.data, self:paletteNameFor(self.map))
   if not base then return nil end
   local vw, vh = Game.renderer:worldViewSize()
@@ -883,8 +900,7 @@ function OverworldState:checkEdgeExit(dir)
 
   local conn = self.map:connection(COMPASS[dir])
   if conn then
-    self:crossConnection(dir, conn)
-    return true
+    return self:crossConnection(dir, conn)
   end
   return false
 end
@@ -898,7 +914,7 @@ function OverworldState:crossConnection(dir, conn)
   local dest = Game.data.maps[conn.map]
   if not dest then
     Logger.warn("connection to unknown map %s", tostring(conn.map))
-    return
+    return false
   end
   local p = self.player
   local x, y = p.cellX, p.cellY
@@ -914,6 +930,15 @@ function OverworldState:crossConnection(dir, conn)
   end
   x = math.max(0, math.min(destW - 1, x))
   y = math.max(0, math.min(destH - 1, y))
+  -- pokered's collision check reads the NEIGHBOR strip's tile bytes, so
+  -- stepping off the edge onto a solid tile of the connected map bumps
+  -- exactly like an in-map wall. Without this read, Pallet's south
+  -- shore (land at x2-3) walked straight onto ROUTE_21 (3,0) -- a
+  -- collision tile -- stranding the player on a cell no walk can leave.
+  if not Map.defPassable(dest, Game.data.tilesets[dest.tileset], x, y,
+                         p.surfing) then
+    return false
+  end
   self:setMap(conn.map, x, y, p.facing, { seamless = true })
   -- place the player one cell before the seam (their old world spot,
   -- which the neighbor strip renders identically) and start the step
@@ -931,6 +956,7 @@ function OverworldState:crossConnection(dir, conn)
   p.stepFramesCur = Game.save.onBike
     and (FieldDefaults.world(Game.data, "bikeStepFrames") or 8)
     or (FieldDefaults.world(Game.data, "stepFrames") or 16)
+  return true
 end
 
 -- -------------------------------------------------------------------------
@@ -1022,7 +1048,7 @@ function OverworldState:goFishing(rod)
       if Game.save.safari and Map.inRegion(self.map.def, "SAFARI", "SAFARI_ZONE") then
         battle:makeSafari(Game.save.safari)
       end
-      battle.onFinish = function(result) self:afterBattle(result) end
+      battle.onFinish = function(result) self:afterBattle(result, battle) end
       self:pushBattle(battle)
     end))
   end))
@@ -1506,6 +1532,21 @@ function OverworldState:trySurf(fx, fy)
 end
 
 function OverworldState:tryCut(fx, fy)
+  -- UsedCut (engine/overworld/cut.asm) gates on the TILESET before
+  -- anything else: only OVERWORLD (tree tile $3d) and GYM (plant tile
+  -- $50) have cuttable anything. Matching raw block ids alone
+  -- false-positives on every other tileset -- block ids are only
+  -- meaningful within one tileset, so Route 23 (PLATEAU) had blocks
+  -- matching a swap's `before`, and applying it wrote a block id that
+  -- does not exist in PLATEAU's block table: the renderer indexed nil
+  -- and the game crashed. The same false match is what made the bot
+  -- chain-cut "ornamental bushes" around Saffron and Celadon.
+  local ts = self.map.def.tileset
+  local tile = self.map:cellTile(fx, fy)
+  if not ((ts == "OVERWORLD" and tile == 0x3d)
+          or (ts == "GYM" and tile == 0x50)) then
+    return false
+  end
   local bx, by = math.floor(fx / 2), math.floor(fy / 2)
   local block = self.map:blockAt(bx, by)
   local swap
@@ -1591,6 +1632,15 @@ function OverworldState:useCutFieldMove()
   if not self:partyKnows("CUT") then return "no_badge" end
   local fx, fy = self.player:facingCell()
   if not self.map:inBounds(fx, fy) then return "nothing" end
+  -- same tileset/tile gate as tryCut (UsedCut, engine/overworld/cut.asm):
+  -- a tree BLOCK also contains fence/path cells, and facing those is
+  -- "nothing to cut" in vanilla
+  local ts = self.map.def.tileset
+  local tile = self.map:cellTile(fx, fy)
+  if not ((ts == "OVERWORLD" and tile == 0x3d)
+          or (ts == "GYM" and tile == 0x50)) then
+    return "nothing"
+  end
   local bx, by = math.floor(fx / 2), math.floor(fy / 2)
   local block = self.map:blockAt(bx, by)
   local swap
@@ -1654,7 +1704,7 @@ function OverworldState:talkTo(npc)
             if e == npc then table.remove(self.entities, i) break end
           end
         end
-        self:afterBattle(result)
+        self:afterBattle(result, battle)
         unfreeze()
       end
       self:pushBattle(battle)
@@ -1972,7 +2022,7 @@ function OverworldState:engageTrainer(npc, onDone)
         end
         self:checkVictoryRewards(d.trainerClass, d.trainerParty)
         local after = function()
-          self:afterBattle(result)
+          self:afterBattle(result, battle)
           if onDone then onDone() end
         end
         if wonText then
@@ -1981,7 +2031,7 @@ function OverworldState:engageTrainer(npc, onDone)
           after()
         end
       else
-        self:afterBattle(result)
+        self:afterBattle(result, battle)
         if onDone then onDone() end
       end
     end
@@ -1990,6 +2040,8 @@ function OverworldState:engageTrainer(npc, onDone)
 end
 
 -- Badges/items awarded after specific battles (data/scripts/victories.lua).
+-- `deactivate` retires unfought gym/dojo trainers the way the originals'
+-- SetEvent / SetEventRange do after the leader victory.
 function OverworldState:checkVictoryRewards(trainerClass, partyIndex)
   local victories = require("data.scripts.victories")
   local reward = victories[trainerClass .. "#" .. tostring(partyIndex or 1)]
@@ -1997,6 +2049,11 @@ function OverworldState:checkVictoryRewards(trainerClass, partyIndex)
   if reward.flag then
     if Game.save.flags[reward.flag] then return self:runVictoryHook() end
     Game.save.flags[reward.flag] = true
+  end
+  if reward.deactivate then
+    for _, flag in ipairs(reward.deactivate) do
+      Game.save.flags[flag] = true
+    end
   end
   local lines = {}
   if reward.badge then
@@ -2348,7 +2405,7 @@ function OverworldState:onStepComplete()
     if Game.save.safari and Map.inRegion(self.map.def, "SAFARI", "SAFARI_ZONE") then
       battle:makeSafari(Game.save.safari)
     end
-    battle.onFinish = function(result) self:afterBattle(result) end
+    battle.onFinish = function(result) self:afterBattle(result, battle) end
     self:pushBattle(battle)
     return
   end
@@ -2681,7 +2738,9 @@ function OverworldState:safariGameOver(text)
 end
 
 -- Blackouts return to the last heal point; evolutions run after battles.
-function OverworldState:afterBattle(result)
+-- battle is optional; when given, Oak's Lab OPP_RIVAL1 losses skip the
+-- blackout (pret HandlePlayerBlackOut) so the map script can HealParty.
+function OverworldState:afterBattle(result, battle)
   local lead = Game.save.party[1]
   Logger.info("battle over: %s (lead %s %d/%d)", tostring(result),
               lead and lead.species or "-", lead and lead.hp or 0,
@@ -2691,6 +2750,13 @@ function OverworldState:afterBattle(result)
     Evolution.checkParty(Game)
   end
   if result == "lose" then
+    local oaksLabRival = battle and battle.oppClass == "OPP_RIVAL1"
+      and self.map and self.map.id == "OAKS_LAB"
+    if oaksLabRival then
+      -- stay in the lab; OaksLabRivalEndBattleScript heals and continues
+      evolutions()
+      return
+    end
     -- blackout: revive the party at the last heal point; half the
     -- money is lost (like the original)
     local Pokemon = require("src.pokemon.Pokemon")

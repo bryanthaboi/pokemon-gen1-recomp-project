@@ -598,6 +598,23 @@ check(PaletteFX.monPal(palData, "TESTMON") == monPalette,
 check(PaletteFX.monPal(palData, "UNKNOWN") == nil,
       "an unmapped species falls through to MEWMON (absent here)")
 
+-- RED++ pack: per-species SuperPalettes from data/palettes_gbc.lua
+local prevMode = PaletteFX.mode
+PaletteFX.setMode("redpp")
+check(PaletteFX.usesGbcPack(), "redpp mode selects the gbc pack")
+local gbc = PaletteFX.gbcPack()
+check(gbc ~= nil and gbc.palettes.BULBASAUR ~= nil,
+      "data/palettes_gbc.lua ships per-species pals")
+check(PaletteFX.monPalName({ palettes = nil }, "BULBASAUR") == "BULBASAUR",
+      "RED++ monPalName resolves to the species palette id")
+check(PaletteFX.monPal({ palettes = nil }, "BULBASAUR") == gbc.palettes.BULBASAUR,
+      "RED++ monPal reads the species colors without a ROM pack")
+check(PaletteFX.pal({ palettes = nil }, "ROUTE") == gbc.palettes.ROUTE,
+      "RED++ still has ROUTE (aliased from VIRIDIAN)")
+check(PaletteFX.effectiveColors(gbc.palettes.MEWMON) == gbc.palettes.MEWMON,
+      "RED++ passes zone colors through like GBC")
+PaletteFX.setMode(prevMode)
+
 -- ------- the transitions registry
 
 local transitions = Registry.new("transitions", Schemas.REGISTRIES.transitions)

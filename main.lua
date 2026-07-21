@@ -223,6 +223,9 @@ function love.quit()
   if editorMode and EditorApp.quit then
     return EditorApp.quit() -- return true to abort quit
   end
+  pcall(function()
+    require("src.core.DiscordPresence").shutdown()
+  end)
 end
 
 function love.filedropped(file)

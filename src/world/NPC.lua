@@ -26,7 +26,7 @@ function NPC.new(data, mapId, objDef)
   self.id = string.format("%s_obj_%d", mapId, objDef.index)
   local spriteDef = data.sprites[objDef.sprite]
   assert(spriteDef, "unknown sprite " .. tostring(objDef.sprite))
-  self.sprite = SpriteRenderer.new(spriteDef)
+  self.sprite = SpriteRenderer.new(spriteDef, self.id)
   -- object_event coordinates are already walk-grid cells
   self.cellX, self.cellY = objDef.x, objDef.y
   self.px, self.py = self.cellX * 16, self.cellY * 16

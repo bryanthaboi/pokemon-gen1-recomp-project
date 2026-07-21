@@ -192,20 +192,33 @@ check(actsOn.cut and actsOn.surf and actsOn.strength,
       "CUT/SURF/STRENGTH submenu entries appear once the badges are held")
 
 -- ===========================================================================
--- I: CUT from the party menu (CERULEAN_CITY cut tree @18,28, stand @17,28)
+-- I: CUT from the party menu. The Cerulean tree BLOCK (50, at block 9,14)
+-- spans two unwalkable cells: the fence half at (18,28) (tile $50) and the
+-- tree itself at (19,28) (tile $3d). UsedCut (engine/overworld/cut.asm)
+-- checks the facing TILE, so only the tree cell cuts -- stand above it at
+-- (19,27) facing down, the way a vanilla player does.
 -- ===========================================================================
 Game.save.party = { mkMon("BULBASAUR", "CUT") }
 Game.save.inventory = { CASCADEBADGE = true }
-ow = pushOW("CERULEAN_CITY", 17, 28, "right")
+ow = pushOW("CERULEAN_CITY", 19, 27, "down")
 check(ow.map:blockAt(9, 14) == 50, "cut tree block (50) present before CUT")
 
 eq(ow:useCutFieldMove(), "ok", "useCutFieldMove ok when facing a cut tree")
 ow.player.facing = "up"
 eq(ow:useCutFieldMove(), "nothing", "useCutFieldMove nothing when not facing a tree")
-ow.player.facing = "right"
+ow.player.facing = "down"
 Game.save.inventory.CASCADEBADGE = nil
 eq(ow:useCutFieldMove(), "no_badge", "useCutFieldMove no_badge without CASCADEBADGE")
 Game.save.inventory.CASCADEBADGE = true
+
+-- the fence half of the same tree block is NOT cuttable (tile $50 on
+-- OVERWORLD, not the $3d tree tile)
+popToOW()
+ow = pushOW("CERULEAN_CITY", 17, 28, "right")
+eq(ow:useCutFieldMove(), "nothing",
+   "useCutFieldMove nothing when facing the tree block's fence cell")
+popToOW()
+ow = pushOW("CERULEAN_CITY", 19, 27, "down")
 
 -- success path: facing the tree -> _UsedCutText, menu closes, tree replaced
 clearCaptured()

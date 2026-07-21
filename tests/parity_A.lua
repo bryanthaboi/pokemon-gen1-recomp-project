@@ -263,4 +263,103 @@ do
   package.loaded["src.render.TextBox"] = realTB
 end
 
+-- (7) gym / dojo leader victory deactivates unfought non-leader trainers
+-- (PewterGym.asm "; deactivate gym trainers" / SetEventRange in the
+-- other gyms; FightingDojo.asm SetEventRange through TRAINER_3).
+do
+  local victories = require("data.scripts.victories")
+  local expected = {
+    ["OPP_BROCK#1"] = { "EVENT_BEAT_PEWTER_GYM_TRAINER_0" },
+    ["OPP_MISTY#1"] = { "EVENT_BEAT_CERULEAN_GYM_TRAINER_0",
+                        "EVENT_BEAT_CERULEAN_GYM_TRAINER_1" },
+    ["OPP_LT_SURGE#1"] = { "EVENT_BEAT_VERMILION_GYM_TRAINER_0",
+                           "EVENT_BEAT_VERMILION_GYM_TRAINER_1",
+                           "EVENT_BEAT_VERMILION_GYM_TRAINER_2" },
+    ["OPP_ERIKA#1"] = 7,
+    ["OPP_KOGA#1"] = 6,
+    ["OPP_SABRINA#1"] = 7,
+    ["OPP_BLAINE#1"] = 7,
+    ["OPP_GIOVANNI#3"] = 8,
+    ["OPP_BLACKBELT#1"] = 4,
+  }
+  for key, want in pairs(expected) do
+    local d = victories[key] and victories[key].deactivate
+    check(d ~= nil, key .. " lists trainers to deactivate")
+    if type(want) == "number" then
+      eq(#d, want, key .. " deactivates " .. want .. " trainers")
+    else
+      for i, flag in ipairs(want) do
+        eq(d[i], flag, key .. " deactivate[" .. i .. "]")
+      end
+    end
+  end
+
+  -- Cinnabar trainers have no extracted def_trainers; seeded headers let
+  -- EVENT_BEAT_CINNABAR_GYM_TRAINER_* satisfy trainerDefeated without
+  -- stamping defeatedTrainers (which would also open the quiz gates).
+  Data:seedCinnabarGymTrainerHeaders()
+  check(Data.trainer_headers.CinnabarGym ~= nil,
+        "CinnabarGym trainer headers seeded for deactivate flags")
+  local nerd1 = Data:trainerHeader("CinnabarGym", 2)
+  check(nerd1 and nerd1.event == "EVENT_BEAT_CINNABAR_GYM_TRAINER_0"
+        and nerd1.range == 0,
+        "Cinnabar SUPER_NERD1 header: event + no sight range")
+
+  require("src.render.Font").load(Data)
+  local Game = require("src.core.Game")
+  local Input = require("src.core.Input")
+  local StateStack = require("src.core.StateStack")
+  local Renderer = require("src.render.Renderer")
+  local SaveData = require("src.core.SaveData")
+  local OW = require("src.world.OverworldController")
+  local realTB = package.loaded["src.render.TextBox"]
+  package.loaded["src.render.TextBox"] = {
+    new = function(game, text, done) return { text = text, onDone = done } end,
+  }
+  Game.data = Data
+  Game.input = Input; Input:init()
+  Game.renderer = Renderer; Renderer:init()
+  Game.stack = StateStack; StateStack:init()
+  while Game.stack:top() do Game.stack:pop() end
+  Game.save = SaveData.newGame()
+  Game.save.flags = {}
+  Game.save.inventory = {}
+  Game.save.defeatedTrainers = {}
+  Game.stack:push(OW, "PEWTER_GYM", 4, 13, "up")
+  local ow = Game.stack:top()
+  ow:checkVictoryRewards("OPP_BROCK", 1)
+  check(Game.save.flags.EVENT_BEAT_BROCK, "Brock victory sets EVENT_BEAT_BROCK")
+  check(Game.save.inventory.BOULDERBADGE == 1, "Brock victory awards BOULDERBADGE")
+  check(Game.save.flags.EVENT_BEAT_PEWTER_GYM_TRAINER_0,
+        "Brock victory deactivates the Pewter Gym Cooltrainer")
+  local pewterNpc
+  for _, npc in ipairs(ow.npcs) do
+    if npc.def.index == 2 then pewterNpc = npc break end
+  end
+  check(pewterNpc and ow:trainerDefeated(pewterNpc),
+        "unfought Pewter gym trainer is defeated after badge")
+
+  while Game.stack:top() do Game.stack:pop() end
+  Game.save = SaveData.newGame()
+  Game.save.flags = {}
+  Game.save.inventory = {}
+  Game.save.defeatedTrainers = {}
+  Game.stack:push(OW, "CINNABAR_GYM", 16, 15, "up")
+  ow = Game.stack:top()
+  ow:checkVictoryRewards("OPP_BLAINE", 1)
+  check(Game.save.flags.EVENT_BEAT_CINNABAR_GYM_TRAINER_3,
+        "Blaine victory deactivates Cinnabar quiz trainers")
+  check(next(Game.save.defeatedTrainers) == nil,
+        "Blaine deactivate does not stamp defeatedTrainers (gates stay put)")
+  local cinnabarNpc
+  for _, npc in ipairs(ow.npcs) do
+    if npc.def.index == 5 then cinnabarNpc = npc break end
+  end
+  check(cinnabarNpc and ow:trainerDefeated(cinnabarNpc),
+        "unfought Cinnabar trainer is defeated via seeded header event")
+
+  while Game.stack:top() do Game.stack:pop() end
+  package.loaded["src.render.TextBox"] = realTB
+end
+
 S.finish()

@@ -38,6 +38,19 @@ check(pallet:isWarpTileCell(5, 5), "Red's house door is a door tile")
 local w = pallet:warpAtCell(5, 5)
 eq(w.def.destMap, "REDS_HOUSE_1F", "door warp goes to Red's house")
 
+-- Pallet south shore spit: land that faces ROUTE_21 solids. Crossing
+-- without reading the neighbor tile stranded players (see
+-- tests/parity_connection_collision.lua).
+local Map = require("src.world.Map")
+local route21Def = Data.maps.ROUTE_21
+local route21Tileset = Data.tilesets[route21Def.tileset]
+check(pallet:isWalkableCell(2, 17), "Pallet south shore spit (2,17) walkable")
+check(pallet:isWalkableCell(3, 17), "Pallet south shore spit (3,17) walkable")
+check(not Map.defPassable(route21Def, route21Tileset, 2, 0, false),
+      "ROUTE_21 (2,0) refuses a land edge cross")
+check(not Map.defPassable(route21Def, route21Tileset, 3, 0, false),
+      "ROUTE_21 (3,0) refuses a land edge cross")
+
 -- signs
 local sign = pallet:signAtCell(13, 13)
 eq(sign.text, "TEXT_PALLETTOWN_OAKSLAB_SIGN", "Oak's lab sign at (13,13)")
@@ -731,6 +744,9 @@ do
     { map = "UNDERGROUND_PATH_ROUTE_6", route = "ROUTE_6", x = 17, y = 13 },
     { map = "UNDERGROUND_PATH_ROUTE_7", route = "ROUTE_7", x = 5, y = 13 },
     { map = "UNDERGROUND_PATH_ROUTE_8", route = "ROUTE_8", x = 13, y = 3 },
+    -- DiglettsCaveRoute{2,11}_Script: same pattern for the cave's two ends
+    { map = "DIGLETTS_CAVE_ROUTE_2", route = "ROUTE_2", x = 12, y = 9 },
+    { map = "DIGLETTS_CAVE_ROUTE_11", route = "ROUTE_11", x = 4, y = 5 },
   }
   for _, c in ipairs(cases) do
     local rewrite = rewrites[c.map]
@@ -851,6 +867,11 @@ do
     ab.rng = mkseq({ 255 }) -- the 1/256 miss
     ab:performMove(ab.player, ab.enemy, { id = "THUNDER_WAVE", pp = 10 })
     eq(ab.enemy.mon.status, nil, "THUNDER WAVE misses on the 255 roll")
+    local function hasAnim(b)
+      for _, r in ipairs(b.queue) do if r.anim then return true end end
+      return false
+    end
+    check(not hasAnim(ab), "a missed THUNDER WAVE plays no move animation")
     ab.rng = mkseq({ 254 })
     ab:performMove(ab.player, ab.enemy, { id = "THUNDER_WAVE", pp = 10 })
     eq(ab.enemy.mon.status, "PAR", "THUNDER WAVE lands on the 254 roll")
@@ -859,6 +880,33 @@ do
     sbst.rng = function() error("self move must not roll accuracy") end
     sbst:performMove(sbst.player, sbst.enemy, { id = "SHARPEN", pp = 10 })
     eq(sbst.player.stages.attack, 1, "SHARPEN skips the accuracy roll")
+  end
+
+  -- HandleIfPlayerMoveMissed: skip PlayMoveAnimation on a miss
+  -- (unless EXPLODE_EFFECT)
+  do
+    Game.save.party = { Pokemon.new(Data, "BULBASAUR", 20) }
+    local function hasAnim(b)
+      for _, r in ipairs(b.queue) do if r.anim then return true end end
+      return false
+    end
+    local function sawMiss(b)
+      for _, r in ipairs(b.queue) do
+        if r.text and r.text:find("attack missed!", 1, true) then return true end
+      end
+      return false
+    end
+    local mb = BattleState.newWild(Game, "RATTATA", 5)
+    mb.rng = function(a, b) return b end -- accuracy 255: miss
+    mb:performMove(mb.player, mb.enemy, { id = "TACKLE", pp = 10 })
+    check(sawMiss(mb), "TACKLE miss prints AttackMissedText")
+    check(not hasAnim(mb), "a missed TACKLE plays no move animation")
+    eq(mb.enemy.mon.hp, mb.enemy.mon.stats.hp, "a missed TACKLE deals no damage")
+
+    local hb = BattleState.newWild(Game, "RATTATA", 5)
+    hb.rng = function(a, b) return a end -- hit
+    hb:performMove(hb.player, hb.enemy, { id = "TACKLE", pp = 10 })
+    check(hasAnim(hb), "a landing TACKLE still queues its move animation")
   end
 
   -- #14: EXP.ALL second pass inherits the participant divisor and skips
@@ -1096,6 +1144,20 @@ do
   check(hasText(tb, ("%s defeated\n%s!"):format(Game.save.player.name,
                                                 tb.trainer.name)),
         "trainer defeat uses '<PLAYER> defeated <TRAINER>!'")
+
+  -- pret GetTrainerName_: rival classes show wRivalName, not "RIVAL1"
+  do
+    local savedRival = Game.save.player.rival
+    Game.save.player.rival = "GARY"
+    Game.save.party = { Pokemon.new(Data, "BULBASAUR", 30) }
+    local rb = BattleState.newTrainer(Game, "OPP_RIVAL1", 1)
+    eq(rb.trainer.name, "GARY", "rival battle uses saved rival name")
+    check(rb.introText:find("GARY", 1, true),
+          "rival intro wants-to-fight uses rival name")
+    check(Data.trainers.OPP_RIVAL1.name == "RIVAL1",
+          "shared trainer data keeps the RIVAL1 placeholder")
+    Game.save.player.rival = savedRival
+  end
 
   -- PartyMenu onCancel fires when backing out without a pick
   do
@@ -1964,8 +2026,8 @@ do
 -- option boxes (the port rows plus the MODS/CONTROLS entries) through a 4-box
 -- viewport with a $EE ▼ marker; MUSIC VOL / SFX VOL clamp at 0..7 like
 -- the text-speed cursor clamps at its ends (.pressedLeftInTextSpeed),
--- MUSIC FILTER cycles OFF/1X/2X/3X, and COLORS / TILT / GBC FX cycle
--- their display modes.
+-- MUSIC FILTER cycles OFF/1X/2X/3X, and COLORS / TILT / GBC FX / VIDEO MODE
+-- cycle their display modes.
 do
   local OptionsMenu = require("src.ui.OptionsMenu")
   local OInput = require("src.core.Input")
@@ -1973,6 +2035,7 @@ do
   local Tilt = require("src.render.Tilt")
   local GBCFX = require("src.render.GBCFX")
   local GameSpeed = require("src.core.GameSpeed")
+  local VideoMode = require("src.core.VideoMode")
   local SD = require("src.core.SaveData")
   -- Isolate from earlier save/options writes in this suite
   SD.saveOptions(SD.defaultOptions())
@@ -1991,6 +2054,8 @@ do
   eq(og.save.options.colors, "gbc", "new saves default COLORS to GBC")
   eq(og.save.options.tilt, 0, "new saves default TILT to OFF")
   eq(og.save.options.gbcfx, 0, "new saves default GBC FX to OFF")
+  eq(og.save.options.videoMode, "windowed",
+     "new saves default VIDEO MODE to WINDOWED")
   eq(om.scroll, 0, "options viewport starts at the top")
   for _ = 1, 4 do press("down") end
   eq(om.index, 5, "cursor reaches MUSIC VOL")
@@ -2030,7 +2095,15 @@ do
   for _ = 1, 4 do press("a") end
   eq(og.save.options.gbcfx, 0, "GBC FX wraps back to OFF")
   press("down")
-  eq(om.index, 11, "cursor reaches GAME SPEED")
+  eq(om.index, 11, "cursor reaches VIDEO MODE")
+  press("a")
+  eq(og.save.options.videoMode, "borderless",
+     "A cycles VIDEO MODE to BORDERLESS")
+  press("a")
+  eq(og.save.options.videoMode, "windowed",
+     "VIDEO MODE wraps back to WINDOWED")
+  press("down")
+  eq(om.index, 12, "cursor reaches GAME SPEED")
   press("a")
   eq(og.save.options.speed, 2, "A cycles GAME SPEED to 2X")
   -- Driven by the level list rather than a literal press count: adding a
@@ -2039,25 +2112,26 @@ do
   for _ = 1, #GameSpeed.LEVELS - 1 do press("a") end
   eq(og.save.options.speed, 1, "GAME SPEED wraps back to NORMAL")
   press("down")
-  eq(om.index, 12, "cursor reaches MODS")
+  eq(om.index, 13, "cursor reaches MODS")
   press("down")
-  eq(om.index, 13, "cursor reaches CONTROLS")
+  eq(om.index, 14, "cursor reaches CONTROLS")
   press("down")
-  eq(om.index, 14, "CANCEL stays the fixed final row")
-  eq(om.scroll, 9, "CANCEL keeps the last option boxes on screen")
+  eq(om.index, 15, "CANCEL stays the fixed final row")
+  eq(om.scroll, 10, "CANCEL keeps the last option boxes on screen")
   om:draw() -- smoke: scrolled layout draws under the headless stub
   press("a")
   check(popped, "A on CANCEL closes the options menu")
   local om2 = OptionsMenu.new(og)
   OInput.pressed = { up = true }; om2:update(1 / 60); OInput.pressed = {}
-  eq(om2.index, 14, "up from the top wraps to CANCEL")
-  eq(om2.scroll, 9, "wrapping to CANCEL scrolls to the tail")
+  eq(om2.index, 15, "up from the top wraps to CANCEL")
+  eq(om2.scroll, 10, "wrapping to CANCEL scrolls to the tail")
   -- headless-safe: no love.audio, setters only update internal state
   require("src.core.Music").applyOptions(og.save.options)
   require("src.core.Sound").applyOptions(og.save.options)
   PaletteFX.applyOptions(og.save.options)
   Tilt.applyOptions(og.save.options)
   GBCFX.applyOptions(og.save.options)
+  VideoMode.applyOptions(og.save.options)
 end
 end
 

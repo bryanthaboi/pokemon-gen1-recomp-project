@@ -10,8 +10,8 @@
 --   starter -> taunt + battle OPP_RIVAL1 with the counter-pick party
 --   (player Bulbasaur -> rival Charmander etc., parties 1/2/3 =
 --   Squirtle/Bulbasaur/Charmander in data/trainers/parties.asm);
---   afterwards he gloats or sulks and marches out of the lab
---   (OaksLabRivalBattleEndScript).
+--   afterwards HealParty + flag always, then he gloats or sulks and
+--   marches out (OaksLabRivalEndBattleScript).  A loss does not black out.
 
 -- ball objects: CHARMANDER (6,3), SQUIRTLE (7,3), BULBASAUR (8,3);
 -- rival = object 1 at (4,3).  rivalBallX is the counter-pick's column.
@@ -107,9 +107,9 @@ return {
     TEXT_OAKSLAB_RIVAL = {
       { "face_player" },                                          -- 1
       { "check_flag", "EVENT_GOT_STARTER" },                      -- 2
-      { "jump_if_false", 20 },                                    -- 3
+      { "jump_if_false", 21 },                                    -- 3
       { "check_flag", "EVENT_BATTLED_RIVAL_IN_OAKS_LAB" },        -- 4
-      { "jump_if_true", 18 },                                     -- 5
+      { "jump_if_true", 19 },                                     -- 5
       { "show_text", "_OaksLabRivalMyPokemonLooksStrongerText" }, -- 6
       { "check_flag", "EVENT_CHOSE_BULBASAUR" },                  -- 7
       { "jump_if_false", 11 },                                    -- 8
@@ -120,18 +120,20 @@ return {
       { "start_battle", "trainer", "OPP_RIVAL1", 2 },             -- 13 Bulbasaur
       { "jump", 16 },                                             -- 14
       { "start_battle", "trainer", "OPP_RIVAL1", 1 },             -- 15 Squirtle
-      { "set_flag", "EVENT_BATTLED_RIVAL_IN_OAKS_LAB" },          -- 16
-      { "jump", 21 },                                             -- 17
-      { "show_text", "_OaksLabRivalFedUpWithWaitingText" },       -- 18
-      { "jump", 25 },                                             -- 19
-      { "show_text", "_OaksLabRivalGrampsIsntAroundText" },       -- 20
-      -- battle aftermath: on a win the rival sulks and marches out
-      -- (OaksLabRivalBattleEnd); on a loss the blackout already warped
-      -- us away, so the script just ends
-      { "jump_if_false", 25 },                                    -- 21
-      { "show_text", "_OaksLabRivalIPickedTheWrongPokemonText" }, -- 22
-      { "move_npc_to", 1, 4, 11 },                                -- 23
-      { "hide_object", "OAKS_LAB", "OAKSLAB_RIVAL" },             -- 24 (25 = end)
+      -- OaksLabRivalEndBattleScript: HealParty + flag, then exit either way
+      { "heal_party" },                                           -- 16
+      { "set_flag", "EVENT_BATTLED_RIVAL_IN_OAKS_LAB" },          -- 17
+      { "jump", 23 },                                             -- 18
+      { "show_text", "_OaksLabRivalFedUpWithWaitingText" },       -- 19
+      { "jump", "end" },                                          -- 20
+      { "show_text", "_OaksLabRivalGrampsIsntAroundText" },       -- 21
+      { "jump", "end" },                                          -- 22
+      -- win: sulk text then exit; loss: Rival1WinText already played in
+      -- battle (HandlePlayerBlackOut), so skip straight to the walk-out
+      { "jump_if_false", 25 },                                    -- 23
+      { "show_text", "_OaksLabRivalIPickedTheWrongPokemonText" }, -- 24
+      { "move_npc_to", 1, 4, 11 },                                -- 25
+      { "hide_object", "OAKS_LAB", "OAKSLAB_RIVAL" },             -- 26
     },
   },
 
@@ -178,9 +180,12 @@ return {
       local party = flags.EVENT_CHOSE_BULBASAUR and 3
                     or flags.EVENT_CHOSE_SQUIRTLE and 2 or 1
       table.insert(rows, { "start_battle", "trainer", "OPP_RIVAL1", party })
+      -- OaksLabRivalEndBattleScript: heal + flag on win or loss; no blackout
+      table.insert(rows, { "heal_party" })
       table.insert(rows, { "set_flag", "EVENT_BATTLED_RIVAL_IN_OAKS_LAB" })
-      -- a loss blacks out to another map: end the script there
-      table.insert(rows, { "jump_if_false", base + 7 })
+      -- win: sulk text then exit; loss jumps to the walk-out (taunt was
+      -- already shown in-battle via Rival1WinText)
+      table.insert(rows, { "jump_if_false", base + 6 })
       table.insert(rows, { "show_text", "_OaksLabRivalIPickedTheWrongPokemonText" })
       table.insert(rows, { "move_npc_to", 1, 4, 11 })
       table.insert(rows, { "hide_object", "OAKS_LAB", "OAKSLAB_RIVAL" })

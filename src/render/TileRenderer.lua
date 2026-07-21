@@ -108,10 +108,23 @@ end
 -- the water/flower branches did before they were data.
 -- ------------------------------------------------------------------
 
--- the 8 shifted variants of one tile (built once per sheet + tile id)
+-- shade 0-3 -> one of `colors`' 4 entries (same cutoffs PaletteFX's shader
+-- uses), alpha passed through unchanged; nil colors leaves r,g,b as-is.
+-- Shared by the whole-atlas bake (getGbcAtlas) and the animated-tile
+-- variants below, so water/flowers/spinners match the static tiles around
+-- them under RED++ instead of showing their un-recolored grayscale.
+local function recolorSample(r, g, b, a, colors)
+  if not (colors and a > 0) then return r, g, b, a end
+  local col = r > 0.83 and colors[1] or r > 0.5 and colors[2]
+              or r > 0.17 and colors[3] or colors[4]
+  return col[1] / 255, col[2] / 255, col[3] / 255, a
+end
+
+-- the 8 shifted variants of one tile (built once per sheet + tile id [+
+-- gbcKey, when `colors` recolors it for RED++ -- see buildAnim])
 local shiftVariants = {}
-local function getShiftVariants(tilesetImagePath, perRow, tile)
-  local key = tilesetImagePath .. "#" .. tile
+local function getShiftVariants(tilesetImagePath, perRow, tile, colors, gbcKey)
+  local key = tilesetImagePath .. "#" .. tile .. (gbcKey or "")
   if shiftVariants[key] ~= nil then return shiftVariants[key] end
   if not (love.image and love.image.newImageData) then
     shiftVariants[key] = false
@@ -126,6 +139,7 @@ local function getShiftVariants(tilesetImagePath, perRow, tile)
     for y = 0, 7 do
       for x = 0, 7 do
         local r, g, b, a = id:getPixel(sx + x, sy + y)
+        r, g, b, a = recolorSample(r, g, b, a, colors)
         v:setPixel((x + o) % 8, y, r, g, b, a)
       end
     end
@@ -136,12 +150,27 @@ local function getShiftVariants(tilesetImagePath, perRow, tile)
 end
 
 local frameImages = {}
-local function getFrameImages(paths)
-  local key = table.concat(paths, "|")
+local function getFrameImages(paths, colors, gbcKey)
+  local key = table.concat(paths, "|") .. (gbcKey or "")
   if frameImages[key] ~= nil then return frameImages[key] end
   local out = {}
   for i, path in ipairs(paths) do
-    local ok, img = pcall(getImage, path)
+    local ok, img = pcall(function()
+      if not (colors and love.image and love.image.newImageData) then
+        return getImage(path)
+      end
+      local id = Assets.imageData(path)
+      local w, h = id:getDimensions()
+      local out2 = love.image.newImageData(w, h)
+      for y = 0, h - 1 do
+        for x = 0, w - 1 do
+          local r, g, b, a = id:getPixel(x, y)
+          r, g, b, a = recolorSample(r, g, b, a, colors)
+          out2:setPixel(x, y, r, g, b, a)
+        end
+      end
+      return love.graphics.newImage(out2)
+    end)
     if not ok then
       frameImages[key] = false
       return false
@@ -237,17 +266,33 @@ end
 -- one entry's runtime form: the tile ids it claims, the textures a step
 -- picks from, and either a step sequence (hshift/frames) or a gate
 -- (toggle).  nil when the entry's pixels could not be built.
-local function buildAnim(spec, tilesetImagePath, perRow, quads)
+--
+-- gbc, when present (RED++ with a baked atlas -- see getGbcAtlas), recolors
+-- hshift/frames entries (water/flowers) the same way the atlas bakes their
+-- static tile, so they match their surroundings instead of showing raw
+-- grayscale over an otherwise fully-colored map. The "toggle" kind
+-- (spinner puzzle blur, gfx/overworld/spinners.png) is a whole-atlas clone
+-- built from the ORIGINAL grayscale atlas, not worth recoloring for a rare,
+-- gameplay-gated blur -- it is skipped under gbc, same as the buildAnim
+-- caller already does for a texture-build failure (the static, correctly-
+-- colored tile shows through unanimated).
+local function buildAnim(spec, tilesetImagePath, perRow, quads, gbc)
   local tiles = spec.tiles
   if not tiles then
     if spec.tile == nil then return nil end
     tiles = { spec.tile }
   end
   local period = spec.period or ANIM_PERIOD
+  local colors
+  if gbc then
+    local group = PaletteFX.worldGroupAt(gbc.tilesetId, gbc.mapId, tiles[1])
+    colors = group and gbc.groupColors[group + 1]
+  end
   if spec.kind == "hshift" then
     local offsets = spec.offsets
     if not offsets or #offsets == 0 then return nil end
-    local textures = getShiftVariants(tilesetImagePath, perRow, tiles[1])
+    local textures = getShiftVariants(tilesetImagePath, perRow, tiles[1],
+                                      colors, gbc and gbc.key)
     if not textures then return nil end
     local sequence = {}
     for i, offset in ipairs(offsets) do sequence[i] = offset + 1 end
@@ -256,11 +301,12 @@ local function buildAnim(spec, tilesetImagePath, perRow, quads)
   elseif spec.kind == "frames" then
     local sequence = spec.sequence
     if not (spec.images and sequence and #sequence > 0) then return nil end
-    local textures = getFrameImages(spec.images)
+    local textures = getFrameImages(spec.images, colors, gbc and gbc.key)
     if not textures then return nil end
     return { tiles = tiles, textures = textures, sequence = sequence,
              period = period }
   elseif spec.kind == "toggle" then
+    if gbc then return nil end
     local image = getToggleImage(spec, tilesetImagePath, perRow)
     if not image then return nil end
     -- the patch texture is a whole-atlas clone, so each cell needs the
@@ -271,10 +317,82 @@ local function buildAnim(spec, tilesetImagePath, perRow, quads)
   return nil
 end
 
-function TileRenderer.new(map)
+-- True GBC overworld coloring (COLORS=RED++): recolor the WHOLE tileset
+-- atlas once, per (tileset image, map), rather than trying to retrofit the
+-- SGB zone/shade-remap-shader post-process (built for a handful of coarse
+-- screen regions) into per-tile precision -- pokered-gbc's real model is
+-- "one of 8 four-color BG palettes baked per tile GRAPHIC"
+-- (color/loadpalettes.asm LoadTilesetPalette), which is exactly a
+-- recolored atlas, not a shader pass. Every existing draw path (batches,
+-- quads, border fill) then just works unmodified, with no shader at
+-- draw time; OverworldState.sgbWorldZones skips the shade-remap zone pass
+-- entirely when this is active (re-running it over already-true-color
+-- pixels would corrupt them), and SpriteRenderer's own OBP bake composites
+-- on top with ordinary alpha blending -- no trueColor exemption needed,
+-- because there is no shader left for it to be exempted from.
+--
+-- Only the ROOF group (index 6, OVERWORLD/PLATEAU only) varies by town
+-- (LoadTownPalette); Route 6's mid-map Saffron-roof y<2 split is not
+-- reproduced (it would need a rebuild on crossing the boundary for two
+-- tile-rows of one route -- not worth the complexity), so it bakes with
+-- the route's own default roof (Vermilion's) throughout.
+local gbcAtlasCache = {}
+
+local function getGbcAtlas(imagePath, tilesetId, mapId, perRow, data)
+  local key = imagePath .. "#gbc:" .. mapId
+  if gbcAtlasCache[key] ~= nil then return gbcAtlasCache[key] or nil end
+  local img = false
+  if love.image and love.image.newImageData then
+    local groupColors = PaletteFX.worldGroupColors(data, tilesetId, mapId, nil)
+    if groupColors then
+      local src = Assets.imageData(imagePath)
+      local iw, ih = src:getDimensions()
+      local out = love.image.newImageData(iw, ih)
+      local tileColors = {}
+      for t = 0, (iw / 8) * (ih / 8) - 1 do
+        local colors = tileColors[t]
+        if colors == nil then
+          local group = PaletteFX.worldGroupAt(tilesetId, mapId, t)
+          colors = (group and groupColors[group + 1]) or false
+          tileColors[t] = colors
+        end
+        local ox, oy = (t % perRow) * 8, math.floor(t / perRow) * 8
+        for py = 0, 7 do
+          for px = 0, 7 do
+            local sx, sy = ox + px, oy + py
+            local r, g, b, a = src:getPixel(sx, sy)
+            r, g, b, a = recolorSample(r, g, b, a, colors)
+            out:setPixel(sx, sy, r, g, b, a)
+          end
+        end
+      end
+      img = love.graphics.newImage(out)
+    end
+  end
+  gbcAtlasCache[key] = img
+  return img or nil
+end
+
+-- data: Game.data (threaded through explicitly, not required lazily, so
+-- headless tests that build a map from a plain local table still work)
+function TileRenderer.new(map, data)
   local self = setmetatable({}, TileRenderer)
   self.map = map
+  self.data = data
   self.image = getImage(map.tileset.image)
+  local gbcCtx
+  if data and PaletteFX.usesGbcPack() and PaletteFX.hasWorldTileset(map.tileset.id) then
+    local gbc = getGbcAtlas(map.tileset.image, map.tileset.id, map.id,
+                            map.tileset.tilesPerRow, data)
+    if gbc then
+      self.image = gbc
+      self.gbcAtlas = true
+      -- also recolors the animated water/flower entries below, so they
+      -- match the atlas's static tiles instead of showing raw grayscale
+      gbcCtx = { tilesetId = map.tileset.id, mapId = map.id, key = "#gbc:" .. map.id,
+                groupColors = PaletteFX.worldGroupColors(data, map.tileset.id, map.id, nil) }
+    end
+  end
   -- a full-color atlas colors everything it paints, ring and border fill
   -- included, so every draw entry point claims its rect out of the pass
   self.trueColor = map.tileset.trueColor or nil
@@ -301,7 +419,7 @@ function TileRenderer.new(map)
   local declared = map.tileset.animatedTiles
                    or TileRenderer.defaultAnimatedTiles(map.tileset)
   for _, spec in ipairs(declared) do
-    local anim = buildAnim(spec, map.tileset.image, perRow, self.quads)
+    local anim = buildAnim(spec, map.tileset.image, perRow, self.quads, gbcCtx)
     if anim then
       anim.cells = {}
       anims[#anims + 1] = anim
@@ -487,7 +605,10 @@ end
 
 -- rebuild after a block change (Cut trees)
 function TileRenderer:rebuild()
-  local fresh = TileRenderer.new(self.map)
+  local fresh = TileRenderer.new(self.map, self.data)
+  self.image = fresh.image
+  self.gbcAtlas = fresh.gbcAtlas
+  self.quads = fresh.quads
   self.ringBatch = fresh.ringBatch
   self.mapBatch = fresh.mapBatch
   self.anims = fresh.anims

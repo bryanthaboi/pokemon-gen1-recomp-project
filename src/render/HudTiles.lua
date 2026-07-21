@@ -86,10 +86,11 @@ function HudTiles.drawHPBar(data, tx, ty, mon, barType)
     px = math.max(1, math.floor(mon.hp * 48 / mon.stats.hp))
   end
   local tint
-  local pals = data.palettes
-  if pals then
-    local name = px >= 27 and "GREENBAR" or px >= 10 and "YELLOWBAR" or "REDBAR"
-    local c = pals.palettes[name][3] -- GB color 2 is the fill shade
+  local PaletteFX = require("src.render.PaletteFX")
+  local name = px >= 27 and "GREENBAR" or px >= 10 and "YELLOWBAR" or "REDBAR"
+  local colors = PaletteFX.pal(data, name)
+  if colors then
+    local c = colors[3] -- GB color 2 is the fill shade
     -- the fill pixels are the 2/3-gray shade; divide so they land on
     -- the palette color exactly (the black outline stays black)
     tint = { math.min(1, c[1] / 170), math.min(1, c[2] / 170),

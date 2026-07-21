@@ -47,6 +47,8 @@ function SaveData.defaultOptions()
     colors = "gbc",
     tilt = 0,
     gbcfx = 0,
+    -- windowed | borderless (desktop fullscreen); ignored on mobile
+    videoMode = "windowed",
     -- Native mod enablement is an installation option, not save-slot data.
     -- Missing entries mean enabled so newly installed mods work by default.
     mods = {},

@@ -23,7 +23,7 @@ function MapLoader.load(data, mapId)
   -- warp tiles are stored per tileset macro name; the generated tilesets
   -- module carries them in the tileset entry itself
   local map = Map.new(def, tilesetDef)
-  map.renderer = TileRenderer.new(map)
+  map.renderer = TileRenderer.new(map, data)
   cache[mapId] = map
   return map
 end
