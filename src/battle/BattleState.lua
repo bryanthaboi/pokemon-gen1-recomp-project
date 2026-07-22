@@ -1532,10 +1532,16 @@ function BattleState:endOfTurn()
   -- that sets the flag also zeroes the counter, so a stale value is
   -- unobservable (a switch or cure downgrades Toxic to plain poison).
   self.sideToxic = self.sideToxic or {}
-  for _, pair in ipairs({ { self.player, self.enemy, "player" },
-                          { self.enemy, self.player, "enemy" } }) do
-    local b, opp, side = pair[1], pair[2], pair[3]
-    if b.mon.hp > 0 then
+  -- a battler whose opponent was already knocked out by a move this turn
+  -- skips its own residual (HandlePoisonBurnLeechSeed is bypassed when the
+  -- move faints the target); snapshot before residual so one side's
+  -- residual faint can't suppress the other's
+  local playerAlive = self.player.mon.hp > 0
+  local enemyAlive = self.enemy.mon.hp > 0
+  for _, pair in ipairs({ { self.player, self.enemy, "player", enemyAlive },
+                          { self.enemy, self.player, "enemy", playerAlive } }) do
+    local b, opp, side, oppAlive = pair[1], pair[2], pair[3], pair[4]
+    if b.mon.hp > 0 and oppAlive then
       local msgs = Status.residual(b, opp, self)
       for _, m in ipairs(msgs) do self:sayNext(prefixEnemy(m, b)) end
       if #msgs > 0 then self:drainNext() end -- poison/burn/seed HP moved
@@ -2442,6 +2448,9 @@ end
 function BattleState:onFaint(battler)
   if battler.faintQueued then return end
   battler.faintQueued = true
+  if battler.isPlayer and self.participants then
+    self.participants[battler.mon] = nil
+  end
   Runtime.emit("battle.fainted", { battle = self, battler = battler })
   -- the faint slide + cry ride the queue (after the move animation and
   -- the HP-bar drain, pokered's order); the slide finishes before the
@@ -2478,9 +2487,9 @@ function BattleState:enemyMonFainted()
   -- exp is split among the mons that fought this enemy
   -- (engine/battle/experience.asm); traded mons earn x1.5; each
   -- participant gets the full stat exp
-  -- the divisor counts EVERY participant, fainted ones included
-  -- (DivideExpDataByNumMonsGainingExp keeps their flag bits); only the
-  -- living ones are actually paid
+  -- a mon that fainted mid-fight has had its gain-exp flag cleared
+  -- (RemoveFaintedPlayerMon), so it drops out of the divisor and only
+  -- the surviving participants are counted and paid
   local participants, alive = 0, {}
   for _, mon in ipairs(self.game.save.party) do
     if self.participants and self.participants[mon] then

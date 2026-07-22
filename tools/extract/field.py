@@ -116,7 +116,8 @@ def parse_hidden_events(pokered):
     Itemfinder detects), HiddenCoins (Game Corner floor coins) and
     StartSlotMachine (slot machine seats; arg SLOTS_* marks broken ones).
     Also collects the engine text hooks that the port implements natively:
-    OpenPokemonCenterPC, PrintBenchGuyText, GymStatues and the Vermilion
+    OpenPokemonCenterPC / OpenRedsPC (the player's storage PC in the
+    bedroom), PrintBenchGuyText, GymStatues and the Vermilion
     Gym GymTrashScript cans (arg = [wGymTrashCanIndex]).  For those the
     fourth macro argument is the facing direction required to trigger the
     event, except GymTrashScript where it is the can index.
@@ -153,7 +154,7 @@ def parse_hidden_events(pokered):
             elif arg == "SLOTS_SOMEONESKEYS":
                 state = "keys"
             slots.setdefault(current, []).append({"x": x, "y": y, "state": state})
-        elif func == "OpenPokemonCenterPC":
+        elif func == "OpenPokemonCenterPC" or func == "OpenRedsPC":
             extras["pcTiles"].setdefault(current, []).append(
                 {"x": x, "y": y, "facing": DIRS.get(arg, arg)})
         elif func == "PrintBenchGuyText":

@@ -296,37 +296,52 @@ local function useOn(game, battle, id, target, list, moveIndex)
   showMessages(game, payload) -- failed
 end
 
+local function pickTargetAndUse(game, battle, id, list)
+  -- pick a target from the party
+  -- the ETHERs and PP UP open the move menu after picking a mon
+  -- (ItemUsePPRestore / ItemUsePPUp); the ELIXERs hit every move
+  local wantsMove = id == "ETHER" or id == "MAX_ETHER" or id == "PP_UP"
+  require("src.ui.Screens").push(game, "PartyMenu", {
+    pickOnly = true,
+    onSwitch = function(mon)
+      if not wantsMove then
+        useOn(game, battle, id, mon, list)
+        return
+      end
+      local rows = {}
+      for mi, mv in ipairs(mon.moves) do
+        local mdef = game.data.moves[mv.id]
+        table.insert(rows, {
+          value = mi,
+          label = mdef and mdef.name or mv.id,
+          right = ("%d"):format(mv.pp),
+        })
+      end
+      game.stack:push(ListMenu.new(game, "Which move?", rows, {
+        onChoose = function(row, l)
+          l:close()
+          useOn(game, battle, id, mon, list, row.value)
+        end,
+      }))
+    end,
+  })
+end
+
 local function useItem(game, battle, id, list)
   local def = game.data.items[id]
   if ItemEffects.needsTarget(id, def) and not ItemEffects.isBall(id) then
-    -- pick a target from the party
-    -- the ETHERs and PP UP open the move menu after picking a mon
-    -- (ItemUsePPRestore / ItemUsePPUp); the ELIXERs hit every move
-    local wantsMove = id == "ETHER" or id == "MAX_ETHER" or id == "PP_UP"
-    require("src.ui.Screens").push(game, "PartyMenu", {
-      pickOnly = true,
-      onSwitch = function(mon)
-        if not wantsMove then
-          useOn(game, battle, id, mon, list)
-          return
-        end
-        local rows = {}
-        for mi, mv in ipairs(mon.moves) do
-          local mdef = game.data.moves[mv.id]
-          table.insert(rows, {
-            value = mi,
-            label = mdef and mdef.name or mv.id,
-            right = ("%d"):format(mv.pp),
-          })
-        end
-        game.stack:push(ListMenu.new(game, "Which move?", rows, {
-          onChoose = function(row, l)
-            l:close()
-            useOn(game, battle, id, mon, list, row.value)
-          end,
-        }))
-      end,
-    })
+    -- TMs/HMs boot up and announce their move before the target picker
+    -- (ItemUseTMHM: BootedUpTMText / BootedUpHMText + TeachMachineMoveText)
+    if def and def.machine then
+      local moveDef = game.data.moves[def.machine.move]
+      local moveName = moveDef and moveDef.name or def.machine.move
+      local booted = def.machine.kind == "HM"
+        and "Booted up an HM!" or "Booted up a TM!"
+      showMessages(game, { booted, ("It contained\n%s!"):format(moveName) },
+        function() pickTargetAndUse(game, battle, id, list) end)
+      return
+    end
+    pickTargetAndUse(game, battle, id, list)
   else
     useOn(game, battle, id, nil, list)
   end

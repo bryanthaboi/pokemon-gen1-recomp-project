@@ -397,6 +397,7 @@ local function toggleObject(ctx, mapId, objName, visible)
   -- positions mid-cutscene)
   local ow = ctx.overworld
   if not ow or ow.map.id ~= mapId then return end
+  ow.npcPool = ow.npcPool or {}
   if visible then
     for _, n in ipairs(ow.npcs) do
       if n.def.name == objName then return end
@@ -407,12 +408,16 @@ local function toggleObject(ctx, mapId, objName, visible)
         local npc = NPC.new(ctx.game.data, mapId, obj)
         table.insert(ow.npcs, npc)
         table.insert(ow.entities, npc)
+        ow.npcPool[npc.id] = npc
         return
       end
     end
   else
     for i = #ow.npcs, 1, -1 do
-      if ow.npcs[i].def.name == objName then table.remove(ow.npcs, i) end
+      if ow.npcs[i].def.name == objName then
+        ow.npcPool[ow.npcs[i].id] = nil
+        table.remove(ow.npcs, i)
+      end
     end
     for i = #ow.entities, 1, -1 do
       local e = ow.entities[i]

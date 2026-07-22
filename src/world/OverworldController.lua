@@ -1708,8 +1708,10 @@ function OverworldState:tryCut(fx, fy)
   -- chain-cut "ornamental bushes" around Saffron and Celadon.
   local ts = self.map.def.tileset
   local tile = self.map:cellTile(fx, fy)
+  local isGrass = (ts == "OVERWORLD" and tile == 0x52)
   if not ((ts == "OVERWORLD" and tile == 0x3d)
-          or (ts == "GYM" and tile == 0x50)) then
+          or (ts == "GYM" and tile == 0x50)
+          or isGrass) then
     return false
   end
   local bx, by = math.floor(fx / 2), math.floor(fy / 2)
@@ -1718,7 +1720,7 @@ function OverworldState:tryCut(fx, fy)
   for _, sw in ipairs(Game.data.field.cutTreeSwaps) do
     if sw.before == block then swap = sw break end
   end
-  if not swap or self.map:isWalkableCell(fx, fy) then return false end
+  if not swap or (not isGrass and self.map:isWalkableCell(fx, fy)) then return false end
   local mon = self:partyKnows("CUT")
   if not mon then return false end
   -- gen 1 confirms nothing (engine/overworld/cut.asm UsedCut): the
@@ -1736,7 +1738,11 @@ function OverworldState:tryCut(fx, fy)
     local finish = function()
       require("src.core.Sound").play(Game.data, "Cut")
     end
-    if ts == "OVERWORLD" then
+    if isGrass then
+      -- AnimCut .grass: tall grass gets the leaf-swirl / dust puff, not
+      -- the tree-split slide
+      self:startDustAnim(fx, fy, finish)
+    elseif ts == "OVERWORLD" then
       -- the tree splits in half and slides apart (AnimCut .cutTreeLoop);
       -- the GYM plant keeps the shared dust/leaf puff
       self:startCutTreeAnim(fx, fy, finish)
@@ -1822,8 +1828,10 @@ function OverworldState:useCutFieldMove()
   -- "nothing to cut" in vanilla
   local ts = self.map.def.tileset
   local tile = self.map:cellTile(fx, fy)
+  local isGrass = (ts == "OVERWORLD" and tile == 0x52)
   if not ((ts == "OVERWORLD" and tile == 0x3d)
-          or (ts == "GYM" and tile == 0x50)) then
+          or (ts == "GYM" and tile == 0x50)
+          or isGrass) then
     return "nothing"
   end
   local bx, by = math.floor(fx / 2), math.floor(fy / 2)
@@ -1832,7 +1840,7 @@ function OverworldState:useCutFieldMove()
   for _, sw in ipairs(Game.data.field.cutTreeSwaps) do
     if sw.before == block then swap = sw break end
   end
-  if not swap or self.map:isWalkableCell(fx, fy) then return "nothing" end
+  if not swap or (not isGrass and self.map:isWalkableCell(fx, fy)) then return "nothing" end
   return "ok"
 end
 
@@ -2004,9 +2012,11 @@ function OverworldState:openPC(onDone)
   end
   table.insert(items, { label = "LOG OFF", onSelect = logOff })
   -- pokered sets BIT_NO_MENU_BUTTON_SOUND for the whole PC session
-  -- (engine/overworld/pokecenter_pc.asm / player_pc.asm)
+  -- (engine/overworld/pokecenter_pc.asm / player_pc.asm); DisplayPCMainMenu
+  -- calls TextBoxBorder with c=14 (interior width, +2 for the border), so
+  -- tw here (total width) is 16
   Game.stack:push(Menu.new(Game, items,
-    { tx = 0, ty = 0, tw = 14, th = #items * 2 + 2, onCancel = logOff,
+    { tx = 0, ty = 0, tw = 16, th = #items * 2 + 2, onCancel = logOff,
       noSound = true }))
 end
 
