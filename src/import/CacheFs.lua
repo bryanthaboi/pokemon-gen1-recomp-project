@@ -63,26 +63,44 @@ end
 
 -- Mount an external directory onto the physfs read path (appended, so the
 -- game's own source always wins a name clash).  Returns true on success.
--- Guarded and lazily bound like the mkdir helper; PHYSFS_mount is exported
--- from love's framework, so ffi.C resolves it in the running process.
+--
+-- PHYSFS_mount is exported by love's own binary.  How ffi finds it differs
+-- per platform: on macOS/Linux the symbol is in the default namespace, so
+-- ffi.C resolves it; on Windows it lives in love.dll, which ffi.C does NOT
+-- search, so love.dll is loaded explicitly with ffi.load("love").  Try the
+-- default first, then love.
 local physfsMountFn = nil
-local function mountReadable(dir)
-  if physfsMountFn == nil then
-    physfsMountFn = false
-    local ok, ffi = pcall(require, "ffi")
-    if ok then
-      pcall(ffi.cdef,
-        "int PHYSFS_mount(const char *newDir, const char *mountPoint, int appendToPath);")
-      if pcall(function() return ffi.C.PHYSFS_mount end) then
+local function resolveMount()
+  if physfsMountFn ~= nil then return physfsMountFn end
+  physfsMountFn = false
+  local ok, ffi = pcall(require, "ffi")
+  if not ok then return physfsMountFn end
+  pcall(ffi.cdef,
+    "int PHYSFS_mount(const char *newDir, const char *mountPoint, int appendToPath);")
+  local libs = {
+    function() return ffi.C end,
+    function() return ffi.load("love") end,
+  }
+  for _, getlib in ipairs(libs) do
+    local okl, lib = pcall(getlib)
+    if okl and lib then
+      local oks, fn = pcall(function() return lib.PHYSFS_mount end)
+      if oks and fn then
         physfsMountFn = function(d)
-          local okc, ret = pcall(ffi.C.PHYSFS_mount, d, "", 1)
-          return okc and ret ~= 0
+          local okr, ret = pcall(fn, d, "", 1)
+          return okr and ret ~= 0
         end
+        break
       end
     end
   end
-  if not physfsMountFn then return false end
-  return physfsMountFn(dir)
+  return physfsMountFn
+end
+
+local function mountReadable(dir)
+  local fn = resolveMount()
+  if not fn then return false end
+  return fn(dir)
 end
 
 -- The portable game folder when the cache should live there, else nil.

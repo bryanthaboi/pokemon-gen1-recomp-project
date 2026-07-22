@@ -101,7 +101,7 @@ def set_prop(text, key, value):
 text = re.sub(r"(?m)^app\.name_byte_array=.*\n?", "", text)
 text = set_prop(text, "app.name", name)
 text = set_prop(text, "app.application_id", app_id)
-text = set_prop(text, "app.orientation", "portrait")
+text = set_prop(text, "app.orientation", "fullUser")
 if version:
     text = set_prop(text, "app.version_name", version)
     text = set_prop(text, "app.version_code", version_code)
