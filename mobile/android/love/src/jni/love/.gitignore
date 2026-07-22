@@ -36,6 +36,7 @@ demos
 *~
 Makefile*
 config*
+!src/common/config.h
 libtool
 /platform/unix/ar-lib
 /platform/unix/compile
