@@ -17,7 +17,7 @@ local Game = {}
 
 -- dev-mode gate for the F5/backtick hotkeys; false keeps every src/dev
 -- module unloaded, so a player boot never touches a byte of dev code
-local devMode = os.getenv("POKEPORT_DEV") == "1"
+local devMode = os.getenv("POKEPORT_DEV") == "1" or _G.POKEPORT_DEV_MODE == true
 
 -- the boot screen ids (field.boot.screens); a plain function so the
 -- headless harness can borrow makeTitleState onto a stub game

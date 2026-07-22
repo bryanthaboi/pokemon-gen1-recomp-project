@@ -133,22 +133,70 @@ M.BLUES_HOUSE = {
 
 M.BILLS_HOUSE = {
   talk = {
-    TEXT_BILLSHOUSE_BILL_POKEMON = {
-      { "check_flag", "EVENT_GOT_SS_TICKET" },                     -- 1
-      { "jump_if_true", 13 },                                      -- 2
-      { "show_text", "_BillsHouseBillImNotAPokemonText" },         -- 3
-      { "show_text", "_BillsHouseBillNoYouGottaHelpText" },        -- 4
-      -- the cell-separator PC throws its switch
-      -- (bills_house_pc.asm BillsHouseInitiatedText: SFX_SWITCH)
-      { "play_sound", "Switch" },                                  -- 5
-      { "show_text", "_BillsHouseBillThankYouText" },              -- 6
+    -- BillsHouseBillPokemonText: "I'm not a POKéMON!", a YES/NO choice
+    -- (NO only adds "No, you gotta help!" before rejoining the YES
+    -- path), then the "get in the TELEPORTER" line and the monster
+    -- walking into the cell-separator machine
+    -- (BillsHousePokemonWalkToMachineScript: up 3, or around the player
+    -- when they stand in the way facing down), where it is hidden and
+    -- EVENT_BILL_SAID_USE_CELL_SEPARATOR arms the PC at (1,4) -- see
+    -- OverworldState.billsHousePC for the separator itself.
+    TEXT_BILLSHOUSE_BILL_POKEMON = function(game, ow, npc, done)
+      local TextBox = require("src.render.TextBox")
+      local t = game.data.text
+      local function toMachine()
+        game.stack:push(TextBox.new(game,
+          t._BillsHouseBillUseSeparationSystemText
+          or "When I'm in the\nTELEPORTER, run\nthe Cell\nSeparation System!", function()
+          local function entered()
+            local Commands = require("src.script.Commands")
+            Commands.hide_object({ game = game, save = game.save,
+                                   overworld = ow },
+                                 "BILLS_HOUSE", "BILLSHOUSE_BILL_POKEMON")
+            game.save.flags.EVENT_BILL_SAID_USE_CELL_SEPARATOR = true
+            done()
+          end
+          if ow.player.facing == "down" then
+            -- the player is standing on his straight path: walk around
+            -- (.PokemonWalkAroundPlayerMovement)
+            ow:scriptMove(npc, "right", 1, function()
+              ow:scriptMove(npc, "up", 2, function()
+                ow:scriptMove(npc, "left", 1, function()
+                  ow:scriptMove(npc, "up", 1, entered)
+                end)
+              end)
+            end)
+          else
+            ow:scriptMove(npc, "up", 3, entered)
+          end
+        end))
+      end
+      game.stack:push(TextBox.new(game,
+        t._BillsHouseBillImNotAPokemonText or "Hey! I'm not a\nPOKéMON!",
+        nil, { choice = function(yes)
+          if yes then
+            toMachine()
+          else
+            game.stack:push(TextBox.new(game,
+              t._BillsHouseBillNoYouGottaHelpText
+              or "No! You gotta\nhelp me!", toMachine))
+          end
+        end }))
+    end,
+
+    -- BillsHouseBillSSTicketText (human Bill after the separation)
+    TEXT_BILLSHOUSE_BILL_SS_TICKET = {
+      { "face_player" },                                           -- 1
+      { "check_flag", "EVENT_GOT_SS_TICKET" },                     -- 2
+      { "jump_if_true", 12 },                                      -- 3
+      { "show_text", "_BillsHouseBillThankYouText" },              -- 4
       -- pokered gives first (GiveItem fills wStringBuffer), then prints
       -- the received text that reads it (scripts/BillsHouse.asm; the
       -- item id is S_S_TICKET in generated items.lua -- keyItem, so the
       -- sound_get_key_item jingle plays like BillsHouse.asm:196)
-      { "give_item", "S_S_TICKET", 1, false },                     -- 7
-      { "show_text", "_SSTicketReceivedText" },                    -- 8
-      { "set_flag", "EVENT_GOT_SS_TICKET" },                       -- 9
+      { "give_item", "S_S_TICKET", 1, false },                     -- 5
+      { "show_text", "_SSTicketReceivedText" },                    -- 6
+      { "set_flag", "EVENT_GOT_SS_TICKET" },                       -- 7
       -- The two Cerulean guards are a SWAP PAIR, not scenery
       -- (BillsHouse.asm:174-178): handing over the ticket shows GUARD1 at
       -- (28,12) and hides GUARD2 at (27,12).  This matters far more than it
@@ -156,16 +204,36 @@ M.BILLS_HOUSE = {
       -- house's south door at (27,11), and that house is one of the two
       -- ways through the fence that splits Cerulean in half (the badge
       -- house is the other).  Leaving GUARD2 up forever severs the city --
-      -- the gym/mart half can never reach the Route 5 exit -- which is
-      -- exactly what stranded the bot after it beat Misty.
+      -- the gym/mart half can never reach the Route 5 exit.
       -- Same swap fires after the TM28 Rocket (CeruleanCity_2.asm
       -- CeruleanHideRocket), so either route opens the path.
-      { "show_object", "CERULEAN_CITY", "CERULEANCITY_GUARD1" },   -- 10
-      { "hide_object", "CERULEAN_CITY", "CERULEANCITY_GUARD2" },   -- 11
-      { "jump", 14 },                                              -- 12
-      { "show_text", "_BillsHouseBillCheckOutMyRarePokemonText" }, -- 13
+      { "show_object", "CERULEAN_CITY", "CERULEANCITY_GUARD1" },   -- 8
+      { "hide_object", "CERULEAN_CITY", "CERULEANCITY_GUARD2" },   -- 9
+      { "show_text", "_BillsHouseBillWhyDontYouGoInsteadOfMeText" }, -- 10
+      { "jump", 13 },                                              -- 11
+      { "show_text", "_BillsHouseBillWhyDontYouGoInsteadOfMeText" }, -- 12
+    },
+
+    TEXT_BILLSHOUSE_BILL_CHECK_OUT_MY_RARE_POKEMON = {
+      { "face_player" },                                           -- 1
+      { "show_text", "_BillsHouseBillCheckOutMyRarePokemonText" }, -- 2
     },
   },
+  -- repair saves that already got the ticket under the old collapsed
+  -- script (the monster never hidden, human Bill never shown)
+  onEnter = function(game, ow)
+    if game.save.flags.EVENT_GOT_SS_TICKET
+       and not game.save.flags.EVENT_USED_CELL_SEPARATOR_ON_BILL then
+      local Commands = require("src.script.Commands")
+      local ctx = { game = game, save = game.save, overworld = ow }
+      Commands.hide_object(ctx, "BILLS_HOUSE", "BILLSHOUSE_BILL_POKEMON")
+      Commands.show_object(ctx, "BILLS_HOUSE", "BILLSHOUSE_BILL1")
+      game.save.flags.EVENT_BILL_SAID_USE_CELL_SEPARATOR = true
+      game.save.flags.EVENT_USED_CELL_SEPARATOR_ON_BILL = true
+      game.save.flags.EVENT_MET_BILL = true
+      game.save.flags.EVENT_MET_BILL_2 = true
+    end
+  end,
 }
 
 -- -------------------------------------------------------------------
@@ -186,17 +254,48 @@ M.VERMILION_CITY = {
     game.save.trashPuzzle = puz
     puz.first = love.math.random(0, 7) * 2
   end,
+  -- VermilionCityDefaultScript's per-frame SSAnneTicketCheckCoords check:
+  -- the unguarded cell (18,30) just west of the sailor leads straight
+  -- onto the dock warp, so stepping onto it heading for the dock gets
+  -- ticket-checked (and turned back once the ship has sailed) without
+  -- the player ever pressing A.  The sailor himself never disappears.
+  onStep = function(game, ow, x, y)
+    if x ~= 18 or y ~= 30 then return false end
+    if ow.player.facing ~= "down" then return false end
+    local f = game.save.flags
+    local t = game.data.text
+    local TextBox = require("src.render.TextBox")
+    if f.EVENT_SS_ANNE_LEFT then
+      game.stack:push(TextBox.new(game,
+        t._VermilionCitySailor1ShipSetSailText or "The ship set sail.",
+        function() ow:scriptMove(ow.player, "up", 1) end))
+      return true
+    end
+    if (game.save.inventory.S_S_TICKET or 0) > 0 then return false end
+    game.stack:push(TextBox.new(game,
+      (t._VermilionCitySailor1WelcomeToSSAnneText or "Welcome to S.S.\nANNE!")
+      .. "\f"
+      .. (t._VermilionCitySailor1YouNeedATicketText
+          or "You need a ticket\nto get aboard."),
+      function() ow:scriptMove(ow.player, "up", 1) end))
+    return true
+  end,
   talk = {
-    -- the sailor guarding the dock gangway
+    -- the sailor guarding the dock gangway (VermilionCitySailor1Text):
+    -- flashing the ticket just lets you through -- he never hides, and
+    -- once the ship has sailed he only reports it gone
     TEXT_VERMILIONCITY_SAILOR1 = {
       { "face_player" },                                             -- 1
-      { "show_text", "_VermilionCitySailor1WelcomeToSSAnneText" },   -- 2
-      { "check_item", "S_S_TICKET" },                                -- 3
-      { "jump_if_false", 8 },                                        -- 4
-      { "show_text", "_VermilionCitySailor1FlashedTicketText" },     -- 5
-      { "hide_object", "VERMILION_CITY", "VERMILIONCITY_SAILOR1" },  -- 6
-      { "jump", 9 },                                                 -- 7
-      { "show_text", "_VermilionCitySailor1YouNeedATicketText" },    -- 8
+      { "check_flag", "EVENT_SS_ANNE_LEFT" },                        -- 2
+      { "jump_if_true", 11 },                                        -- 3
+      { "show_text", "_VermilionCitySailor1WelcomeToSSAnneText" },   -- 4
+      { "check_item", "S_S_TICKET" },                                -- 5
+      { "jump_if_false", 9 },                                        -- 6
+      { "show_text", "_VermilionCitySailor1FlashedTicketText" },     -- 7
+      { "jump", 12 },                                                -- 8
+      { "show_text", "_VermilionCitySailor1YouNeedATicketText" },    -- 9
+      { "jump", 12 },                                                -- 10
+      { "show_text", "_VermilionCitySailor1ShipSetSailText" },       -- 11
     },
   },
 }
@@ -665,6 +764,21 @@ M.POKEMON_TOWER_2F = {
       { "show_text", "_PokemonTower2FRivalHowsYourDexText" },       -- 10
     },
   },
+  -- PokemonTower2FDefaultScript: walking past the rival's tile forces
+  -- the encounter (ArePlayerCoordsInArray on (15,5)/(14,6)) -- he never
+  -- waits to be talked to
+  onStep = function(game, ow, x, y)
+    if game.save.flags.EVENT_BEAT_POKEMON_TOWER_RIVAL then return false end
+    if not ((x == 15 and y == 5) or (x == 14 and y == 6)) then return false end
+    if ow.runner:isRunning() then return false end
+    local rival = ow:npcByIndex(1)
+    if not rival then return false end
+    ow.player.facing = (x == 15) and "left" or "up"
+    require("src.core.Music").play(game.data, "Music_MeetRival")
+    ow.runner:run(M.POKEMON_TOWER_2F.talk.TEXT_POKEMONTOWER2F_RIVAL,
+                  { npc = rival })
+    return true
+  end,
 }
 
 -- -------------------------------------------------------------------

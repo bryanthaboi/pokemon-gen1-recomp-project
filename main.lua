@@ -48,6 +48,8 @@ function love.load(args)
   for i, a in ipairs(args or {}) do
     if a == "--editor" then
       editorMode = true
+    elseif a == "--developer" then
+      _G.POKEPORT_DEV_MODE = true
     elseif a == "--save" and args[i + 1] and args[i + 1] ~= "" then
       savePath = args[i + 1]
     elseif a == "--speed" and tonumber(args[i + 1]) then

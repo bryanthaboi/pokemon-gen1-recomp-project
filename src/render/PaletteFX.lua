@@ -141,6 +141,54 @@ function PaletteFX.usesGbcPack(mode)
   return mode == "redpp"
 end
 
+-- Per-object overworld sprite coloring (ColorOverworldSprite) applies in
+-- plain GBC mode too, not only under the RED++ pack: without it the
+-- whole-map zone shader paints characters with whatever two mid shades
+-- the terrain palette defines.  RED++ handles sprites through the baked
+-- usesGbcPack() path in SpriteRenderer; this names the modes where the
+-- OBP bake plus the post-zone redraw (below) stand in for real OBJ
+-- palettes over a shader-colorized background.
+function PaletteFX.usesSpriteObp(mode)
+  mode = mode or PaletteFX.mode
+  return mode == "gbc"
+end
+
+-- ------- post-zone sprite redraw (GBC mode)
+--
+-- In GBC mode the world canvas still runs through the per-map zone
+-- shade-remap shader, which would corrupt an OBP-baked sprite's true-color
+-- pixels.  So SpriteRenderer draws the baked sprite into the canvas (its
+-- pixels come out zone-tinted there) AND records the draw here;
+-- Renderer:endFrame replays the list on top of the finished zone pass,
+-- scaled into screen space -- the GBC's OBJ-over-BG compositing, one draw
+-- late.  Entries carrying `colors` are re-colorized draws (the tall-grass
+-- feet overdraw, which must keep hiding sprite feet) issued through the
+-- color-0-keyed shade-remap shader.  World pass only; cleared per frame.
+local spriteRedraws = {}
+
+function PaletteFX.clearSpriteRedraws()
+  for i = #spriteRedraws, 1, -1 do spriteRedraws[i] = nil end
+end
+
+function PaletteFX.markSpriteRedraw(image, quad, x, y, sx, colors, keyed)
+  if currentPass ~= "world" then return end
+  spriteRedraws[#spriteRedraws + 1] =
+    { image = image, quad = quad, x = x, y = y, sx = sx or 1,
+      colors = colors, keyed = keyed }
+end
+
+-- whether a draw issued right now would land in the redraw list -- the
+-- OBP bake is only correct when the replay can restore it after the zone
+-- pass (tilt's upright pass colorizes per-billboard instead, so sprites
+-- there keep the raw sheet)
+function PaletteFX.spriteRedrawPassActive()
+  return currentPass == "world"
+end
+
+function PaletteFX.spriteRedraws()
+  return spriteRedraws
+end
+
 -- Active named-palette table for COLORS: RED++ uses data/palettes_gbc.lua,
 -- everything else uses the ROM-imported data.palettes.
 function PaletteFX.pack(data)
@@ -223,6 +271,29 @@ local TILE_GROUP_EXCEPTIONS = {
   CELADON_MART_1F   = { tiles = { [0x07] = true, [0x08] = true,
                                   [0x17] = true, [0x18] = true }, group = 4 },
 }
+
+-- keyed by tileset id (applies on every map that uses it), consulted after
+-- the per-map table above
+local TILESET_GROUP_EXCEPTIONS = {
+  -- tile $22 (the hollow-square grave marker) -> GRAY: the extracted pack
+  -- files it under the bright blue family, which makes a purely
+  -- decorative floor marker read as an interactive pad
+  CEMETERY = { tiles = { [0x22] = true }, group = 0 },
+}
+
+-- pokered-gbc's lobby.bst repoints the Celadon roof table's flat top
+-- (block 29, cells 5/6/9/10) at a duplicate tile ($5a, BROWN) so the
+-- tabletop and the checkerboard floor -- both raw tile $37 -- can take
+-- different palettes; the vanilla-derived blockset shares the one tile
+-- id, so the RED++ atlas path re-creates the duplicate: the alias slot
+-- is baked as a copy of `tile` in `group`'s colors, and the listed
+-- 0-based block cells draw the alias instead of the shared tile.
+PaletteFX.TILE_ALIASES = {
+  CELADON_MART_ROOF = {
+    { block = 29, cells = { [5] = true, [6] = true, [9] = true, [10] = true },
+      tile = 0x37, alias = 0x5a, group = 5 },
+  },
+}
 local ROOF_GROUP = 6
 local ROUTE_6_SAFFRON = { mapId = "ROUTE_6", useMapId = "SAFFRON_CITY", cellYBelow = 2 }
 
@@ -243,6 +314,8 @@ function PaletteFX.worldGroupAt(tileset, mapId, tileId)
   local groups = w and w.tileGroups[tileset]
   if not groups then return nil end
   local exc = TILE_GROUP_EXCEPTIONS[mapId]
+  if exc and exc.tiles[tileId] then return exc.group end
+  exc = TILESET_GROUP_EXCEPTIONS[tileset]
   if exc and exc.tiles[tileId] then return exc.group end
   return groups[tileId] or 7 -- TEXT: tile ids past the tileset's 96 (menus)
 end
@@ -293,6 +366,10 @@ function PaletteFX.spriteObp(spriteDef, seed)
   local src = spriteDef and spriteDef.source
   if not (w and src) then return nil end
   local idx = tonumber(src:match("%[(%d+)%]"))
+  -- RedBikeSprite loads outside SpriteSheetPointerTable
+  -- (LoadBikePlayerSpriteGraphics), so its source carries no bracketed
+  -- index; it wears the player's own palette, same as SPRITE_RED
+  if not idx and src:find("RedBikeSprite", 1, true) then idx = 0 end
   local group = idx and w.spriteAssignment[idx]
   if group == nil then return nil end
   if group == "random" then

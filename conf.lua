@@ -1,13 +1,16 @@
 function love.conf(t)
   local editor = os.getenv("POKEPORT_EDITOR") == "1"
+  local developer = os.getenv("POKEPORT_DEV") == "1"
   if arg then
     for _, a in ipairs(arg) do
       if a == "--editor" then editor = true end
+      if a == "--developer" then developer = true end
     end
   end
   -- main.lua runs in the same Lua state right after conf.lua; stash the
   -- decision in a global so it doesn't need to reparse `arg`.
   _G.POKEPORT_EDITOR_MODE = editor
+  _G.POKEPORT_DEV_MODE = developer
 
   if editor then
     t.identity = os.getenv("POKEPORT_IDENTITY") or "pokemon-love2d-editor"

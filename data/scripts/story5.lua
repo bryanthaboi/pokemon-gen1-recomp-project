@@ -259,21 +259,39 @@ M.CINNABAR_ISLAND = {
   end,
 }
 
--- Pewter's youngster stops you leaving east before Brock is beaten
--- (scripts/PewterCity.asm PewterCityCheckPlayerLeavingEastScript; the
--- original escorts you to the gym, we walk you back a step)
+-- Pewter's youngster stops you leaving east before Brock is beaten and
+-- escorts you to the gym (scripts/PewterCity.asm
+-- PewterCityCheckPlayerLeavingEastScript /
+-- PewterCityYoungsterShowsPlayerGymScript, engine/events/pewter_guys.asm
+-- PewterGymGuyCoords): the "follow me" lines, then the player is walked
+-- west along the road to the front of the PEWTER_GYM door at (16,17).
 M.PEWTER_CITY = {
   onStep = function(game, ow, x, y)
     if game.save.flags.EVENT_BEAT_BROCK then return false end
+    if ow.runner:isRunning() or #ow.scriptMoves > 0 then return false end
     if not inCoords({ { 35, 17 }, { 36, 17 }, { 37, 18 }, { 37, 19 } }, x, y) then
       return false
     end
     local t = text(game)
+    -- walk up onto the road row (y=17), west to one tile east of the gym
+    -- door, then drop below the door and turn to face it
+    local steps = {}
+    for _ = 1, y - 17 do steps[#steps + 1] = "up" end
+    for _ = 1, x - 17 do steps[#steps + 1] = "left" end
+    steps[#steps + 1] = "down"
+    steps[#steps + 1] = "left"
+    local function walk(i)
+      if not steps[i] then
+        ow.player.facing = "up"
+        return
+      end
+      ow:scriptMove(ow.player, steps[i], 1, function() walk(i + 1) end)
+    end
     push(game, t._PewterCityYoungsterYoureATrainerFollowMeText
       or "Hey! You're a\ntrainer, right?", function()
       push(game, t._PewterCityYoungsterGoTakeOnBrockText
         or "Go take on BROCK\nat the GYM first!", function()
-        ow:scriptMove(ow.player, "left", 1)
+        walk(1)
       end)
     end)
     return true
@@ -453,10 +471,22 @@ local function bikeGateGuard(coords, stopText, explainText)
   return function(game, ow, x, y)
     if game.save.inventory.BICYCLE then return false end
     if not inCoords(coords, x, y) then return false end
+    -- walk the player up to the tile beside the counter, no further:
+    -- (matchedY - closestY) tiles, 0 when already next to it
+    -- (Route16Gate1FDefaultScript's wCoordIndex-1). Forcing a fixed one
+    -- tile up from the counter-adjacent row shoved the player onto the
+    -- impassable desk and boxed them in.
+    local closestY = coords[1][2]
+    for _, c in ipairs(coords) do
+      if c[2] < closestY then closestY = c[2] end
+    end
+    local dist = y - closestY
     local t = text(game)
     push(game, t[stopText] or "Hey! Wait up!", function()
       push(game, t[explainText] or "You need a\nBICYCLE for\nCYCLING ROAD!", function()
-        ow:scriptMove(ow.player, "up", 1)
+        if dist > 0 then
+          ow:scriptMove(ow.player, "up", dist)
+        end
       end)
     end)
     return true

@@ -5,6 +5,7 @@
 -- has no cancel; the flash always completes).
 
 local Font = require("src.render.Font")
+local Music = require("src.core.Music")
 
 local EvolutionState = {}
 EvolutionState.__index = EvolutionState
@@ -39,6 +40,7 @@ function EvolutionState.new(game, mon, newSpecies, onDone)
   self.newSprite = frontSprite(game, newSpecies)
   self.t = 0
   self.done = false
+  Music.play(game.data, Music.special(game.data, "evolution"))
   return self
 end
 
@@ -57,6 +59,7 @@ function EvolutionState:update(dt)
       ("Congratulations!\nYour %s\nevolved into\n%s!")
         :format(self.oldName, newName),
       function()
+        Music.restoreMap(game.data)
         game.stack:pop() -- the evolution screen itself
         if self.onDone then self.onDone() end
       end))

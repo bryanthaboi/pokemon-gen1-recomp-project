@@ -2,7 +2,7 @@ local RomImporter = {}
 RomImporter.__index = RomImporter
 
 local ROM_SHA1 = "ea9bcae617fdf159b045185467ae58b2e4a48b9a"
-local CACHE_MARKER = "rom-cache-v5:" .. ROM_SHA1
+local CACHE_MARKER = "rom-cache-v6:" .. ROM_SHA1
 local MARKER_PATH = "rom-cache.complete"
 local COMMUNITY_URL = "https://bois.icu"
 local TRUST_WARNING = "if you did not get this from bryanthaboi's github " ..
@@ -136,13 +136,20 @@ local function chooseRom()
 end
 
 function RomImporter.new(onComplete)
+  local previousMarker = love.filesystem.read(MARKER_PATH)
+  local returning = previousMarker ~= nil and previousMarker ~= CACHE_MARKER
   return setmetatable({
     onComplete = onComplete,
     logo = love.graphics.newImage("assets/logo/logo.png"),
     bcg = love.graphics.newImage("assets/logo/bcg.png"),
     state = "waiting",
-    status = "Choose or drop a Pokemon Red ROM",
-    detail = "The ROM is verified before any files are created.",
+    returning = returning,
+    status = returning and "More assets are needed from your ROM"
+      or "Choose or drop a Pokemon Red ROM",
+    detail = returning
+      and "This update pulls a few more things from your ROM. "
+        .. "Please re-import it to continue (it's quick)."
+      or "The ROM is verified before any files are created.",
     progress = 0,
     stageCurrent = 0,
     stageTotal = 1,
@@ -304,7 +311,8 @@ function RomImporter:draw()
     height * 0.075,
     0, logoScale, logoScale)
   setColor255(74, 88, 72)
-  printCentered("FIRST RUN", height * 0.205, smallFont, width)
+  printCentered(self.returning and "UPDATE REQUIRED" or "FIRST RUN",
+    height * 0.205, smallFont, width)
 
   local zoneY, zoneH = height * 0.29, math.min(180, height * 0.31)
   setColor255(215, 220, 202)

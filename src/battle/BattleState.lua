@@ -635,7 +635,6 @@ function BattleState:startMessage(item)
     self.total = self.total + #codes
   end
   self.charIndex = 0
-  self.holdTimer = nil
 end
 
 function BattleState:updateQueue()
@@ -786,9 +785,8 @@ function BattleState:updateQueue()
   if self.charIndex < self.total then
     self.charIndex = math.min(self.total, self.charIndex + 2)
   else
-    self.holdTimer = (self.holdTimer or 40) - 1
     local input = self.game.input
-    if self.holdTimer <= 0 or input:wasPressed("a") or input:wasPressed("b") then
+    if input:wasPressed("a") or input:wasPressed("b") then
       self.current = nil
     end
   end
@@ -968,6 +966,25 @@ function BattleState:playerHasPP()
   return false
 end
 
+function BattleState:swapMoves(i, j)
+  if i == j then return end
+  local moves = self.player.curMoves
+  local a, b = moves[i], moves[j]
+  if not (a and b) then return end
+  moves[i], moves[j] = b, a
+  local stored = self.player.mon and self.player.mon.moves
+  if stored and stored ~= moves and stored[i] and stored[j] then
+    stored[i], stored[j] = stored[j], stored[i]
+  end
+  local disabled = self.player.disabledSlot
+  if disabled == i then
+    self.player.disabledSlot = j
+  elseif disabled == j then
+    self.player.disabledSlot = i
+  end
+  require("src.core.Sound").play(self.data, "Swap")
+end
+
 function BattleState:update(dt)
   self.frame = self.frame + 1
   self:updateFx()
@@ -1081,6 +1098,7 @@ function BattleState:update(dt)
         end
         self.phase = "moveSelect"
         self.moveIndex = math.min(self.moveIndex, #self.player.curMoves)
+        self.moveSwapIndex = nil
       elseif choice == "run" then
         self:tryRun()
       elseif choice == "item" then
@@ -1098,9 +1116,22 @@ function BattleState:update(dt)
       self.moveIndex = self.moveIndex > 1 and self.moveIndex - 1 or #moves
     elseif input:wasPressed("down") then
       self.moveIndex = self.moveIndex < #moves and self.moveIndex + 1 or 1
+    elseif input:wasPressed("select") then
+      if self.moveSwapIndex then
+        self:swapMoves(self.moveSwapIndex, self.moveIndex)
+        self.moveSwapIndex = nil
+      else
+        self.moveSwapIndex = self.moveIndex
+      end
     elseif input:wasPressed("b") then
+      self.moveSwapIndex = nil
       self.phase = "menu"
     elseif input:wasPressed("a") then
+      if self.moveSwapIndex then
+        self:swapMoves(self.moveSwapIndex, self.moveIndex)
+        self.moveSwapIndex = nil
+        return
+      end
       local mv = moves[self.moveIndex]
       if self.player.disabledSlot == self.moveIndex then
         self:say("The move is\ndisabled!")
@@ -2265,6 +2296,7 @@ function BattleState:performMove(user, target, moveInst, isCalled)
   -- falling back to the id tables (Fly AND Dig go semi-invulnerable:
   -- ChargeEffect sets INVULNERABLE for both)
   if record and record.charge and not releasing then
+    self:cancelMoveAnim()
     user.charging = moveInst
     user.chargeReady = true
     local invulnerable = move.semiInvulnerable
@@ -2273,6 +2305,15 @@ function BattleState:performMove(user, target, moveInst, isCalled)
     end
     if invulnerable then
       user.invulnerable = true
+    end
+    local chargeAnim = record.charge.anim
+    if move.id == "DIG" then
+      chargeAnim = "SLIDE_DOWN_ANIM"
+    elseif record.charge.enemyAnim and not user.isPlayer then
+      chargeAnim = record.charge.enemyAnim
+    end
+    if chargeAnim then
+      self:animNext(chargeAnim, user.isPlayer)
     end
     local chargeText = move.chargeText or CHARGE_TEXT[move.id]
                        or "%s\nis charging up!"
@@ -2749,6 +2790,7 @@ function BattleState:safariAction(choice)
   local playerName = self.game.save.player.name
 
   if choice == "run" then
+    require("src.core.Sound").play(self.data, "Run")
     self:say("Got away safely!")
     self.result = "run"
     self.afterQueue = "finish"
@@ -2830,6 +2872,12 @@ function BattleState:safariEnemyTurn()
     end
     if fled then
       self:sayNext(("Wild %s\nran!"):format(self.enemy.name))
+      self:actNext(function()
+        require("src.core.Sound").play(self.data, "Run")
+        startPicKind(self:picFxFor(self.enemy), "slideOff")
+      end)
+      self.nextInsert = (self.nextInsert or 0) + 1
+      table.insert(self.queue, self.nextInsert, { wait = 24 })
       self.result = "run"
       self.afterQueue = "finish"
     end
@@ -3826,7 +3874,11 @@ function BattleState:drawTextArea()
     for i, mv in ipairs(self.player.curMoves) do
       Font.draw(self.data.moves[mv.id].name, 48, 96 + i * 8)
     end
-    Font.drawCode(0xED, 40, 96 + self.moveIndex * 8)
+    Font.drawCode((self.moveSwapIndex == self.moveIndex) and 0xEC or 0xED,
+                  40, 96 + self.moveIndex * 8)
+    if self.moveSwapIndex and self.moveSwapIndex ~= self.moveIndex then
+      Font.drawCode(0xEC, 40, 96 + self.moveSwapIndex * 8)
+    end
     local sel = self.player.curMoves[self.moveIndex]
     if sel then
       if self.player.disabledSlot == self.moveIndex then

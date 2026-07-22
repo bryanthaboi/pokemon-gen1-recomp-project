@@ -99,7 +99,13 @@ end
 local function deposit(game)
   local pc = game.save.pcItems
   local inv = game.save.inventory
-  game.stack:push(ListMenu.new(game, "DEPOSIT ITEM", buildItems(game, inv), {
+  local Bag = require("src.inventory.Bag")
+  -- badges live in save.inventory alongside items but are not depositable
+  local depositable = {}
+  for id, count in pairs(inv) do
+    if not Bag.isBadge(id) then depositable[id] = count end
+  end
+  game.stack:push(ListMenu.new(game, "DEPOSIT ITEM", buildItems(game, depositable), {
     onChoose = function(item, list)
       askQuantity(game, list, inv[item.value] or 1, item.value, function(qty)
         if pcFull(game, pc, item.value) then

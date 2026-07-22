@@ -4253,6 +4253,48 @@
       ]
     },
     "cardKeyDoors": {
+      "closedDoors": {
+        "SILPH_CO_2F": [
+          { "block": 84, "bx": 2, "by": 2, "event": "EVENT_SILPH_CO_2_UNLOCKED_DOOR1", "open": 14 },
+          { "block": 84, "bx": 2, "by": 5, "event": "EVENT_SILPH_CO_2_UNLOCKED_DOOR2", "open": 14 }
+        ],
+        "SILPH_CO_3F": [
+          { "block": 95, "bx": 4, "by": 4, "event": "EVENT_SILPH_CO_3_UNLOCKED_DOOR1", "open": 14 },
+          { "block": 95, "bx": 8, "by": 4, "event": "EVENT_SILPH_CO_3_UNLOCKED_DOOR2", "open": 14 }
+        ],
+        "SILPH_CO_4F": [
+          { "block": 84, "bx": 2, "by": 6, "event": "EVENT_SILPH_CO_4_UNLOCKED_DOOR1", "open": 14 },
+          { "block": 84, "bx": 6, "by": 4, "event": "EVENT_SILPH_CO_4_UNLOCKED_DOOR2", "open": 14 }
+        ],
+        "SILPH_CO_5F": [
+          { "block": 95, "bx": 3, "by": 2, "event": "EVENT_SILPH_CO_5_UNLOCKED_DOOR1", "open": 14 },
+          { "block": 95, "bx": 3, "by": 6, "event": "EVENT_SILPH_CO_5_UNLOCKED_DOOR2", "open": 14 },
+          { "block": 95, "bx": 7, "by": 5, "event": "EVENT_SILPH_CO_5_UNLOCKED_DOOR3", "open": 14 }
+        ],
+        "SILPH_CO_6F": [
+          { "block": 95, "bx": 2, "by": 6, "event": "EVENT_SILPH_CO_6_UNLOCKED_DOOR", "open": 14 }
+        ],
+        "SILPH_CO_7F": [
+          { "block": 84, "bx": 5, "by": 3, "event": "EVENT_SILPH_CO_7_UNLOCKED_DOOR1", "open": 14 },
+          { "block": 84, "bx": 10, "by": 2, "event": "EVENT_SILPH_CO_7_UNLOCKED_DOOR2", "open": 14 },
+          { "block": 84, "bx": 10, "by": 6, "event": "EVENT_SILPH_CO_7_UNLOCKED_DOOR3", "open": 14 }
+        ],
+        "SILPH_CO_8F": [
+          { "block": 95, "bx": 3, "by": 4, "event": "EVENT_SILPH_CO_8_UNLOCKED_DOOR", "open": 14 }
+        ],
+        "SILPH_CO_9F": [
+          { "block": 95, "bx": 1, "by": 4, "event": "EVENT_SILPH_CO_9_UNLOCKED_DOOR1", "open": 14 },
+          { "block": 84, "bx": 9, "by": 2, "event": "EVENT_SILPH_CO_9_UNLOCKED_DOOR2", "open": 14 },
+          { "block": 84, "bx": 9, "by": 5, "event": "EVENT_SILPH_CO_9_UNLOCKED_DOOR3", "open": 14 },
+          { "block": 95, "bx": 5, "by": 6, "event": "EVENT_SILPH_CO_9_UNLOCKED_DOOR4", "open": 14 }
+        ],
+        "SILPH_CO_10F": [
+          { "block": 84, "bx": 5, "by": 4, "event": "EVENT_SILPH_CO_10_UNLOCKED_DOOR", "open": 14 }
+        ],
+        "SILPH_CO_11F": [
+          { "block": 32, "bx": 3, "by": 6, "event": "EVENT_SILPH_CO_11_UNLOCKED_DOOR", "open": 3 }
+        ]
+      },
       "doorTiles": [
         24,
         36
@@ -6372,6 +6414,11 @@
         "height": 8,
         "path": "assets/generated/fx/battle_transition.png",
         "width": 8
+      },
+      "cutTree": {
+        "height": 16,
+        "path": "assets/generated/fx/cut_tree.png",
+        "width": 16
       },
       "fishingRod": {
         "height": 24,
@@ -44689,6 +44736,15 @@
     "TRI_ATTACK",
     "SUBSTITUTE"
   ],
+  "trainerPartyOverrides": {
+    "OPP_CHIEF": [
+      { "level": 41, "species": "MACHOKE" },
+      { "level": 41, "species": "GOLBAT" },
+      { "level": 43, "species": "MAROWAK" },
+      { "level": 43, "species": "WEEZING" },
+      { "level": 46, "species": "PERSIAN" }
+    ]
+  },
   "trainerPics": [
     {
       "imageBase": "youngster",
