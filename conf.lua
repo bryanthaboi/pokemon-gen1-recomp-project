@@ -37,10 +37,19 @@ function love.conf(t)
   local osName = love._os
   local mobile = osName == "Android" or osName == "iOS"
   if mobile then
-    -- On Android/iOS, width/height aspect picks portrait vs landscape
-    -- (fullscreen alone is not enough). Use a tall portrait size; the
-    -- OS then resizes to the real display. highdpi is required for
-    -- Retina iOS (Android always behaves as highdpi).
+    -- resizable is what unlocks orientation.  SDL's Android backend, given no
+    -- SDL_HINT_ORIENTATIONS (LÖVE sets none), calls setRequestedOrientation
+    -- at window creation -- FULL_SENSOR when the window is resizable (rotates
+    -- freely to portrait or landscape), otherwise locked to the window's w/h
+    -- aspect.  So a non-resizable tall window forced portrait; resizable lets
+    -- the game follow the device.  The renderer letterboxes the 160x144
+    -- viewport into whatever size results, and touch input is gesture-based,
+    -- so both orientations just work.  iOS follows the Info.plist orientations
+    -- (see mobile/ios/overlays/love-ios.plist, now portrait + landscape).
+    t.window.resizable = true
+    -- Starting size is a tall portrait hint; the OS resizes to the real
+    -- display and rotations resize again. highdpi is required for Retina iOS
+    -- (Android always behaves as highdpi).
     t.window.width = 1080
     t.window.height = 1920
     t.window.fullscreen = true

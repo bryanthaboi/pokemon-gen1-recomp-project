@@ -155,7 +155,7 @@ require_ios_libraries
 apply_ios_branding() {
   [ -f "$OVERLAY_PLIST" ] || fail "missing overlay plist: $OVERLAY_PLIST"
   local dest="$XCODE_DIR/ios/love-ios.plist"
-  say "applying iOS branding (portrait-only Info.plist, display name)"
+  say "applying iOS branding (portrait + landscape Info.plist, display name)"
   cp "$OVERLAY_PLIST" "$dest"
 }
 
