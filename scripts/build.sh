@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Packages the LÖVE2D Pokémon Red port into distributable macOS and
-# Windows builds. Runs entirely on macOS (no cross-compiling needed, 
-# the Windows build reuses LÖVE's prebuilt win64 binaries).
+# Packages the LÖVE2D Pokémon Red port into distributable macOS, Windows,
+# and Linux builds. Runs entirely on macOS (no cross-compiling needed,
+# the Windows and Linux builds reuse LÖVE's prebuilt win64 / AppImage
+# binaries, fusing our game.love onto them the same way love.exe does).
 #
-# Usage: scripts/build.sh [mac|win|android|ios|all] [--version X.Y.Z] [--identity "Developer ID Application: ..."]
+# Usage: scripts/build.sh [mac|win|linux|android|ios|all] [--version X.Y.Z] [--identity "Developer ID Application: ..."]
 #                          [--notary-profile NAME] [--no-notarize]
-#                          [--release]   # android/ios: release config instead of debug
+#                          [--release]   # ios only: release config instead of debug
 #
 # Output: dist/mac/PokemonRed-macos.zip
 #         dist/win/PokemonRed-win64.zip
-#         dist/android/{debug,release}/*.apk (full gradle output stays under
+#         dist/linux/PokemonRed-linux.zip (fused x86_64 AppImage)
+#         dist/android/debug/*.apk (full gradle output stays under
 #           mobile/android/app/build/outputs/apk/embedNoRecord/)
 #         dist/ios/<Config>-<sdk>/PokemonRed.app (full xcodebuild output stays
 #           under mobile/ios/build/Build/Products/)
@@ -27,11 +29,11 @@ APP_NAME="PokemonRed"
 BUNDLE_ID="com.theboisclub.pokemonred"
 LOVE_VERSION="11.5"
 VERSION="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
+VERSION_EXPLICIT=false
 IDENTITY=""
 TARGET="all"
 NOTARY_PROFILE="notary-profile"
 NOTARIZE=true
-ANDROID_RELEASE=false
 IOS_RELEASE=false
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
@@ -40,18 +42,18 @@ fail() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    mac|win|android|ios|all) TARGET="$1" ;;
-    --version) VERSION="$2"; shift ;;
+    mac|win|linux|android|ios|all) TARGET="$1" ;;
+    --version) VERSION="$2"; VERSION_EXPLICIT=true; shift ;;
     --identity) IDENTITY="$2"; shift ;;
     --notary-profile) NOTARY_PROFILE="$2"; shift ;;
     --no-notarize) NOTARIZE=false ;;
-    --release) ANDROID_RELEASE=true; IOS_RELEASE=true ;;
+    --release) IOS_RELEASE=true ;;
     *) fail "unknown argument: $1" ;;
   esac
   shift
 done
 
-mkdir -p "$CACHE" "$WORK" "$DIST/mac" "$DIST/win"
+mkdir -p "$CACHE" "$WORK" "$DIST/mac" "$DIST/win" "$DIST/linux"
 
 # --------------------------------------------------------------- game.love
 say "packing game.love"
@@ -167,12 +169,40 @@ build_win() {
   say "Windows build: $zip_out"
 }
 
+# --------------------------------------------------------------- Linux
+build_linux() {
+  say "building Linux (x86_64 AppImage) app"
+  local appimage_name="love-$LOVE_VERSION-x86_64.AppImage"
+  local love_appimage="$CACHE/$appimage_name"
+  if [ ! -f "$love_appimage" ]; then
+    say "downloading LÖVE $LOVE_VERSION Linux AppImage"
+    curl -fL --progress-bar \
+      "https://github.com/love2d/love/releases/download/$LOVE_VERSION/$appimage_name" \
+      -o "$love_appimage" || fail "download failed,  check LOVE_VERSION or your network"
+  fi
+  chmod +x "$love_appimage"
+
+  # Same fusion trick as the Windows exe: love looks for a zip appended to
+  # its own running binary, and an AppImage is just an ELF executable, so
+  # concatenating game.love onto it works the same way `cat love.exe
+  # game.love` does on Windows.
+  local out_bin="$WORK/$APP_NAME-x86_64.AppImage"
+  rm -f "$out_bin"
+  cat "$love_appimage" "$LOVE_FILE" > "$out_bin"
+  chmod +x "$out_bin"
+
+  local zip_out="$DIST/linux/$APP_NAME-linux.zip"
+  rm -f "$zip_out"
+  (cd "$WORK" && zip -q -9 -j "$zip_out" "$(basename "$out_bin")")
+  say "Linux build: $zip_out"
+}
+
 # --------------------------------------------------------------- Android
 build_android() {
   say "building Android (delegating to scripts/build_android.sh)"
   local args=()
-  if [ "$ANDROID_RELEASE" = true ]; then
-    args+=(--release)
+  if [ "$VERSION_EXPLICIT" = true ]; then
+    args+=(--version "$VERSION")
   fi
   "$ROOT/scripts/build_android.sh" ${args[@]+"${args[@]}"}
 }
@@ -190,9 +220,10 @@ build_ios() {
 case "$TARGET" in
   mac) build_mac ;;
   win) build_win ;;
+  linux) build_linux ;;
   android) build_android ;;
   ios) build_ios ;;
-  all) build_mac; build_win ;;
+  all) build_mac; build_win; build_linux ;;
 esac
 
 case "$TARGET" in

@@ -308,8 +308,12 @@ local function saffronGate(guardText, triggers, horizontal)
         end
         if takeGuardDrink(game) then
           game.stack:push(TextBox.new(game,
-            (t._SaffronGateGuardYouCanGoOnThroughText or
-             "Thanks! You can\ngo on through!"), done))
+            t._SaffronGateGuardImParchedText or "Whoa, boy!\nI'm parched!",
+            function()
+              game.stack:push(TextBox.new(game,
+                (t._SaffronGateGuardYouCanGoOnThroughText or
+                 "You can go on\nthrough!"), done))
+            end))
           return
         end
         game.stack:push(TextBox.new(game,
@@ -344,8 +348,12 @@ local function saffronGate(guardText, triggers, horizontal)
       -- for the POKE_FLUTE at all.
       if takeGuardDrink(game) then
         game.stack:push(TextBox.new(game,
-          (t._SaffronGateGuardYouCanGoOnThroughText or
-           "Thanks! You can\ngo on through!")))
+          t._SaffronGateGuardImParchedText or "Whoa, boy!\nI'm parched!",
+          function()
+            game.stack:push(TextBox.new(game,
+              (t._SaffronGateGuardYouCanGoOnThroughText or
+               "You can go on\nthrough!")))
+          end))
         return true
       end
       local back
@@ -355,7 +363,7 @@ local function saffronGate(guardText, triggers, horizontal)
         back = ow.player.facing == "up" and "down" or "up"
       end
       game.stack:push(TextBox.new(game,
-        t._SaffronGateGuardImParchedText or "I'm parched...\nNo entry until\nI get a drink!",
+        t._SaffronGateGuardGeeImThirstyText or "Gee, I'm thirsty\nthough!\nThe road's closed.",
         function()
           ow:scriptMove(ow.player, back, 1)
         end))

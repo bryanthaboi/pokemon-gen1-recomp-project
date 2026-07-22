@@ -19,32 +19,35 @@ local function starterBall(askText, species, choseFlag, ownBall,
                            rivalBallX, rivalBall)
   return {
     { "check_flag", "EVENT_GOT_STARTER" },        -- 1
-    { "jump_if_true", 19 },                       -- 2
+    { "jump_if_true", 20 },                       -- 2
     -- no picking until Oak has walked you in (OaksLabScript gating)
     { "check_flag", "EVENT_FOLLOWED_OAK_INTO_LAB" }, -- 3
-    { "jump_if_false", 19 },                      -- 4
-    { "ask", askText },                           -- 5
-    { "jump_if_false", 20 },                      -- 6
-    { "give_pokemon", species, 5 },               -- 7
-    { "set_flag", "EVENT_GOT_STARTER" },          -- 8
-    { "set_flag", choseFlag },                    -- 9
+    { "jump_if_false", 20 },                      -- 4
+    -- the Pokédex "new species" entry shows before the ask (predef
+    -- StarterDex ahead of OaksLabYouWant...Text)
+    { "push_screen", "DexEntryMenu", species },   -- 5
+    { "ask", askText },                           -- 6
+    { "jump_if_false", 21 },                      -- 7
+    { "give_pokemon", species, 5 },               -- 8
+    { "set_flag", "EVENT_GOT_STARTER" },          -- 9
+    { "set_flag", choseFlag },                    -- 10
     -- POKé BALLs are not handed out here in the original -- Oak gives
     -- them later, at OaksLabOak1Text's .give_poke_balls beat once the
     -- player has beaten the Route 22 rival (see TEXT_OAKSLAB_OAK1 below)
-    { "show_text", "_OaksLabReceivedMonText", { RAM = species } }, -- 10
-    { "hide_object", "OAKS_LAB", ownBall },       -- 11
+    { "show_text", "_OaksLabReceivedMonText", { RAM = species } }, -- 11
+    { "hide_object", "OAKS_LAB", ownBall },       -- 12
     -- the rival walks to the countering ball (around the furniture)
-    { "move_npc_to", 1, rivalBallX, 4 },          -- 12
-    { "face_object", 1, "up" },                   -- 13
-    { "show_text", "_OaksLabRivalIllTakeThisOneText" },            -- 14
-    { "hide_object", "OAKS_LAB", rivalBall },     -- 15
+    { "move_npc_to", 1, rivalBallX, 4 },          -- 13
+    { "face_object", 1, "up" },                   -- 14
+    { "show_text", "_OaksLabRivalIllTakeThisOneText" },            -- 15
+    { "hide_object", "OAKS_LAB", rivalBall },     -- 16
     { "show_text", "_OaksLabRivalReceivedMonText",
       { RAM = rivalBall == "OAKSLAB_CHARMANDER_POKE_BALL" and "CHARMANDER"
               or rivalBall == "OAKSLAB_SQUIRTLE_POKE_BALL" and "SQUIRTLE"
-              or "BULBASAUR" } },                 -- 16
-    { "jump", 20 },                               -- 17
-    { "jump", 20 },                               -- 18 (spacer)
-    { "show_text", "_OaksLabThoseArePokeBallsText" }, -- 19
+              or "BULBASAUR" } },                 -- 17
+    { "jump", 21 },                               -- 18
+    { "jump", 21 },                               -- 19 (spacer)
+    { "show_text", "_OaksLabThoseArePokeBallsText" }, -- 20
   }
 end
 

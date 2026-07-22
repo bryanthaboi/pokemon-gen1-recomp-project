@@ -16,6 +16,11 @@ local OakSpeech = {}
 OakSpeech.__index = OakSpeech
 OakSpeech.isOpaque = true
 
+-- FadeInIntroPic runs a 6-step palette fade; MovePicLeft wipes the mon
+-- sprite in from the right.  Both play out before the beat's text prints.
+local FADE_FRAMES = 24
+local WIPE_FRAMES = 32
+
 -- naming presets are boot config (field.boot.namePresets), which a total
 -- conversion replaces; the Red/Blue lists remain the fallback
 local function namePresets(game, who, fallback)
@@ -93,16 +98,23 @@ function OakSpeech:say(key, next)
 end
 
 local STEPS = {
-  -- 1. Oak's welcome
+  -- 1. Oak's welcome (Oak's pic fades in first, FadeInIntroPic)
   function(self)
     self.pic = self.oakPic
-    self:say("_OakSpeechText1", function() self:advance() end)
+    self:revealPic("fade", function()
+      self:say("_OakSpeechText1", function() self:advance() end)
+    end)
   end,
-  -- 2. NIDORINO show-off, with its cry
+  -- 2. NIDORINO show-off: the front sprite is mirrored horizontally
+  --    (LoadFlippedFrontSpriteByMonIndex) and wipes in from the right
+  --    (MovePicLeft), then its cry sounds and the text prints
   function(self)
     self.pic = self.demoPic
-    Sound.playCry(self.game.data, self.demoSpecies)
-    self:say("_OakSpeechText2A", function() self:advance() end)
+    self.picFlip = true
+    self:revealPic("wipe", function()
+      Sound.playCry(self.game.data, self.demoSpecies)
+      self:say("_OakSpeechText2A", function() self:advance() end)
+    end)
   end,
   -- 3. the rest of the world-of-POKéMON spiel
   function(self)
@@ -175,8 +187,21 @@ function OakSpeech:lastPageLines(key)
   return ok and lines or nil
 end
 
+-- Reveal the current pic over `dur` frames, then run `next`.  Ticked from
+-- update() while OakSpeech is the top state (before the beat's text box is
+-- pushed), so the fade/wipe plays out ahead of the text like the ROM.
+function OakSpeech:revealPic(kind, next)
+  self.picReveal = {
+    kind = kind,
+    t = 0,
+    dur = kind == "fade" and FADE_FRAMES or WIPE_FRAMES,
+    next = next,
+  }
+end
+
 function OakSpeech:advance()
   self.step = self.step + 1
+  self.picFlip = false
   local fn = STEPS[self.step]
   if fn then
     fn(self)
@@ -205,6 +230,15 @@ end
 --                 ClearScreenArea / wUpdateSpritesEnabled; ld c, 50)
 --   frames 79-102 GBFadeOutToWhite          (3 palettes x 8 frames)
 function OakSpeech:update(dt)
+  local r = self.picReveal
+  if r then
+    r.t = r.t + 1
+    if r.t >= r.dur then
+      self.picReveal = nil
+      if r.next then r.next() end
+    end
+    return
+  end
   if not self.shrink then return end
   local s = self.shrink
   s.frame = s.frame + 1
@@ -238,7 +272,23 @@ function OakSpeech:draw()
     local w, h = self.pic:getDimensions()
     local x = 48 + math.floor((8 - w / 8) / 2) * 8
     local y = 32 + (7 - h / 8) * 8
-    love.graphics.draw(self.pic, x, y)
+    local reveal = self.picReveal
+    local off = 0
+    if reveal and reveal.kind == "fade" then
+      -- FadeInIntroPic: ramp the pic's alpha up over the fade window
+      love.graphics.setColor(1, 1, 1, math.min(1, reveal.t / reveal.dur))
+    elseif reveal and reveal.kind == "wipe" then
+      -- MovePicLeft: the pic slides in from the right edge to its spot
+      off = math.floor((160 - x) * (1 - math.min(1, reveal.t / reveal.dur)))
+    end
+    if self.picFlip then
+      -- LoadFlippedFrontSpriteByMonIndex mirrors the front sprite
+      -- horizontally (wSpriteFlipped): draw with a negative x scale
+      love.graphics.draw(self.pic, x + off + w, y, 0, -1, 1)
+    else
+      love.graphics.draw(self.pic, x + off, y)
+    end
+    love.graphics.setColor(1, 1, 1, 1)
   end
   if self.walkVisible and self.walkSheet then
     -- ResetPlayerSpriteData: Y screen pos $3c, X screen pos $40

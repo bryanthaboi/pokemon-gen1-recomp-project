@@ -116,7 +116,8 @@ def parse_hidden_events(pokered):
     Itemfinder detects), HiddenCoins (Game Corner floor coins) and
     StartSlotMachine (slot machine seats; arg SLOTS_* marks broken ones).
     Also collects the engine text hooks that the port implements natively:
-    OpenPokemonCenterPC, PrintBenchGuyText, GymStatues and the Vermilion
+    OpenPokemonCenterPC / OpenRedsPC (the player's storage PC in the
+    bedroom), PrintBenchGuyText, GymStatues and the Vermilion
     Gym GymTrashScript cans (arg = [wGymTrashCanIndex]).  For those the
     fourth macro argument is the facing direction required to trigger the
     event, except GymTrashScript where it is the can index.
@@ -153,7 +154,7 @@ def parse_hidden_events(pokered):
             elif arg == "SLOTS_SOMEONESKEYS":
                 state = "keys"
             slots.setdefault(current, []).append({"x": x, "y": y, "state": state})
-        elif func == "OpenPokemonCenterPC":
+        elif func == "OpenPokemonCenterPC" or func == "OpenRedsPC":
             extras["pcTiles"].setdefault(current, []).append(
                 {"x": x, "y": y, "facing": DIRS.get(arg, arg)})
         elif func == "PrintBenchGuyText":
@@ -303,12 +304,63 @@ def parse_card_key_doors(pokered):
             util.die(f"card_key.asm: {needle!r} not found (door tiles/blocks changed?)")
     if n_doors != 22 or len(maps) != 10:
         util.die(f"card key doors: expected 22 doors / 10 maps, got {n_doors}/{len(maps)}")
+    # closedDoors is hand-ported, not extracted: no retail .blk layout places
+    # a closed-door block at any of the coordinates above (the feature is
+    # unused/cut in the original game), so there is no ROM or disassembly
+    # source to derive this from. It restores that cut content by stamping
+    # facility.bst blocks 0x54/0x5f (2F-10F) or interior.bst block 0x20
+    # (11F) over each door on map load, opened by that door's
+    # EVENT_SILPH_CO_n_UNLOCKED_DOORn flag. Kept in sync by hand with
+    # tools/rom_manifest.json's field.cardKeyDoors.closedDoors.
+    closed_doors = {
+        "SILPH_CO_2F": [
+            {"block": 0x54, "bx": 2, "by": 2, "event": "EVENT_SILPH_CO_2_UNLOCKED_DOOR1", "open": 0x0e},
+            {"block": 0x54, "bx": 2, "by": 5, "event": "EVENT_SILPH_CO_2_UNLOCKED_DOOR2", "open": 0x0e},
+        ],
+        "SILPH_CO_3F": [
+            {"block": 0x5f, "bx": 4, "by": 4, "event": "EVENT_SILPH_CO_3_UNLOCKED_DOOR1", "open": 0x0e},
+            {"block": 0x5f, "bx": 8, "by": 4, "event": "EVENT_SILPH_CO_3_UNLOCKED_DOOR2", "open": 0x0e},
+        ],
+        "SILPH_CO_4F": [
+            {"block": 0x54, "bx": 2, "by": 6, "event": "EVENT_SILPH_CO_4_UNLOCKED_DOOR1", "open": 0x0e},
+            {"block": 0x54, "bx": 6, "by": 4, "event": "EVENT_SILPH_CO_4_UNLOCKED_DOOR2", "open": 0x0e},
+        ],
+        "SILPH_CO_5F": [
+            {"block": 0x5f, "bx": 3, "by": 2, "event": "EVENT_SILPH_CO_5_UNLOCKED_DOOR1", "open": 0x0e},
+            {"block": 0x5f, "bx": 3, "by": 6, "event": "EVENT_SILPH_CO_5_UNLOCKED_DOOR2", "open": 0x0e},
+            {"block": 0x5f, "bx": 7, "by": 5, "event": "EVENT_SILPH_CO_5_UNLOCKED_DOOR3", "open": 0x0e},
+        ],
+        "SILPH_CO_6F": [
+            {"block": 0x5f, "bx": 2, "by": 6, "event": "EVENT_SILPH_CO_6_UNLOCKED_DOOR", "open": 0x0e},
+        ],
+        "SILPH_CO_7F": [
+            {"block": 0x54, "bx": 5, "by": 3, "event": "EVENT_SILPH_CO_7_UNLOCKED_DOOR1", "open": 0x0e},
+            {"block": 0x54, "bx": 10, "by": 2, "event": "EVENT_SILPH_CO_7_UNLOCKED_DOOR2", "open": 0x0e},
+            {"block": 0x54, "bx": 10, "by": 6, "event": "EVENT_SILPH_CO_7_UNLOCKED_DOOR3", "open": 0x0e},
+        ],
+        "SILPH_CO_8F": [
+            {"block": 0x5f, "bx": 3, "by": 4, "event": "EVENT_SILPH_CO_8_UNLOCKED_DOOR", "open": 0x0e},
+        ],
+        "SILPH_CO_9F": [
+            {"block": 0x5f, "bx": 1, "by": 4, "event": "EVENT_SILPH_CO_9_UNLOCKED_DOOR1", "open": 0x0e},
+            {"block": 0x54, "bx": 9, "by": 2, "event": "EVENT_SILPH_CO_9_UNLOCKED_DOOR2", "open": 0x0e},
+            {"block": 0x54, "bx": 9, "by": 5, "event": "EVENT_SILPH_CO_9_UNLOCKED_DOOR3", "open": 0x0e},
+            {"block": 0x5f, "bx": 5, "by": 6, "event": "EVENT_SILPH_CO_9_UNLOCKED_DOOR4", "open": 0x0e},
+        ],
+        "SILPH_CO_10F": [
+            {"block": 0x54, "bx": 5, "by": 4, "event": "EVENT_SILPH_CO_10_UNLOCKED_DOOR", "open": 0x0e},
+        ],
+        "SILPH_CO_11F": [
+            {"block": 0x20, "bx": 3, "by": 6, "event": "EVENT_SILPH_CO_11_UNLOCKED_DOOR", "open": 0x03},
+        ],
+    }
     return {
         "maps": maps,               # maps where the engine checks for doors
         "doors": doors,             # tile coords; block coord = floor(coord/2)
         "doorTiles": [0x18, 0x24],  # locked-door tile ids (FACILITY tileset)
         "openBlock": 0x0e,          # block written over the door's block
         "silphCo11F": {"doorTile": 0x5e, "openBlock": 0x03},
+        "closedDoors": closed_doors,
     }
 
 

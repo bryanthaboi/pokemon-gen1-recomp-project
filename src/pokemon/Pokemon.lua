@@ -9,12 +9,18 @@ local Pokemon = {}
 -- keeping the most recent four (engine/pokemon/learn_move.asm behavior).
 function Pokemon.movesAtLevel(speciesDef, level)
   local moves = {}
+  local function add(id)
+    for _, existing in ipairs(moves) do
+      if existing == id then return end
+    end
+    table.insert(moves, id)
+  end
   for _, m in ipairs(speciesDef.level1Moves) do
-    table.insert(moves, m)
+    add(m)
   end
   for _, entry in ipairs(speciesDef.learnset) do
     if entry.level <= level then
-      table.insert(moves, entry.move)
+      add(entry.move)
     end
   end
   while #moves > 4 do

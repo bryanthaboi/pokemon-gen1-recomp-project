@@ -32,6 +32,15 @@ local STICK_ON = 0.5
 local STICK_OFF = 0.3
 
 function Input:init()
+  self:reset()
+end
+
+-- Purely event-driven state (press sets true, release sets false) has no
+-- fallback if a release event never arrives -- focus loss, a minimized
+-- window, or a disconnected gamepad can all swallow the key-up/button-up
+-- that would have cleared a held direction. Called from Game on those
+-- transitions so a stuck flag can't outlive them.
+function Input:reset()
   self.state = {}
   self.pressQueue = {}
   self.pressed = {}

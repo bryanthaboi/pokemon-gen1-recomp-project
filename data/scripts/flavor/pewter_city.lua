@@ -5,10 +5,11 @@
 -- The escort choreography (SUPER_NERD1 walking the player to the
 -- museum, YOUNGSTER walking the player to the gym) is scripted NPC
 -- movement + a wPewterCityCurScript state machine that steers the
--- player off-map; that part is already covered on this map by
--- story5.lua's onStep gate (walks the player back a step at the
--- east exit before EVENT_BEAT_BROCK). Here we only port the real
--- YES/NO-branched flavor text these NPCs speak when talked to.
+-- player off-map; the YOUNGSTER's escort to the gym is handled on this
+-- map by story5.lua's onStep gate at the east exit (before
+-- EVENT_BEAT_BROCK), while the SUPER_NERD1 museum escort is not ported.
+-- Here we only port the real YES/NO-branched flavor text these NPCs
+-- speak when talked to.
 
 local M = {}
 

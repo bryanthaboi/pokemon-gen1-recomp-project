@@ -45,6 +45,27 @@ then `love .` for later launches. Windows PowerShell scripts, the optional
 developer data build, test suites, and cache management are covered in
 [Developer Setup](https://github.com/bryanthaboi/pokemon-gen1-recomp-project/wiki/Guide-Developer-Setup).
 
+## Portable Mode
+
+By default the game keeps your save, options, and the private ROM-derived
+data cache in your OS's normal per-user app data folder. To keep everything
+next to the game instead (handy for a USB stick or portable drive you carry
+between computers), drop an empty file named `portable.txt` next to the
+executable (or next to `main.lua`/`conf.lua` when running from source), then
+launch the game.
+
+With `portable.txt` present:
+
+- `save.lua`, `save.lua.bak`, and `options.lua` are read from and written to
+  that same folder instead of the OS save directory.
+- After a ROM import, the generated `data/generated` and `assets/generated`
+  cache is copied into that folder too, so a later launch (even on a
+  different computer, as long as the same folder comes along) reuses it
+  without asking for the ROM again.
+- Deleting `portable.txt` switches back to the normal OS save directory; nothing
+  already written to either location is touched automatically, so copy files
+  over yourself if you want to carry existing progress across the switch.
+
 ## Modding
 
 The game ships a native mod platform: content registries, events and hooks,

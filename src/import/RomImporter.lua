@@ -2,7 +2,7 @@ local RomImporter = {}
 RomImporter.__index = RomImporter
 
 local ROM_SHA1 = "ea9bcae617fdf159b045185467ae58b2e4a48b9a"
-local CACHE_MARKER = "rom-cache-v5:" .. ROM_SHA1
+local CACHE_MARKER = "rom-cache-v7:" .. ROM_SHA1
 local MARKER_PATH = "rom-cache.complete"
 local COMMUNITY_URL = "https://bois.icu"
 local TRUST_WARNING = "if you did not get this from bryanthaboi's github " ..
@@ -38,8 +38,124 @@ local function sourceTreeHasData()
   return real == love.filesystem.getSource()
 end
 
+-- ------- portable ROM-derived asset cache
+--
+-- The extracted cache (data/generated, assets/generated) is written
+-- exclusively through love.filesystem.write, which always targets the OS
+-- save directory -- it cannot be redirected to an arbitrary folder.  So a
+-- portable install mirrors the cache both ways instead: after a fresh
+-- import, every generated file is copied out to the portable folder
+-- (SaveData.portableFs's io.* companion); on a later boot -- possibly on a
+-- different machine sharing the same USB copy -- a matching portable
+-- cache is copied back into the save directory before the normal
+-- isReady() check runs, so nothing downstream needs to know the cache
+-- ever lived anywhere but the save directory.
+local PORTABLE_CACHE_DIRS = { "data/generated", "assets/generated" }
+local PORTABLE_MANIFEST_NAME = "portable_cache_manifest.txt"
+local PORTABLE_SEP = package.config:sub(1, 1)
+
+local function walkLoveDir(dir, out)
+  out = out or {}
+  for _, name in ipairs(love.filesystem.getDirectoryItems(dir)) do
+    local full = dir .. "/" .. name
+    local info = love.filesystem.getInfo(full)
+    if info and info.type == "directory" then
+      walkLoveDir(full, out)
+    elseif info and info.type == "file" then
+      out[#out + 1] = full
+    end
+  end
+  return out
+end
+
+local function portablePath(base, relPath)
+  return base .. PORTABLE_SEP .. relPath:gsub("/", PORTABLE_SEP)
+end
+
+local function ensurePortableDir(fullDirPath)
+  if love.system.getOS() == "Windows" then
+    os.execute(('mkdir "%s" 2>NUL'):format(fullDirPath))
+  else
+    os.execute(("mkdir -p '%s' 2>/dev/null"):format(fullDirPath))
+  end
+end
+
+-- copies data/generated + assets/generated out to the portable folder
+-- after a fresh import; a plain-text manifest travels alongside so a
+-- later sync-in knows exactly which files to copy back without needing
+-- to list an arbitrary external directory (io.* has no listdir)
+local function syncCacheToPortable()
+  local SaveData = require("src.core.SaveData")
+  local base = SaveData.portableBaseDir()
+  if not base then return end
+  local manifest = {}
+  for _, dir in ipairs(PORTABLE_CACHE_DIRS) do
+    if love.filesystem.getInfo(dir, "directory") then
+      for _, relPath in ipairs(walkLoveDir(dir)) do
+        local data = love.filesystem.read(relPath)
+        if data then
+          local outPath = portablePath(base, relPath)
+          local outDir = outPath:match("^(.*)" .. PORTABLE_SEP .. "[^" .. PORTABLE_SEP .. "]+$")
+          if outDir then ensurePortableDir(outDir) end
+          local f, err = io.open(outPath, "wb")
+          if f then
+            f:write(data)
+            f:close()
+            manifest[#manifest + 1] = relPath
+          else
+            require("src.core.Logger").error(
+              "portable cache: could not write %s: %s", outPath, tostring(err))
+          end
+        end
+      end
+    end
+  end
+  local mf = io.open(base .. PORTABLE_SEP .. PORTABLE_MANIFEST_NAME, "wb")
+  if mf then
+    mf:write(table.concat(manifest, "\n"))
+    mf:close()
+  end
+  local mk = io.open(base .. PORTABLE_SEP .. MARKER_PATH, "wb")
+  if mk then
+    mk:write(CACHE_MARKER)
+    mk:close()
+  end
+end
+
+-- copies a matching portable cache back into the save directory before
+-- isReady() runs its normal check; a mismatched or missing marker means
+-- either no portable cache exists yet or it belongs to an older build, so
+-- it is left alone and a fresh import proceeds as usual
+local function syncCacheFromPortable()
+  local SaveData = require("src.core.SaveData")
+  local base = SaveData.portableBaseDir()
+  if not base then return end
+  local markerFile = io.open(base .. PORTABLE_SEP .. MARKER_PATH, "rb")
+  if not markerFile then return end
+  local marker = markerFile:read("*a")
+  markerFile:close()
+  if marker ~= CACHE_MARKER then return end
+  local manifestFile = io.open(base .. PORTABLE_SEP .. PORTABLE_MANIFEST_NAME, "rb")
+  if not manifestFile then return end
+  local manifestBody = manifestFile:read("*a")
+  manifestFile:close()
+  for relPath in manifestBody:gmatch("[^\r\n]+") do
+    local f = io.open(portablePath(base, relPath), "rb")
+    if f then
+      local data = f:read("*a")
+      f:close()
+      love.filesystem.write(relPath, data)
+    end
+  end
+  love.filesystem.write(MARKER_PATH, CACHE_MARKER)
+end
+
 function RomImporter.isReady()
   if sourceTreeHasData() then return true end
+  if love.filesystem.read(MARKER_PATH) ~= CACHE_MARKER
+      and require("src.core.SaveData").isPortable() then
+    syncCacheFromPortable()
+  end
   return love.filesystem.read(MARKER_PATH) == CACHE_MARKER
     and allRequiredFilesExist()
 end
@@ -136,13 +252,20 @@ local function chooseRom()
 end
 
 function RomImporter.new(onComplete)
+  local previousMarker = love.filesystem.read(MARKER_PATH)
+  local returning = previousMarker ~= nil and previousMarker ~= CACHE_MARKER
   return setmetatable({
     onComplete = onComplete,
     logo = love.graphics.newImage("assets/logo/logo.png"),
     bcg = love.graphics.newImage("assets/logo/bcg.png"),
     state = "waiting",
-    status = "Choose or drop a Pokemon Red ROM",
-    detail = "The ROM is verified before any files are created.",
+    returning = returning,
+    status = returning and "More assets are needed from your ROM"
+      or "Choose or drop a Pokemon Red ROM",
+    detail = returning
+      and "This update pulls a few more things from your ROM. "
+        .. "Please re-import it to continue (it's quick)."
+      or "The ROM is verified before any files are created.",
     progress = 0,
     stageCurrent = 0,
     stageTotal = 1,
@@ -204,6 +327,11 @@ function RomImporter:startData(data, displayName)
     collectgarbage("collect")
     local ok, writeError = love.filesystem.write(MARKER_PATH, CACHE_MARKER)
     if not ok then error("could not finish the private cache: " .. tostring(writeError)) end
+    if require("src.core.SaveData").isPortable() then
+      self.status = "Copying data to the portable folder"
+      coroutine.yield()
+      syncCacheToPortable()
+    end
     self.state = "complete"
     self.status = "Ready"
     self.detail = "Starting Pokemon Red..."
@@ -304,7 +432,8 @@ function RomImporter:draw()
     height * 0.075,
     0, logoScale, logoScale)
   setColor255(74, 88, 72)
-  printCentered("FIRST RUN", height * 0.205, smallFont, width)
+  printCentered(self.returning and "UPDATE REQUIRED" or "FIRST RUN",
+    height * 0.205, smallFont, width)
 
   local zoneY, zoneH = height * 0.29, math.min(180, height * 0.31)
   setColor255(215, 220, 202)

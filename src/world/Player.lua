@@ -84,9 +84,21 @@ function Player:update()
   if self.turnTimer > 0 then
     self.turnTimer = self.turnTimer - 1
   end
+  if self.spinFrames then
+    self.spinFrames = self.spinFrames - 1
+    if self.spinFrames <= 0 then
+      self.spinFrames = nil
+      self.spinDrop = nil
+      self.spinning = false
+    end
+  end
   if not self.moving then return false end
   local stepLen = self.stepFramesCur or self.stepFrames or STEP_FRAMES
   self.progress = self.progress + 1
+  -- the walk-cycle clock ticks once per real frame while moving, so the
+  -- leg cadence stays constant when the bike halves stepFramesCur (only
+  -- translation speed doubles, like UpdatePlayerSprite's frame counters)
+  self.animClock = (self.animClock or 0) + 1
   local d = Collision.DELTA[self.facing]
   local px = math.floor(self.progress * 16 / stepLen)
   self.px = self.cellX * 16 + d[1] * px
@@ -108,8 +120,8 @@ end
 
 function Player:walkPhase()
   if not self.moving then return 0 end
-  -- walk frame during the middle of the step
-  local p = self.progress % 16
+  -- walk frame during the middle of each 16-frame animation cycle
+  local p = (self.animClock or self.progress) % 16
   return (p >= 4 and p < 12) and 1 or 0
 end
 
@@ -139,15 +151,26 @@ function Player:draw(camX, camY)
     py = py + (self.bobTimer < 16 and 0 or 1)
   end
   local facing = self.facing
+  local phase = self:walkPhase()
+  -- alternate walk cycles mirror the up/down frame; derived from the
+  -- fixed-rate animation clock so the bike's shorter steps don't double
+  -- the leg cadence
+  local flip = math.floor((self.animClock or 0) / 16) % 2 == 1
   if self.spinning then
-    -- spinner tiles whirl the sprite (PlayerSpinningFacingOrder)
+    -- spinner tiles whirl the sprite on its standing pose, one facing
+    -- per frame (LoadSpinnerArrowTiles runs every OverworldLoop frame)
     self.spinTimer = (self.spinTimer or 0) + 1
-    facing = SPIN_ORDER[math.floor(self.spinTimer / 4) % 4 + 1]
+    facing = SPIN_ORDER[self.spinTimer % 4 + 1]
+    phase, flip = 0, false
+    -- teleport arrivals spin the sprite down into place
+    -- (EnterMapAnim PlayerSpinWhileMovingDown)
+    if self.spinFrames and self.spinDrop then
+      py = py - math.floor(self.spinFrames * 24 / (self.spinTotal or 64))
+    end
   end
   local sprite = (self.surfing and self.surfSprite)
                  or (self.onBike and self.bikeSprite) or self.sprite
-  sprite:draw(self.px, py, camX, camY, facing,
-              self:walkPhase(), self.stepFlip)
+  sprite:draw(self.px, py, camX, camY, facing, phase, flip)
 end
 
 return Player

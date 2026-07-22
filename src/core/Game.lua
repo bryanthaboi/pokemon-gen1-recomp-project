@@ -17,7 +17,7 @@ local Game = {}
 
 -- dev-mode gate for the F5/backtick hotkeys; false keeps every src/dev
 -- module unloaded, so a player boot never touches a byte of dev code
-local devMode = os.getenv("POKEPORT_DEV") == "1"
+local devMode = os.getenv("POKEPORT_DEV") == "1" or _G.POKEPORT_DEV_MODE == true
 
 -- the boot screen ids (field.boot.screens); a plain function so the
 -- headless harness can borrow makeTitleState onto a stub game
@@ -283,10 +283,22 @@ function Game:keypressed(key)
     self:zoomStep(1)
     return
   elseif key == "2" then
-    -- cycle COLORS (GBC / OG / OG INV / GBC INV / CLASSIC); always on
-    local PaletteFX = require("src.render.PaletteFX")
-    self.save.options.colors = PaletteFX.cycleMode()
-    self:writeOptions()
+    -- cycle COLORS (GBC / OG / OG INV / GBC INV / CLASSIC); the pack change
+    -- forces Game.overworld:reloadMap, which rebuilds the live NPC array, so
+    -- hold it while a warp/transition or an on-screen scripted cutscene is
+    -- driving the overworld rather than tear the escort's NPCs out mid-move
+    local ow = self.overworld
+    local top = self.stack:top()
+    local busy = ow and (ow.transitioning
+      or (top == ow and (
+           (ow.runner and ow.runner.isRunning and ow.runner:isRunning())
+        or (ow.scriptMoves and #ow.scriptMoves > 0)
+        or ow.engaging or ow.emote)))
+    if not busy then
+      local PaletteFX = require("src.render.PaletteFX")
+      self.save.options.colors = PaletteFX.cycleMode()
+      self:writeOptions()
+    end
     return
   elseif key == "3" then
     -- cycle TILT OFF → 15 → 35 → 50 → OFF (mnemonic: 3D), free-roam only
@@ -335,6 +347,28 @@ end
 
 function Game:gamepadaxis(joystick, axis, value)
   Input:gamepadaxis(joystick, axis, value)
+end
+
+-- Window lost focus or got minimized: any release event due while it was
+-- unfocused/hidden can be swallowed by the OS instead of delivered here,
+-- which would otherwise leave a held direction stuck on.
+function Game:focus(f)
+  if f then return end
+  Input:reset()
+  TouchInput:reset()
+end
+
+function Game:visible(v)
+  if v then return end
+  Input:reset()
+  TouchInput:reset()
+end
+
+-- A disconnected/dropped controller can't send the button-up for whatever
+-- it was holding, so drop all input state rather than try to guess which
+-- flags it owned.
+function Game:joystickremoved(joystick)
+  Input:reset()
 end
 
 function Game:touchpressed(id, x, y)

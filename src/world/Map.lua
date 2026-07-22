@@ -24,6 +24,15 @@ local NO_SHORE_TILESETS = { SHIP_PORT = true }
 -- what counts as "outside" for the wLastMap memory (CheckIfInOutsideMap)
 local OUTSIDE_TILESETS = { "OVERWORLD", "PLATEAU" }
 
+-- warp pads and fall-through holes (data/tilesets/warp_pad_hole_tile_ids
+-- .asm WarpPadAndHoleData); a tileset record carrying warpPadTiles
+-- ({ [tileId] = "pad"|"hole" }) wins over these vanilla rows
+local WARP_PAD_TILES = {
+  FACILITY = { [0x20] = "pad", [0x11] = "hole" },
+  CAVERN = { [0x22] = "hole" },
+  INTERIOR = { [0x55] = "pad" },
+}
+
 local function hashSet(list, into)
   for _, t in ipairs(list) do into[t] = true end
   return into
@@ -197,6 +206,14 @@ end
 function Map:isWarpTileCell(cx, cy)
   local t = self:cellTile(cx, cy)
   return self.doorTiles[t] or self.warpTiles[t] or false
+end
+
+-- "pad"/"hole" when the cell's collision tile is a teleporter warp pad or
+-- a fall-through hole (IsPlayerStandingOnWarpPadOrHole), nil otherwise
+function Map:warpPadOrHoleAt(cx, cy)
+  local table_ = self.tileset.warpPadTiles or WARP_PAD_TILES[self.def.tileset]
+  if not table_ then return nil end
+  return table_[self:cellTile(cx, cy)]
 end
 
 -- counter tiles allow talking to NPCs across them (mart clerks, nurses)

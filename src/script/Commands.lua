@@ -5,6 +5,7 @@
 -- Conditionals: check_flag stores its result in ctx.lastCheck;
 -- jump_if_true/jump_if_false jump to an absolute row index.
 
+local Collision = require("src.world.Collision")
 local Flags = require("src.script.Flags")
 local Logger = require("src.core.Logger")
 local Screens = require("src.ui.Screens")
@@ -269,7 +270,10 @@ end
 local DIRS4 = { { 0, -1, "up" }, { 0, 1, "down" },
                 { -1, 0, "left" }, { 1, 0, "right" } }
 
-local function bfsPath(map, sx, sy, tx, ty)
+-- entities/mover let the walk route around other entities' cells (the
+-- player especially), so a scripted NPC never clips through them; the
+-- target cell is exempt so an NPC can still walk up onto its goal
+local function bfsPath(map, sx, sy, tx, ty, entities, mover)
   local key = function(x, y) return y * 1000 + x end
   local prev = { [key(sx, sy)] = false }
   local queue = { { sx, sy } }
@@ -289,8 +293,11 @@ local function bfsPath(map, sx, sy, tx, ty)
     for _, d in ipairs(DIRS4) do
       local nx, ny = cx + d[1], cy + d[2]
       local nk = key(nx, ny)
+      local isTarget = nx == tx and ny == ty
       if prev[nk] == nil and map:inBounds(nx, ny)
-         and (map:isWalkableCell(nx, ny) or (nx == tx and ny == ty)) then
+         and (map:isWalkableCell(nx, ny) or isTarget)
+         and (isTarget or not entities
+              or not Collision.occupied(entities, nx, ny, mover)) then
         prev[nk] = { cx, cy, d[3] }
         table.insert(queue, { nx, ny })
       end
@@ -303,7 +310,7 @@ function Commands.move_npc_to(ctx, objIndex, tx, ty)
   local ow = ctx.overworld
   local npc = ow:npcByIndex(objIndex)
   if not npc then return end
-  local path = bfsPath(ow.map, npc.cellX, npc.cellY, tx, ty)
+  local path = bfsPath(ow.map, npc.cellX, npc.cellY, tx, ty, ow.entities, npc)
   if not path then
     Logger.warn("move_npc_to: no path to (%d,%d)", tx, ty)
     return
@@ -390,6 +397,7 @@ local function toggleObject(ctx, mapId, objName, visible)
   -- positions mid-cutscene)
   local ow = ctx.overworld
   if not ow or ow.map.id ~= mapId then return end
+  ow.npcPool = ow.npcPool or {}
   if visible then
     for _, n in ipairs(ow.npcs) do
       if n.def.name == objName then return end
@@ -400,12 +408,16 @@ local function toggleObject(ctx, mapId, objName, visible)
         local npc = NPC.new(ctx.game.data, mapId, obj)
         table.insert(ow.npcs, npc)
         table.insert(ow.entities, npc)
+        ow.npcPool[npc.id] = npc
         return
       end
     end
   else
     for i = #ow.npcs, 1, -1 do
-      if ow.npcs[i].def.name == objName then table.remove(ow.npcs, i) end
+      if ow.npcs[i].def.name == objName then
+        ow.npcPool[ow.npcs[i].id] = nil
+        table.remove(ow.npcs, i)
+      end
     end
     for i = #ow.entities, 1, -1 do
       local e = ow.entities[i]
@@ -823,7 +835,12 @@ end
 -- registry and block until the screen pops itself
 function Commands.push_screen(ctx, screenId, args)
   local screens = ctx.game.data.screens
-  if not (screens and screens[screenId]) then
+  local known = screens and screens[screenId] ~= nil
+  if not known then
+    -- builtin engine screens (src/ui/<id>.lua) resolve through Screens too
+    known = pcall(Screens.get, ctx.game, screenId)
+  end
+  if not known then
     error(("push_screen: unknown screen '%s'"):format(tostring(screenId)), 0)
   end
   local runner = ctx.runner

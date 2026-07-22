@@ -62,8 +62,10 @@ end
 function Renderer:beginFrame(transparent)
   self.worldActive = false
   self.uprightActive = false
-  -- last frame's trueColor rects go before anything draws this one
+  -- last frame's trueColor rects and sprite redraws go before anything
+  -- draws this one
   PaletteFX.clearTrueColor()
+  PaletteFX.clearSpriteRedraws()
   PaletteFX.setPass("ui")
   love.graphics.setCanvas(self.canvas)
   if transparent then
@@ -362,6 +364,35 @@ function Renderer:endFrame(zones, worldZones)
         blit(self.worldCanvas, s, worldZones, s, wox, woy, 0, 0, ww, wh)
       else
         blit(self.worldCanvas, s, zones, S, wox, woy, 0, 0, ww, wh)
+      end
+      -- OBP-baked overworld sprites replay on top of the zone pass (GBC
+      -- mode per-object coloring; see PaletteFX.markSpriteRedraw).  Grass
+      -- feet-overdraw entries carry `colors` and re-colorize through the
+      -- color-0-keyed shade-remap shader so they keep hiding sprite feet.
+      local redraws = PaletteFX.spriteRedraws()
+      if redraws[1] then
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.setScissor(0, 0, ww, wh)
+        local activeShader = nil
+        for _, r in ipairs(redraws) do
+          local wanted = r.colors
+            and (r.keyed and PaletteFX.keyedShader() or PaletteFX.shader())
+            or nil
+          if wanted ~= activeShader then
+            activeShader = wanted
+            love.graphics.setShader(wanted)
+          end
+          if wanted then PaletteFX.sendColors(wanted, r.colors) end
+          if r.quad then
+            love.graphics.draw(r.image, r.quad, wox + r.x * s, woy + r.y * s,
+                               0, s * r.sx, s)
+          else
+            love.graphics.draw(r.image, wox + r.x * s, woy + r.y * s,
+                               0, s * r.sx, s)
+          end
+        end
+        if activeShader then love.graphics.setShader() end
+        love.graphics.setScissor()
       end
     end
     -- Composite the tilt upright pass over the ground (projected or, in the

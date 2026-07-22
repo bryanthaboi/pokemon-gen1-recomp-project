@@ -75,6 +75,21 @@ function TouchInput:init()
   self.selectFired = false     -- one SELECT per two-finger gesture cluster
 end
 
+-- LÖVE has no touchcancelled event, so a touch interrupted by the OS (app
+-- backgrounded mid-touch, a system gesture stealing the finger) never fires
+-- touchreleased and would otherwise strand its direction held forever.
+-- Called from Game alongside Input:reset() on focus/visibility loss.
+function TouchInput:reset()
+  for _, touch in pairs(self.touches) do
+    releaseDir(self, touch)
+  end
+  self.touches = {}
+  self.pendingA = nil
+  self.armed = {}
+  self.autoRelease = {}
+  self.selectFired = false
+end
+
 local function pulse(self, key)
   Input:keypressed(key)
   self.armed[#self.armed + 1] = key

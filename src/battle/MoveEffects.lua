@@ -516,8 +516,8 @@ MoveEffects.full = {
 
   -- charge moves: first turn just charges; Fly AND Dig go
   -- semi-invulnerable (ChargeEffect sets INVULNERABLE for both)
-  CHARGE_EFFECT = { charge = {} },
-  FLY_EFFECT = { charge = { invulnerable = true } },
+  CHARGE_EFFECT = { charge = { anim = "XSTATITEM_ANIM", enemyAnim = "XSTATITEM_DUPLICATE_ANIM" } },
+  FLY_EFFECT = { charge = { invulnerable = true, anim = "TELEPORT" } },
 
   TRAPPING_EFFECT = {
     -- TrappingEffect runs BEFORE the hit test and clears the target's

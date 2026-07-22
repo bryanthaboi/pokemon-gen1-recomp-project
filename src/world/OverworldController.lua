@@ -40,6 +40,10 @@ local HEAL_BALL_XY = {
   { 40, 37 }, { 48, 37, true },
 }
 
+-- the healing machine's flash beat (FlashSprite8Times: rOBP1 ^= $28)
+-- swaps the two middle shades of the monitor/ball art in place
+local HEAL_FLASH_MAP = { [0] = 0, [1] = 2, [2] = 1, [3] = 3 }
+
 -- object_event spawn filter (toggleable_objects, items taken, beaten
 -- static encounters), shared by the current map's real NPCs and the
 -- visual-only ghosts on connected neighbor maps
@@ -91,11 +95,25 @@ local NEIGHBOR_HOPS = 2
 -- (32 px), the same alignment the connection macro encodes
 -- (macros/scripts/maps.asm: _x = offset * -2 walk cells for
 -- north/south, _y = offset * -2 for west/east).
-function OverworldState.computeNeighbors(maps, rootId, hops)
+-- reachW/reachH (optional, world pixels): with a full zoom-out the view
+-- shows far more world than the fixed hop count covers, so any map whose
+-- body could overlap the current map's rect inflated by the view
+-- half-extents joins the set (and keeps the walk going) regardless of how
+-- many connections away it sits -- otherwise far map bodies pop between
+-- real tiles and the border filler when a crossing re-roots the BFS.
+function OverworldState.computeNeighbors(maps, rootId, hops, reachW, reachH)
   local out = {}
+  local rootDef = maps[rootId]
   local placed = { [rootId] = true }
-  local queue = { { def = maps[rootId], ox = 0, oy = 0, hops = 0 } }
+  local queue = { { def = rootDef, ox = 0, oy = 0, hops = 0 } }
   local qi = 1
+  local function inReach(def, ox, oy)
+    if not (reachW and reachH and rootDef) then return false end
+    return ox + def.width * 32 > -reachW
+       and ox < rootDef.width * 32 + reachW
+       and oy + def.height * 32 > -reachH
+       and oy < rootDef.height * 32 + reachH
+  end
   while queue[qi] do
     local cur = queue[qi]
     qi = qi + 1
@@ -114,11 +132,13 @@ function OverworldState.computeNeighbors(maps, rootId, hops)
           ox, oy = cur.def.width * 32, conn.offset * 32
         end
         ox, oy = cur.ox + ox, cur.oy + oy
-        table.insert(out, { id = conn.map, ox = ox, oy = oy })
-        if cur.hops + 1 < hops then
-          table.insert(queue,
-                       { def = destDef, ox = ox, oy = oy,
-                         hops = cur.hops + 1 })
+        if cur.hops + 1 <= hops or inReach(destDef, ox, oy) then
+          table.insert(out, { id = conn.map, ox = ox, oy = oy })
+          if cur.hops + 1 < hops or inReach(destDef, ox, oy) then
+            table.insert(queue,
+                         { def = destDef, ox = ox, oy = oy,
+                           hops = cur.hops + 1 })
+          end
         end
       end
     end
@@ -200,6 +220,24 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
     self.map.renderer:rebuild()
     self.cutBlocks[mapId] = nil
   end
+  -- Silph Co card key doors: the .blk layouts ship with the doorways
+  -- open; each floor's map script stamps the closed door block on load
+  -- until its unlock event is set (scripts/SilphCo2F.asm
+  -- SilphCo2FGateCallbackScript et al., closed blocks $54/$5f/$20)
+  local closedDoors = FieldDefaults.fieldValue(Game.data, "cardKeyDoors",
+                                               "closedDoors")
+  local floorDoors = closedDoors and closedDoors[mapId]
+  if floorDoors then
+    local stamped = false
+    for _, door in ipairs(floorDoors) do
+      local want = Game.save.flags[door.event] and door.open or door.block
+      if self.map:blockAt(door.bx, door.by) ~= want then
+        self.map:setBlock(door.bx, door.by, want)
+        stamped = true
+      end
+    end
+    if stamped then self.map.renderer:rebuild() end
+  end
   -- forced dismount only where riding is disallowed (IsBikeRidingAllowed,
   -- home/overworld.asm: bike_riding_tilesets.asm tilesets plus the
   -- ROUTE_23/INDIGO_PLATEAU map exceptions)
@@ -278,6 +316,13 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
                                       self.player.surfing)
   end
 
+  -- forced bike/surf tiles fire the moment the player is placed on the
+  -- map, like EnterMap's unconditional CheckForceBikeOrSurf farcall
+  -- (home/overworld.asm) -- a warp can land directly on one (the Route
+  -- 16/18 gate exits), and the scripted door-mat walkout that follows
+  -- suppresses onStepComplete, so waiting for a plain step never mounts
+  self:checkForcedMovement()
+
   -- snap the camera immediately: the overworld doesn't update while a
   -- Transition is on top, so a stale camera would show the new map at
   -- the old scroll position for the whole fade-in
@@ -299,13 +344,29 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
     hooks.onEnter(Game, self)
   end
 
-  -- neighbor maps drawn at the composed connection offsets, two hops
-  -- out (the GB only ever streamed a 32px strip of the single
-  -- directly connected map -- home/overworld.asm .loadNewMap)
+  self:rebuildNeighbors()
+  Logger.info("map: %s at (%d,%d)", mapId, x, y)
+  -- Route22Gate_Script rewrites wLastMap from the player's Y on entry
+  -- too (not only on step), so a save/load mid-gate keeps exits correct
+  self:syncLastMapRewrite()
+end
+
+-- Neighbor maps drawn at the composed connection offsets: at least the
+-- configured hop count out (the GB only ever streamed a 32px strip of
+-- the single directly connected map -- home/overworld.asm .loadNewMap),
+-- widened to everything the current view size can show so a full
+-- zoom-out never runs past the rendered set.  Re-run whenever the view
+-- grows (zoom/resize), not only on setMap.
+function OverworldState:rebuildNeighbors()
+  local mapId = self.map.id
   self.neighbors = {}
   local hops = FieldDefaults.world(Game.data, "neighborHops") or NEIGHBOR_HOPS
-  for _, n in ipairs(OverworldState.computeNeighbors(Game.data.maps,
-                                                     mapId, hops)) do
+  local vw, vh = Game.renderer:worldViewSize()
+  self.neighborViewW, self.neighborViewH = vw, vh
+  for _, n in ipairs(OverworldState.computeNeighbors(Game.data.maps, mapId,
+                                                     hops,
+                                                     math.floor(vw / 2) + 64,
+                                                     math.floor(vh / 2) + 64)) do
     table.insert(self.neighbors,
                  { map = MapLoader.load(Game.data, n.id),
                    ox = n.ox, oy = n.oy })
@@ -328,10 +389,6 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
       end
     end
   end
-  Logger.info("map: %s at (%d,%d)", mapId, x, y)
-  -- Route22Gate_Script rewrites wLastMap from the player's Y on entry
-  -- too (not only on step), so a save/load mid-gate keeps exits correct
-  self:syncLastMapRewrite()
 end
 
 -- SGB overworld palette (engine/gfx/palettes.asm SetPal_Overworld):
@@ -607,12 +664,28 @@ function OverworldState:update(dt)
   -- keep the player sprite in sync with the bike state (the drawer
   -- picks the red_bike sheet while riding)
   self.player.onBike = Game.save.onBike
+  -- the rendered neighbor set depends on the view size; zooming out (or
+  -- resizing) past what setMap computed re-runs the walk in place
+  if self.map and (self.neighborViewW or 0) > 0 then
+    local vw, vh = Game.renderer:worldViewSize()
+    if vw ~= self.neighborViewW or vh ~= self.neighborViewH then
+      self:rebuildNeighbors()
+    end
+  end
   if self.dustAnim then
     local da = self.dustAnim
     da.frames = da.frames - 1
     if da.frames <= 0 then
       self.dustAnim = nil
       if da.onDone then da.onDone() end
+    end
+  end
+  if self.cutAnim then
+    local ca = self.cutAnim
+    ca.frames = ca.frames - 1
+    if ca.frames <= 0 then
+      self.cutAnim = nil
+      if ca.onDone then ca.onDone() end
     end
   end
   if self.healAnim then
@@ -704,6 +777,14 @@ function OverworldState:update(dt)
   end
 
   local stepped = self.player:update()
+  -- the warp-arrival cell goes stale the instant the player's real cell
+  -- leaves it, scripted walk-outs included -- pokered re-checks warps
+  -- after simulated steps too (CheckWarpsNoCollision), so a forced
+  -- door-mat exit must not leave the door permanently inert
+  local entry = self.warpEntryCell
+  if entry and (self.player.cellX ~= entry.x or self.player.cellY ~= entry.y) then
+    self.warpEntryCell = nil
+  end
   if stepped and not scripted then
     self:onStepComplete()
   end
@@ -1272,6 +1353,14 @@ function OverworldState:tryHiddenObject(fx, fy)
     end
   end
 
+  -- Bill's cell-separator PC (data/events/hidden_events.asm: hidden_event
+  -- 1,4 BillsHousePC SPRITE_FACING_UP)
+  if self.map.id == "BILLS_HOUSE" and fx == 1 and fy == 4
+     and self.player.facing == "up" then
+    self:billsHousePC()
+    return true
+  end
+
   local extras = field.hiddenExtras
   if not extras then return false end
   local facing = self.player.facing
@@ -1354,7 +1443,18 @@ function OverworldState:tryCardKeyDoor(fx, fy)
     return true
   end
   require("src.core.Sound").play(Game.data, "Go_Inside")
-  self:replaceBlock(math.floor(fx / 2), math.floor(fy / 2), openBlock)
+  local bx, by = math.floor(fx / 2), math.floor(fy / 2)
+  self:replaceBlock(bx, by, openBlock)
+  -- opened doors stay open across reloads (the per-door unlock events
+  -- the floors' gate callbacks check, EVENT_SILPH_CO_n_UNLOCKED_DOOR*)
+  local closedDoors = FieldDefaults.fieldValue(Game.data, "cardKeyDoors",
+                                               "closedDoors")
+  for _, door in ipairs(closedDoors and closedDoors[self.map.id] or {}) do
+    if door.bx == bx and door.by == by then
+      Game.save.flags[door.event] = true
+      break
+    end
+  end
   Game.stack:push(TextBox.new(Game,
     (t._CardKeySuccessText1 or "Bingo!")
     .. (t._CardKeySuccessText2 or "\nThe CARD KEY\nopened the door!")))
@@ -1456,6 +1556,71 @@ function OverworldState:trashCanSwitch(canIndex)
   end
 end
 
+-- Bill's House PC (engine/events/hidden_events/bills_house_pc.asm
+-- BillsHousePC): once Bill-the-Pokémon has climbed into the machine
+-- (EVENT_BILL_SAID_USE_CELL_SEPARATOR), running the PC plays the cell
+-- separator's SFX sequence, sets EVENT_USED_CELL_SEPARATOR_ON_BILL and
+-- Bill steps back out of the machine human again
+-- (BillsHouseBillExitsMachineScript / CleanupScript set EVENT_MET_BILL).
+function OverworldState:billsHousePC()
+  local t = Game.data.text
+  local flags = Game.save.flags
+  if not (flags.EVENT_BILL_SAID_USE_CELL_SEPARATOR
+          and not flags.EVENT_USED_CELL_SEPARATOR_ON_BILL) then
+    Game.stack:push(TextBox.new(Game, t._BillsHouseMonitorText
+      or "TELEPORTER is\ndisplayed on the\nPC monitor."))
+    return
+  end
+  require("src.core.Music").stop()
+  Game.stack:push(TextBox.new(Game, t._BillsHouseInitiatedText
+    or "{PLAYER} initiated\nTELEPORTER's Cell\nSeparator!", function()
+    flags.EVENT_USED_CELL_SEPARATOR_ON_BILL = true
+    require("src.core.Sound").play(Game.data, "Switch")
+    self:queueScript({
+      { "wait", 32 },
+      { "play_sound", "Tink" },
+      { "wait", 80 },
+      { "play_sound", "Shrink" },
+      { "wait", 48 },
+      { "play_sound", "Tink" },
+      { "wait", 32 },
+      { "play_sound", "Get_Item1" },
+      { "wait", 30 },
+    }, { onDone = function() self:billsHouseBillExits() end })
+  end))
+end
+
+-- BillsHouseBillExitsMachineScript: human Bill appears inside the machine
+-- at (1,2) and walks out to his spot at (4,4); the map music resumes and
+-- EVENT_MET_BILL / EVENT_MET_BILL_2 arm the SS-Ticket dialogue.
+function OverworldState:billsHouseBillExits()
+  local Commands = require("src.script.Commands")
+  local ctx = { game = Game, save = Game.save, overworld = self }
+  Commands.show_object(ctx, "BILLS_HOUSE", "BILLSHOUSE_BILL1")
+  local function done()
+    Game.save.flags.EVENT_MET_BILL = true
+    Game.save.flags.EVENT_MET_BILL_2 = true
+    require("src.core.Music").playMap(Game.data, self.map.id,
+                                      Game.save.onBike, self.player.surfing)
+  end
+  local bill
+  for _, n in ipairs(self.npcs) do
+    if n.def and n.def.name == "BILLSHOUSE_BILL1" then bill = n break end
+  end
+  if not (bill and self.map.id == "BILLS_HOUSE") then
+    done()
+    return
+  end
+  bill.cellX, bill.cellY = 1, 2
+  bill.px, bill.py = 16, 32
+  bill.facing = "down"
+  self:scriptMove(bill, "down", 1, function()
+    self:scriptMove(bill, "right", 3, function()
+      self:scriptMove(bill, "down", 1, done)
+    end)
+  end)
+end
+
 -- Any hidden item still unfound NEAR the player? (the ITEMFINDER,
 -- engine/items/itemfinder.asm HiddenItemNear: coord > clamp0(player-5)
 -- and coord <= player+4 (Y) / player+5 (X) -- the clamp excludes
@@ -1543,8 +1708,10 @@ function OverworldState:tryCut(fx, fy)
   -- chain-cut "ornamental bushes" around Saffron and Celadon.
   local ts = self.map.def.tileset
   local tile = self.map:cellTile(fx, fy)
+  local isGrass = (ts == "OVERWORLD" and tile == 0x52)
   if not ((ts == "OVERWORLD" and tile == 0x3d)
-          or (ts == "GYM" and tile == 0x50)) then
+          or (ts == "GYM" and tile == 0x50)
+          or isGrass) then
     return false
   end
   local bx, by = math.floor(fx / 2), math.floor(fy / 2)
@@ -1553,7 +1720,7 @@ function OverworldState:tryCut(fx, fy)
   for _, sw in ipairs(Game.data.field.cutTreeSwaps) do
     if sw.before == block then swap = sw break end
   end
-  if not swap or self.map:isWalkableCell(fx, fy) then return false end
+  if not swap or (not isGrass and self.map:isWalkableCell(fx, fy)) then return false end
   local mon = self:partyKnows("CUT")
   if not mon then return false end
   -- gen 1 confirms nothing (engine/overworld/cut.asm UsedCut): the
@@ -1568,11 +1735,35 @@ function OverworldState:tryCut(fx, fy)
                  { bx = bx, by = by, block = block })
     self.map:setBlock(bx, by, swap.after)
     self.map.renderer:rebuild()
-    self:startDustAnim(fx, fy, function()
+    local finish = function()
       require("src.core.Sound").play(Game.data, "Cut")
-    end)
+    end
+    if isGrass then
+      -- AnimCut .grass: tall grass gets the leaf-swirl / dust puff, not
+      -- the tree-split slide
+      self:startDustAnim(fx, fy, finish)
+    elseif ts == "OVERWORLD" then
+      -- the tree splits in half and slides apart (AnimCut .cutTreeLoop);
+      -- the GYM plant keeps the shared dust/leaf puff
+      self:startCutTreeAnim(fx, fy, finish)
+    else
+      self:startDustAnim(fx, fy, finish)
+    end
   end))
   return true
+end
+
+-- The cut-tree split (engine/overworld/cut.asm InitCutAnimOAM +
+-- engine/overworld/cut2.asm AnimCut): the tree sprite's top half slides
+-- +1px and its bottom half -1px per frame for 8 frames, flickering,
+-- before the swapped block shows through.  Falls back to the dust puff
+-- when the extracted tree sprite is unavailable.
+function OverworldState:startCutTreeAnim(cx, cy, onDone)
+  local fxDef = Game.data.field.overworldFx
+  if not (fxDef and fxDef.cutTree) then
+    return self:startDustAnim(cx, cy, onDone)
+  end
+  self.cutAnim = { x = cx, y = cy, frames = 8, total = 8, onDone = onDone }
 end
 
 -- Party-menu SURF entry (start_sub_menus.asm .surf): badge-check SOULBADGE,
@@ -1637,8 +1828,10 @@ function OverworldState:useCutFieldMove()
   -- "nothing to cut" in vanilla
   local ts = self.map.def.tileset
   local tile = self.map:cellTile(fx, fy)
+  local isGrass = (ts == "OVERWORLD" and tile == 0x52)
   if not ((ts == "OVERWORLD" and tile == 0x3d)
-          or (ts == "GYM" and tile == 0x50)) then
+          or (ts == "GYM" and tile == 0x50)
+          or isGrass) then
     return "nothing"
   end
   local bx, by = math.floor(fx / 2), math.floor(fy / 2)
@@ -1647,7 +1840,7 @@ function OverworldState:useCutFieldMove()
   for _, sw in ipairs(Game.data.field.cutTreeSwaps) do
     if sw.before == block then swap = sw break end
   end
-  if not swap or self.map:isWalkableCell(fx, fy) then return "nothing" end
+  if not swap or (not isGrass and self.map:isWalkableCell(fx, fy)) then return "nothing" end
   return "ok"
 end
 
@@ -1819,9 +2012,11 @@ function OverworldState:openPC(onDone)
   end
   table.insert(items, { label = "LOG OFF", onSelect = logOff })
   -- pokered sets BIT_NO_MENU_BUTTON_SOUND for the whole PC session
-  -- (engine/overworld/pokecenter_pc.asm / player_pc.asm)
+  -- (engine/overworld/pokecenter_pc.asm / player_pc.asm); DisplayPCMainMenu
+  -- calls TextBoxBorder with c=14 (interior width, +2 for the border), so
+  -- tw here (total width) is 16
   Game.stack:push(Menu.new(Game, items,
-    { tx = 0, ty = 0, tw = 14, th = #items * 2 + 2, onCancel = logOff,
+    { tx = 0, ty = 0, tw = 16, th = #items * 2 + 2, onCancel = logOff,
       noSound = true }))
 end
 
@@ -2805,6 +3000,25 @@ function OverworldState:takeWarp(warpDef)
   -- facing carries across the warp (leaving a gate sideways keeps you
   -- walking sideways; house exit mats are stepped onto facing down)
   local facing = self.player.facing
+  -- warp pads and fall-through holes are not doors (WarpFound2
+  -- .indoorMaps: IsPlayerStandingOnWarpPadOrHole routes them through
+  -- LeaveMapAnim/EnterMapAnim instead of the door SFX)
+  local pad = self.map.warpPadOrHoleAt
+              and self.map:warpPadOrHoleAt(self.player.cellX, self.player.cellY)
+  if pad == "pad" then
+    -- teleporter: spin out with the exit SFX, spin back in on arrival
+    -- (player_animations.asm _LeaveMapAnim / EnterMapAnim)
+    require("src.core.Sound").play(Game.data, "Teleport_Exit1")
+    self.player.spinning = true
+    self.player.spinTimer = 0
+    self.arriveWarp = "teleport"
+    self:startWarpTo(destMap, x, y, facing)
+    return
+  elseif pad == "hole" then
+    -- falling through a hole: no door SFX, no walk-out step
+    self:startWarpTo(destMap, x, y, facing)
+    return
+  end
   self.doorWarp = true -- door SFX + outdoor walk-out step
   self:startWarpTo(destMap, x, y, facing)
 end
@@ -2874,6 +3088,13 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
       require("src.core.Sound").play(Game.data, "Teleport_Enter1")
       -- ENTER_2 caps the spin-down a moment later
       self.delaySfx = { frames = 40, key = "Teleport_Enter2" }
+      -- the sprite spins down into place (EnterMapAnim
+      -- PlayerSpinWhileMovingDown), not just the SFX
+      self.player.spinning = true
+      self.player.spinTimer = 0
+      self.player.spinFrames = 48
+      self.player.spinTotal = 48
+      self.player.spinDrop = true
     end
     if doorWarp then
       local outdoor = Map.isOutdoor(self.map.def)
@@ -3146,7 +3367,7 @@ function OverworldState:drawWorld()
   -- at (64,64); anchoring those coords to where the player stood keeps
   -- the overlay on the machine at any zoom.
   local function fxHeal()
-    if not (self.healAnim and self.healAnim.visible) then return end
+    if not self.healAnim then return end
     local ha = self.healAnim
     local fxDef = Game.data.field.overworldFx
     if self.healMachineImg == nil and fxDef and fxDef.healMachine then
@@ -3162,6 +3383,19 @@ function OverworldState:drawWorld()
           love.graphics.newQuad(0, 8, 8, 8, w, h), -- ball ($7d)
         }
       end
+      -- the jingle flash recolors the machine sprites in place
+      -- (FlashSprite8Times XORs rOBP1; the sprites never disappear):
+      -- ha.visible == false is the flashed half of each beat, drawn with
+      -- the light/dark shades swapped instead of skipped
+      local shader
+      if not ha.visible then
+        shader = PaletteFX.shader()
+        if shader then
+          PaletteFX.sendColors(shader,
+            PaletteFX.permute(PaletteFX.GRAYS, HEAL_FLASH_MAP))
+          love.graphics.setShader(shader)
+        end
+      end
       local ox = ha.px - 64 - cam.x
       local oy = ha.py - 64 - cam.y
       love.graphics.setColor(1, 1, 1, 1)
@@ -3176,6 +3410,7 @@ function OverworldState:drawWorld()
                              ox + b[1], oy + b[2])
         end
       end
+      if shader then love.graphics.setShader() end
     end
   end
 
@@ -3204,6 +3439,37 @@ function OverworldState:drawWorld()
         love.graphics.setColor(1, 1, 1, 1)
       end
     end
+  end
+
+  -- the cut tree splitting apart (AnimCut): top half slides right,
+  -- bottom half slides left, 1px per frame, flickering as they go
+  local function fxCutTree()
+    if not self.cutAnim then return end
+    local fxDef = Game.data.field.overworldFx
+    local tree = fxDef and fxDef.cutTree
+    if not tree then return end
+    if self.cutTreeImg == nil then
+      local ok, img = pcall(love.graphics.newImage, tree.path)
+      self.cutTreeImg = ok and img or false
+    end
+    local img = self.cutTreeImg
+    if not img then return end
+    if not self.cutTreeQuads then
+      local w, h = img:getWidth(), img:getHeight()
+      self.cutTreeQuads = {
+        love.graphics.newQuad(0, 0, 16, 8, w, h), -- top half
+        love.graphics.newQuad(0, 8, 16, 8, w, h), -- bottom half
+      }
+    end
+    local ca = self.cutAnim
+    local off = (ca.total or 8) - ca.frames
+    local dx = ca.x * 16 - cam.x
+    local dy = ca.y * 16 - cam.y
+    local flicker = ca.frames % 2 == 0
+    love.graphics.setColor(1, 1, 1, flicker and 1 or 0.55)
+    love.graphics.draw(img, self.cutTreeQuads[1], dx + off, dy)
+    love.graphics.draw(img, self.cutTreeQuads[2], dx - off, dy + 8)
+    love.graphics.setColor(1, 1, 1, 1)
   end
 
   -- the "!" bubble above a trainer who spotted the player
@@ -3297,6 +3563,11 @@ function OverworldState:drawWorld()
 
   if not tilt then
     -- === FLAT PATH: everything into the one world canvas, as before =====
+    -- OBP-baked sprites replay after the zone pass in GBC mode, so their
+    -- grass feet-overdraw must replay over them too, colorized with the
+    -- current map's palette (see PaletteFX.markSpriteRedraw)
+    local grassColors = PaletteFX.usesSpriteObp()
+      and PaletteFX.pal(Game.data, self:paletteNameFor(self.map)) or nil
     for _, g in ipairs(self.ghosts) do
       g.npc:draw(cam.x - g.ox, cam.y - g.oy)
     end
@@ -3308,14 +3579,23 @@ function OverworldState:drawWorld()
         love.graphics.setColor(1, 1, 1, 1)
         if self.map:isGrassCell(e.cellX, e.cellY) then
           self.map.renderer:drawCellBottom(e.cellX, e.cellY, cam.x, bgY)
+          if grassColors then
+            self.map.renderer:markCellBottomRedraw(e.cellX, e.cellY,
+                                                   cam.x, bgY, grassColors)
+          end
         end
         if e.targetX and self.map:isGrassCell(e.targetX, e.targetY) then
           self.map.renderer:drawCellBottom(e.targetX, e.targetY, cam.x, bgY)
+          if grassColors then
+            self.map.renderer:markCellBottomRedraw(e.targetX, e.targetY,
+                                                   cam.x, bgY, grassColors)
+          end
         end
       end
     end
     fxHeal()
     fxDust()
+    fxCutTree()
     fxEmote()
     fxDark()
     fxBird()
@@ -3329,6 +3609,7 @@ function OverworldState:drawWorld()
     -- layers are separate and composited ground-under-upright, so drawing
     -- it now into the still-active ground canvas is order-equivalent.
     fxDust()
+    fxCutTree()
 
     Game.renderer:beginUprightPass()
 
@@ -3389,7 +3670,7 @@ function OverworldState:drawWorld()
     --                    the ground in front of where the player was)
     --   emote bubble  -> the spotting NPC's foot (rides above its head)
     --   fly bird, rod -> the player's foot
-    if self.healAnim and self.healAnim.visible then
+    if self.healAnim then
       local fx = self.healAnim.px - cam.x + 8
       local fy = self.healAnim.py - cam.y + 16
       self:billboard(fx, fy, vw, vh, zoneColorsAt(zones, fx, fy), false, fxHeal)

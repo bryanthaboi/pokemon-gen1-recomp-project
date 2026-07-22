@@ -85,10 +85,21 @@ end
 
 -- facing: down/up/left/right; walkPhase: 0 stand, 1 walk; flip: alternate
 -- steps mirror the walk frame for up/down (GB uses OAM flip for this).
+local function blitFrame(image, quad, x, y, flip, redraw)
+  if flip then
+    love.graphics.draw(image, quad, x + 16, y, 0, -1, 1)
+    if redraw then PaletteFX.markSpriteRedraw(image, quad, x + 16, y, -1) end
+  else
+    love.graphics.draw(image, quad, x, y)
+    if redraw then PaletteFX.markSpriteRedraw(image, quad, x, y, 1) end
+  end
+end
+
 function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip)
   local x = math.floor(px - camX)
   local y = math.floor(py - camY) - 4
   local image = self.image
+  local redraw = false
   -- full-color art claims its 16x16 cell out of the shade-remap pass
   if self.def.trueColor then
     PaletteFX.markTrueColor(x, y, 16, 16)
@@ -102,12 +113,21 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip)
     if colors then
       image = getObpImage(self.def.image, colors, group)
     end
+  elseif PaletteFX.usesSpriteObp() and PaletteFX.spriteRedrawPassActive() then
+    -- plain GBC: the terrain zone shader still runs over the world canvas,
+    -- so the baked sprite is also queued for a post-zone redraw
+    -- (PaletteFX.markSpriteRedraw) that restores its own OBP colors on top
+    local colors, group = PaletteFX.spriteObp(self.def, self.seed)
+    if colors then
+      image = getObpImage(self.def.image, colors, group)
+      redraw = true
+    end
   end
   -- single-frame sprites (item balls, fossils...) have one fixed pose;
   -- still 3-frame sprites turn to face (the nurse at her machine,
   -- facePlayer on STAY NPCs) but never show walk frames
   if self.def.frames <= 1 then
-    love.graphics.draw(image, self.frames[0], x, y)
+    blitFrame(image, self.frames[0], x, y, false, redraw)
     return
   end
   local frame = (self.def.walker and walkPhase == 1)
@@ -119,11 +139,7 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip)
     flip = true
   end
   local quad = self.frames[frame] or self.frames[0]
-  if flip then
-    love.graphics.draw(image, quad, x + 16, y, 0, -1, 1)
-  else
-    love.graphics.draw(image, quad, x, y)
-  end
+  blitFrame(image, quad, x, y, flip, redraw)
 end
 
 return SpriteRenderer

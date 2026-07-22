@@ -27,17 +27,17 @@ refresh is safe,  just rebuild.
 ## Build
 
 ```bash
-# Debug APK (default Android debug keystore)
+# Build the APK
 scripts/build_android.sh
 
-# Release APK (signing is manual,  see below)
-scripts/build_android.sh --release
+# Build the APK, setting app.version_name/app.version_code to match a release
+scripts/build_android.sh --version 0.2.5
 
 # Zip game.love + branding only (no Android SDK required)
 scripts/build_android.sh --package-only
 ```
 
-Or via `scripts/build.sh android`.
+Or via `scripts/build.sh android [--version X.Y.Z]`.
 
 The embedded `game.love` deliberately excludes `data/generated/`,
 `assets/generated/`, and any ROM. It contains the first-boot Lua importer and
@@ -59,12 +59,10 @@ Set `ANDROID_SDK_ROOT` (or `ANDROID_HOME`), or let the script write
 `local.properties` when it finds `~/Library/Android/sdk`.
 
 Gradle flavor used: **`embedNoRecord`** (game fused into the APK, no microphone).
+Build task: `assembleEmbedNoRecordDebug`.
 
-- Debug task: `assembleEmbedNoRecordDebug`
-- Release task: `assembleEmbedNoRecordRelease`
-
-APKs land under `app/build/outputs/apk/embedNoRecord/{debug,release}/`.
-`scripts/build_android.sh` also copies the built APK(s) to `dist/android/{debug,release}/`.
+The APK lands under `app/build/outputs/apk/embedNoRecord/debug/`.
+`scripts/build_android.sh` also copies it to `dist/android/debug/`.
 
 ### Payload path
 
@@ -79,17 +77,15 @@ scripts, tests, and mobile build sources are excluded.
 | `app.application_id` | `com.theboisclub.pokemonred` |
 | `app.name` | Pokemon Red |
 | `app.orientation` | `portrait` |
+| `app.version_name` / `app.version_code` | set from `--version X.Y.Z` (code = major*10000 + minor*100 + patch); left as-is if `--version` is omitted |
 | Permissions | INTERNET / RECORD_AUDIO / WRITE_EXTERNAL_STORAGE stripped; VIBRATE + BLUETOOTH kept |
+
+## Releases
+
+`.github/workflows/release.yml` builds the APK with `--version` set to the
+release version and publishes it alongside the macOS/Windows/Linux builds as
+`PokemonRed-<version>-android.apk`.
 
 ## Signing
 
-- **Debug**: default Android debug keystore (no setup).
-- **Release**: out-of-band. Create a keystore yourself and wire it into
-  `app/build.gradle`,  **do not commit keystores or passwords**.
-
-Example (placeholder only):
-
-```bash
-keytool -genkey -v -keystore /path/to/pokemonred-release.jks \
-  -alias pokemonred -keyalg RSA -keysize 2048 -validity 10000
-```
+Signed with the default Android keystore (no setup required).
