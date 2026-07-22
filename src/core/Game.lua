@@ -349,6 +349,28 @@ function Game:gamepadaxis(joystick, axis, value)
   Input:gamepadaxis(joystick, axis, value)
 end
 
+-- Window lost focus or got minimized: any release event due while it was
+-- unfocused/hidden can be swallowed by the OS instead of delivered here,
+-- which would otherwise leave a held direction stuck on.
+function Game:focus(f)
+  if f then return end
+  Input:reset()
+  TouchInput:reset()
+end
+
+function Game:visible(v)
+  if v then return end
+  Input:reset()
+  TouchInput:reset()
+end
+
+-- A disconnected/dropped controller can't send the button-up for whatever
+-- it was holding, so drop all input state rather than try to guess which
+-- flags it owned.
+function Game:joystickremoved(joystick)
+  Input:reset()
+end
+
 function Game:touchpressed(id, x, y)
   TouchInput:touchpressed(id, x, y)
 end

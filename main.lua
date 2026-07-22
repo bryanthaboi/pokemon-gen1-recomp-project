@@ -173,6 +173,28 @@ function love.gamepadaxis(joystick, axis, value)
   Game:gamepadaxis(joystick, axis, value)
 end
 
+function love.joystickremoved(joystick)
+  if editorMode then return end
+  if Importer then return end
+  Game:joystickremoved(joystick)
+end
+
+-- f is true on focus gained, false on focus lost (e.g. alt-tab). A held
+-- direction's key-up can be delivered to the OS instead of the game while
+-- unfocused, so reset input on either transition rather than trust it.
+function love.focus(f)
+  if editorMode then return end
+  if Importer then return end
+  Game:focus(f)
+end
+
+-- v is true when the window becomes visible again, false on minimize.
+function love.visible(v)
+  if editorMode then return end
+  if Importer then return end
+  Game:visible(v)
+end
+
 function love.touchpressed(id, x, y, dx, dy, pressure)
   if editorMode then return end
   if Importer then return Importer:mousepressed(x, y, 1) end
