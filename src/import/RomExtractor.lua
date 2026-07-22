@@ -1669,10 +1669,11 @@ function RomExtractor:extractAudio()
     chunks[index] = self.rom.data:sub(first, first + 0x3FFF)
     self:tick("Sound programs", index, #bankOrder + 2)
   end
-  local ok, writeError = love.filesystem.createDirectory(
-    "assets/generated/audio")
-  if ok == false then error("could not create audio cache: " .. tostring(writeError)) end
-  ok, writeError = love.filesystem.write(
+  -- CacheFs (not love.filesystem directly) so a portable install lands this
+  -- in the game folder with the rest of the cache; it creates the parent
+  -- directory too.
+  local CacheFs = require("src.import.CacheFs")
+  local ok, writeError = CacheFs.write(
     "assets/generated/audio/programs.bin", table.concat(chunks))
   if not ok then error("could not write audio programs: " .. tostring(writeError)) end
 

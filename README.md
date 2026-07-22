@@ -50,18 +50,20 @@ developer data build, test suites, and cache management are covered in
 By default the game keeps your save, options, and the private ROM-derived
 data cache in your OS's normal per-user app data folder. To keep everything
 next to the game instead (handy for a USB stick or portable drive you carry
-between computers), drop an empty file named `portable.txt` next to the
-executable (or next to `main.lua`/`conf.lua` when running from source), then
-launch the game.
+between computers), drop an empty file named `portable.txt` next to the app
+(next to `PokemonRed.app`/`.exe`, or next to `main.lua`/`conf.lua` when
+running from source), then launch the game. Portable mode is desktop-only
+(Windows, Linux, macOS); it has no effect on Android or iOS, where the app
+runs from a read-only package.
 
 With `portable.txt` present:
 
 - `save.lua`, `save.lua.bak`, and `options.lua` are read from and written to
   that same folder instead of the OS save directory.
-- After a ROM import, the generated `data/generated` and `assets/generated`
-  cache is copied into that folder too, so a later launch (even on a
-  different computer, as long as the same folder comes along) reuses it
-  without asking for the ROM again.
+- A ROM import writes the generated `data/generated` and `assets/generated`
+  cache straight into that folder too (nothing is left in the OS save
+  directory), so a later launch reuses it without asking for the ROM again
+  even on a different computer, as long as the same folder comes along.
 - Deleting `portable.txt` switches back to the normal OS save directory; nothing
   already written to either location is touched automatically, so copy files
   over yourself if you want to carry existing progress across the switch.

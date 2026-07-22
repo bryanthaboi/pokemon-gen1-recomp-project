@@ -126,14 +126,14 @@ function ImageWriter.columnsToRows(raw, tilesWide, tilesHigh, bytesPerTile)
 end
 
 function ImageWriter.save(image, path)
-  local parent = path:match("^(.*)/[^/]+$")
-  if parent then
-    local ok, err = love.filesystem.createDirectory(parent)
-    if not ok then error("could not create " .. parent .. ": " .. tostring(err)) end
-  end
   local ok, fileData = pcall(image.encode, image, "png")
   if not ok then error("could not encode " .. path .. ": " .. tostring(fileData)) end
-  local written, writeError = love.filesystem.write(path, fileData)
+  -- CacheFs routes this to the OS save directory (normal builds) or straight
+  -- into the game folder (portable installs), creating parent directories as
+  -- needed.  io.* needs the bytes as a string; love.filesystem would also
+  -- take the FileData, but getString() keeps one code path.
+  local CacheFs = require("src.import.CacheFs")
+  local written, writeError = CacheFs.write(path, fileData:getString())
   if not written then
     error("could not write " .. path .. ": " .. tostring(writeError))
   end

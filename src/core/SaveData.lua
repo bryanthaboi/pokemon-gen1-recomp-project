@@ -83,15 +83,41 @@ local function detectPortable()
   portableChecked = true
   portableBase = false
   if not (love and love.filesystem) then return false end
+  -- Desktop only: portable mode carries the save (and, since issue #74, the
+  -- ROM cache) in the game folder next to the executable/source.  On
+  -- Android/iOS the source is a read-only package with no such folder, so
+  -- portable mode never applies there.
+  if love.system and love.system.getOS then
+    local osName = love.system.getOS()
+    if osName ~= "Windows" and osName ~= "Linux" and osName ~= "OS X" then
+      return false
+    end
+  end
+  local src = love.filesystem.getSource and love.filesystem.getSource()
+  local sbd = love.filesystem.getSourceBaseDirectory
+    and love.filesystem.getSourceBaseDirectory()
+  -- A packaged macOS build nests the game inside PokemonRed.app/Contents/
+  -- Resources, so getSource()/getSourceBaseDirectory() point INSIDE the
+  -- bundle -- not where the player drops portable.txt (next to the .app).
+  -- Recover the folder containing the .app so a packaged app finds its
+  -- marker.  On Windows/Linux the executable is not a bundle, so this is nil
+  -- and the plain source-base directory (next to the .exe/AppImage) is used.
+  local function appContainer(path)
+    local appPath = path and path:match("^(.*%.app)/Contents/")
+    return appPath and appPath:match("^(.*)/[^/]+$") or nil
+  end
+  -- Order: the .app's containing folder (packaged macOS), then the
+  -- source-base directory (next to a packaged .exe/AppImage), then the
+  -- source itself (a `love <gamedir>` run drops portable.txt in the game
+  -- folder).  First one holding the marker wins.  Built by appending so a
+  -- nil (e.g. no .app in the path) never truncates the ipairs scan.
   local candidates = {}
-  if love.filesystem.getSourceBaseDirectory then
-    candidates[#candidates + 1] = love.filesystem.getSourceBaseDirectory()
-  end
-  if love.filesystem.getSource then
-    candidates[#candidates + 1] = love.filesystem.getSource()
-  end
+  local appDir = appContainer(src) or appContainer(sbd)
+  if appDir then candidates[#candidates + 1] = appDir end
+  if sbd then candidates[#candidates + 1] = sbd end
+  if src then candidates[#candidates + 1] = src end
   for _, base in ipairs(candidates) do
-    if base and base ~= "" and pathExists(base .. SEP .. PORTABLE_MARKER) then
+    if base ~= "" and pathExists(base .. SEP .. PORTABLE_MARKER) then
       portableBase = base
       break
     end
