@@ -30,6 +30,7 @@ VERSION="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
 IDENTITY=""
 TARGET="all"
 NOTARY_PROFILE="notary-profile"
+
 NOTARIZE=true
 ANDROID_RELEASE=false
 IOS_RELEASE=false
@@ -187,12 +188,23 @@ build_ios() {
   "$ROOT/scripts/build_ios.sh" ${args[@]+"${args[@]}"}
 }
 
+# --------------------------------------------------------------- iOS
+build_ios() {
+  say "building linux (delegating to scripts/build_ios.sh)"
+  local args=()
+  if [ "$LINUX_RELEASE" = true ]; then
+    args+=(--release)
+  fi
+  "$ROOT/scripts/build_linux.sh" ${args[@]+"${args[@]}"}
+}
+
 case "$TARGET" in
   mac) build_mac ;;
   win) build_win ;;
   android) build_android ;;
   ios) build_ios ;;
-  all) build_mac; build_win ;;
+  linux) build_linux;;
+  all) build_mac; build_win ; build_linux ;;
 esac
 
 case "$TARGET" in
