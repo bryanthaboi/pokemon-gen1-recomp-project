@@ -24,8 +24,11 @@ local REQUIRED_FILES = {
 }
 
 local function allRequiredFilesExist()
+  -- CacheFs.exists checks the game folder directly for a portable install,
+  -- otherwise the save directory through love.filesystem.
+  local CacheFs = require("src.import.CacheFs")
   for _, path in ipairs(REQUIRED_FILES) do
-    if not love.filesystem.getInfo(path, "file") then return false end
+    if not CacheFs.exists(path) then return false end
   end
   return true
 end
@@ -38,128 +41,21 @@ local function sourceTreeHasData()
   return real == love.filesystem.getSource()
 end
 
--- ------- portable ROM-derived asset cache
+-- ------- ROM cache location
 --
--- The extracted cache (data/generated, assets/generated) is written
--- exclusively through love.filesystem.write, which always targets the OS
--- save directory -- it cannot be redirected to an arbitrary folder.  So a
--- portable install mirrors the cache both ways instead: after a fresh
--- import, every generated file is copied out to the portable folder
--- (SaveData.portableFs's io.* companion); on a later boot -- possibly on a
--- different machine sharing the same USB copy -- a matching portable
--- cache is copied back into the save directory before the normal
--- isReady() check runs, so nothing downstream needs to know the cache
--- ever lived anywhere but the save directory.
-local PORTABLE_CACHE_DIRS = { "data/generated", "assets/generated" }
-local PORTABLE_MANIFEST_NAME = "portable_cache_manifest.txt"
-local PORTABLE_SEP = package.config:sub(1, 1)
+-- The extracted cache (data/generated, assets/generated) plus the
+-- rom-cache.complete marker normally live in LÖVE's per-user OS save
+-- directory.  A portable install instead keeps them in the game folder next
+-- to the executable (the folder holding portable.txt), so nothing is left on
+-- the host machine.  Every cache write/read/remove goes through CacheFs,
+-- which writes that folder with io.* and makes it readable (mounting it via
+-- PhysFS for a fused build) -- there is no mirror step and no per-file
+-- os.execute (issue #74: that flashed a console window per file on Windows
+-- and froze the app).
 
-local function walkLoveDir(dir, out)
-  out = out or {}
-  for _, name in ipairs(love.filesystem.getDirectoryItems(dir)) do
-    local full = dir .. "/" .. name
-    local info = love.filesystem.getInfo(full)
-    if info and info.type == "directory" then
-      walkLoveDir(full, out)
-    elseif info and info.type == "file" then
-      out[#out + 1] = full
-    end
-  end
-  return out
-end
-
-local function portablePath(base, relPath)
-  return base .. PORTABLE_SEP .. relPath:gsub("/", PORTABLE_SEP)
-end
-
-local function ensurePortableDir(fullDirPath)
-  if love.system.getOS() == "Windows" then
-    os.execute(('mkdir "%s" 2>NUL'):format(fullDirPath))
-  else
-    os.execute(("mkdir -p '%s' 2>/dev/null"):format(fullDirPath))
-  end
-end
-
--- copies data/generated + assets/generated out to the portable folder
--- after a fresh import; a plain-text manifest travels alongside so a
--- later sync-in knows exactly which files to copy back without needing
--- to list an arbitrary external directory (io.* has no listdir)
-local function syncCacheToPortable()
-  local SaveData = require("src.core.SaveData")
-  local base = SaveData.portableBaseDir()
-  if not base then return end
-  local manifest = {}
-  for _, dir in ipairs(PORTABLE_CACHE_DIRS) do
-    if love.filesystem.getInfo(dir, "directory") then
-      for _, relPath in ipairs(walkLoveDir(dir)) do
-        local data = love.filesystem.read(relPath)
-        if data then
-          local outPath = portablePath(base, relPath)
-          local outDir = outPath:match("^(.*)" .. PORTABLE_SEP .. "[^" .. PORTABLE_SEP .. "]+$")
-          if outDir then ensurePortableDir(outDir) end
-          local f, err = io.open(outPath, "wb")
-          if f then
-            f:write(data)
-            f:close()
-            manifest[#manifest + 1] = relPath
-          else
-            require("src.core.Logger").error(
-              "portable cache: could not write %s: %s", outPath, tostring(err))
-          end
-        end
-      end
-    end
-  end
-  local mf = io.open(base .. PORTABLE_SEP .. PORTABLE_MANIFEST_NAME, "wb")
-  if mf then
-    mf:write(table.concat(manifest, "\n"))
-    mf:close()
-  end
-  local mk = io.open(base .. PORTABLE_SEP .. MARKER_PATH, "wb")
-  if mk then
-    mk:write(CACHE_MARKER)
-    mk:close()
-  end
-end
-
--- copies a matching portable cache back into the save directory before
--- isReady() runs its normal check; a mismatched or missing marker means
--- either no portable cache exists yet or it belongs to an older build, so
--- it is left alone and a fresh import proceeds as usual
-local function syncCacheFromPortable()
-  local SaveData = require("src.core.SaveData")
-  local base = SaveData.portableBaseDir()
-  if not base then return end
-  local markerFile = io.open(base .. PORTABLE_SEP .. MARKER_PATH, "rb")
-  if not markerFile then return end
-  local marker = markerFile:read("*a")
-  markerFile:close()
-  if marker ~= CACHE_MARKER then return end
-  local manifestFile = io.open(base .. PORTABLE_SEP .. PORTABLE_MANIFEST_NAME, "rb")
-  if not manifestFile then return end
-  local manifestBody = manifestFile:read("*a")
-  manifestFile:close()
-  for relPath in manifestBody:gmatch("[^\r\n]+") do
-    local f = io.open(portablePath(base, relPath), "rb")
-    if f then
-      local data = f:read("*a")
-      f:close()
-      love.filesystem.write(relPath, data)
-    end
-  end
-  love.filesystem.write(MARKER_PATH, CACHE_MARKER)
-end
-
-function RomImporter.isReady()
-  if sourceTreeHasData() then return true end
-  if love.filesystem.read(MARKER_PATH) ~= CACHE_MARKER
-      and require("src.core.SaveData").isPortable() then
-    syncCacheFromPortable()
-  end
-  return love.filesystem.read(MARKER_PATH) == CACHE_MARKER
-    and allRequiredFilesExist()
-end
-
+-- Remove a cache subtree from the OS save directory.  The realDirectory
+-- guard keeps this from ever deleting the game folder (portable installs
+-- read the cache from there) or a developer's checked-out source tree.
 local function removeTree(path)
   local info = love.filesystem.getInfo(path)
   if not info then return end
@@ -177,6 +73,48 @@ local function removeTree(path)
   if ok == false then
     error("could not remove stale cache: " .. tostring(err))
   end
+end
+
+-- Portable installs read the cache from the game folder.  Any copy an
+-- earlier non-portable run -- or the pre-#74 build, which always wrote the
+-- cache to the save directory and only mirrored it out -- left behind would
+-- shadow it, because physfs searches the save directory before the source.
+-- Clear it out once, and only when a remnant is actually present so a clean
+-- install pays nothing.
+local saveDirPurged = false
+local function purgeSaveDirCache()
+  if saveDirPurged then return end
+  saveDirPurged = true
+  local saveDir = love.filesystem.getSaveDirectory()
+  local function saveDirHas(rel)
+    local f = io.open(saveDir .. "/" .. rel, "rb")
+    if not f then return false end
+    f:close()
+    return true
+  end
+  if not (saveDirHas(MARKER_PATH) or saveDirHas(REQUIRED_FILES[1])) then
+    return
+  end
+  removeTree("data/generated")
+  removeTree("assets/generated")
+  love.filesystem.remove(MARKER_PATH)
+end
+
+function RomImporter.isReady()
+  local CacheFs = require("src.import.CacheFs")
+  if CacheFs.root() then
+    -- Portable: the cache lives in the game folder next to the executable
+    -- (mounted onto the read path for a fused build).  Drop any stale
+    -- save-directory copy that would otherwise shadow it at runtime -- and,
+    -- for a source run, hide the game folder from sourceTreeHasData below.
+    purgeSaveDirCache()
+  end
+  -- Generated data sitting in the physfs source -- a developer checkout, a
+  -- Python/bootstrap build, or a source-run portable import -- is always
+  -- current (as it has always been).  A fused portable install is not the
+  -- source, so it falls through to the version-marker gate.
+  if sourceTreeHasData() then return true end
+  return CacheFs.read(MARKER_PATH) == CACHE_MARKER and allRequiredFilesExist()
 end
 
 local function decodeManifest()
@@ -268,7 +206,7 @@ local function chooseRom()
 end
 
 function RomImporter.new(onComplete)
-  local previousMarker = love.filesystem.read(MARKER_PATH)
+  local previousMarker = require("src.import.CacheFs").read(MARKER_PATH)
   local returning = previousMarker ~= nil and previousMarker ~= CACHE_MARKER
   local android = love.system.getOS() == "Android"
   local self = setmetatable({
@@ -350,9 +288,15 @@ function RomImporter:startData(data, displayName)
     end
     self.status = "Preparing private game data"
     coroutine.yield()
+    -- Clear any previous cache from both possible homes: the save directory
+    -- (removeTree) and, for a portable install, the game folder (CacheFs).
+    local CacheFs = require("src.import.CacheFs")
     removeTree("data/generated")
     removeTree("assets/generated")
     love.filesystem.remove(MARKER_PATH)
+    CacheFs.removeTree("data/generated")
+    CacheFs.removeTree("assets/generated")
+    CacheFs.remove(MARKER_PATH)
 
     local manifest = decodeManifest()
     local RomExtractor = require("src.import.RomExtractor")
@@ -367,13 +311,12 @@ function RomImporter:startData(data, displayName)
     extractor:run()
     self.romData = nil
     collectgarbage("collect")
-    local ok, writeError = love.filesystem.write(MARKER_PATH, CACHE_MARKER)
+    -- Written last: the marker is what isReady() checks, so it must only
+    -- appear once every required file is in place.  CacheFs puts it beside
+    -- the cache -- the game folder for a portable install, else the save
+    -- directory.
+    local ok, writeError = CacheFs.write(MARKER_PATH, CACHE_MARKER)
     if not ok then error("could not finish the private cache: " .. tostring(writeError)) end
-    if require("src.core.SaveData").isPortable() then
-      self.status = "Copying data to the portable folder"
-      coroutine.yield()
-      syncCacheToPortable()
-    end
     self.state = "complete"
     self.status = "Ready"
     self.detail = "Starting Pokemon Red..."

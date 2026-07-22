@@ -87,17 +87,11 @@ function LuaWriter.encode(value)
 end
 
 function LuaWriter.write(path, value)
-  local parent = path:match("^(.*)/[^/]+$")
-  -- love.filesystem.createDirectory returns a single boolean (no error
-  -- value), so a second return here is always nil; getInfo after a failure
-  -- at least reports what is blocking the path (e.g. a file with that name).
-  if parent and not love.filesystem.createDirectory(parent) then
-    local info = love.filesystem.getInfo(parent)
-    local reason = info and ("a " .. info.type .. " already exists there")
-      or "unknown reason"
-    error("could not create " .. parent .. ": " .. reason)
-  end
-  local ok, err = love.filesystem.write(path, LuaWriter.encode(value))
+  -- CacheFs routes this to the OS save directory (normal builds) or straight
+  -- into the game folder (portable installs); it also creates the parent
+  -- directories.  See src/import/CacheFs.lua.
+  local CacheFs = require("src.import.CacheFs")
+  local ok, err = CacheFs.write(path, LuaWriter.encode(value))
   if not ok then error("could not write " .. path .. ": " .. tostring(err)) end
 end
 
