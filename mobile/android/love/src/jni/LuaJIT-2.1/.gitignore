@@ -1,4 +1,8 @@
 *.[oa]
+# Prebuilt vendored static libs Android.mk links against directly (not
+# built by the Gradle/NDK build itself) -- must stay tracked or a fresh
+# checkout fails ndk-build with "LOCAL_SRC_FILES points to a missing file".
+!android/*/libluajit.a
 *.so
 *.obj
 *.lib
