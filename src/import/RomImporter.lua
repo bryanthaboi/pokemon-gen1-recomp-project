@@ -226,6 +226,22 @@ local function commandOutput(command)
   return result ~= "" and result or nil
 end
 
+-- LOVE 11.5 on Android has no native file picker (love.window.showFileDialog
+-- is a LOVE 12 nightly-only addition) and never fires love.filedropped, so
+-- neither desktop path below works there. conf.lua points the Android save
+-- directory at the app's external-files folder instead (readable/writable
+-- via USB or a file manager, no runtime permission needed), and this scans
+-- it directly through love.filesystem -- already mounted at the physfs
+-- root, so no io.* absolute-path handling is needed.
+local function scanForRom()
+  for _, name in ipairs(love.filesystem.getDirectoryItems("")) do
+    if name:lower():match("%.gb$") and love.filesystem.getInfo(name, "file") then
+      return name
+    end
+  end
+  return nil
+end
+
 local function chooseRom()
   local platform = love.system.getOS()
   if platform == "OS X" then
@@ -254,12 +270,14 @@ end
 function RomImporter.new(onComplete)
   local previousMarker = love.filesystem.read(MARKER_PATH)
   local returning = previousMarker ~= nil and previousMarker ~= CACHE_MARKER
-  return setmetatable({
+  local android = love.system.getOS() == "Android"
+  local self = setmetatable({
     onComplete = onComplete,
     logo = love.graphics.newImage("assets/logo/logo.png"),
     bcg = love.graphics.newImage("assets/logo/bcg.png"),
     state = "waiting",
     returning = returning,
+    android = android,
     status = returning and "More assets are needed from your ROM"
       or "Choose or drop a Pokemon Red ROM",
     detail = returning
@@ -272,6 +290,30 @@ function RomImporter.new(onComplete)
     pulse = 0,
     button = {},
   }, RomImporter)
+
+  if android then
+    self.status = returning and "More ROM assets needed" or "Get your Pokemon Red ROM (.gb) in"
+    self.detail = "Tap Choose ROM to pick your file"
+    local name = scanForRom()
+    if name then
+      self:startData(love.filesystem.read(name), name)
+    end
+  end
+
+  return self
+end
+
+-- The system picker runs as a separate top activity, so LOVE's own
+-- love.focus/love.visible pause while it's up (see main.lua) -- once the
+-- player returns here with a file picked, GameActivity has already copied
+-- it into the folder scanForRom checks, so a rescan on refocus picks it up
+-- without the player needing to tap the button again.
+function RomImporter:focus(f)
+  if not (f and self.android and self.state ~= "working") then return end
+  local name = scanForRom()
+  if name then
+    self:startData(love.filesystem.read(name), name)
+  end
 end
 
 function RomImporter:setError(message)
@@ -362,6 +404,22 @@ end
 
 function RomImporter:choose()
   if self.state == "working" then return end
+  if self.android then
+    local name = scanForRom()
+    if name then
+      self:startData(love.filesystem.read(name), name)
+    elseif not love.system.pickFile() then
+      -- Picker unavailable (API < 19, or no document-picker app installed):
+      -- fall back to the USB folder-drop path. Not setError(): that status
+      -- text ("could not be imported") reads as a rejected file, not "none
+      -- found yet" -- and detail only renders 3 wrapped lines, so the path
+      -- again gets the line to itself.
+      self.state = "waiting"
+      self.status = "No picker available, copy your ROM into:"
+      self.detail = love.filesystem.getSaveDirectory()
+    end
+    return
+  end
   local path = chooseRom()
   if path then
     self:startPath(path)
@@ -476,7 +534,8 @@ function RomImporter:draw()
       buttonWidth, "center")
     setColor255(74, 88, 72)
     love.graphics.setFont(smallFont)
-    love.graphics.printf("or drop the .gb file here",
+    love.graphics.printf(
+      self.android and "or copy the .gb via USB" or "or drop the .gb file here",
       0, buttonY + buttonHeight + 12, width, "center")
   end
 

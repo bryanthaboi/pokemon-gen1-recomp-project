@@ -59,6 +59,14 @@ bool openURL(const std::string &url);
 
 void vibrate(double seconds);
 
+/**
+ * Shows the system's "pick a document" UI (Storage Access Framework).
+ * Returns true if the picker was launched; the picked file (if any) is
+ * copied asynchronously by GameActivity.onActivityResult into the app's
+ * external save directory, not returned here -- see src/import/RomImporter.lua.
+ **/
+bool showFilePicker();
+
 /*
  * Helper functions for the filesystem module
  */

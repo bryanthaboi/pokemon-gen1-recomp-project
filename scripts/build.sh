@@ -141,11 +141,20 @@ build_win() {
   say "building Windows (win64) app"
   local zip_name="love-$LOVE_VERSION-win64.zip"
   local love_zip="$CACHE/$zip_name"
+  # A cache hit only checks existence, not validity -- a prior run truncated
+  # by a network drop mid-download (curl still leaves the partial file if
+  # the exit code slips through) would otherwise be reused forever.
+  if [ -f "$love_zip" ] && ! unzip -tqq "$love_zip" >/dev/null 2>&1; then
+    warn "cached $zip_name is not a valid zip,  removing and re-downloading"
+    rm -f "$love_zip"
+  fi
   if [ ! -f "$love_zip" ]; then
     say "downloading LÖVE $LOVE_VERSION win64 binaries"
     curl -fL --progress-bar \
       "https://github.com/love2d/love/releases/download/$LOVE_VERSION/$zip_name" \
       -o "$love_zip" || fail "download failed,  check LOVE_VERSION or your network"
+    unzip -tqq "$love_zip" >/dev/null 2>&1 \
+      || fail "downloaded $zip_name is not a valid zip (truncated download?)"
   fi
 
   local extract_dir="$WORK/love-win64"
@@ -174,11 +183,19 @@ build_linux() {
   say "building Linux (x86_64 AppImage) app"
   local appimage_name="love-$LOVE_VERSION-x86_64.AppImage"
   local love_appimage="$CACHE/$appimage_name"
+  # Same cache-validity gap as the win64 zip above: an AppImage is just an
+  # ELF, so check the magic bytes before trusting a cached copy is complete.
+  if [ -f "$love_appimage" ] && [ "$(head -c 4 "$love_appimage" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
+    warn "cached $appimage_name is not a valid ELF binary,  removing and re-downloading"
+    rm -f "$love_appimage"
+  fi
   if [ ! -f "$love_appimage" ]; then
     say "downloading LÖVE $LOVE_VERSION Linux AppImage"
     curl -fL --progress-bar \
       "https://github.com/love2d/love/releases/download/$LOVE_VERSION/$appimage_name" \
       -o "$love_appimage" || fail "download failed,  check LOVE_VERSION or your network"
+    [ "$(head -c 4 "$love_appimage" | od -An -tx1 | tr -d ' \n')" = "7f454c46" ] \
+      || fail "downloaded $appimage_name is not a valid ELF binary (truncated download?)"
   fi
   chmod +x "$love_appimage"
 

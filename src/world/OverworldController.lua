@@ -3100,9 +3100,14 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
       local outdoor = Map.isOutdoor(self.map.def)
       require("src.core.Sound").play(Game.data,
                                      outdoor and "Go_Outside" or "Go_Inside")
-      -- stepping out of an outdoor door mat (the original's walk-out)
+      -- stepping out of an outdoor door/cave entrance (the original's
+      -- walk-out). Auto-walk leaves the mat, so the arrival disable
+      -- (warpEntryCell / justWarped) is unnecessary -- and would let you
+      -- stand on the door without re-entering if you hold back into it.
       if outdoor and self.player.facing == "down"
          and self.map:isWarpTileCell(self.player.cellX, self.player.cellY) then
+        self.warpEntryCell = nil
+        self.justWarped = false
         self:scriptMove(self.player, "down", 1)
       end
     end

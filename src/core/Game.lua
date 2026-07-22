@@ -349,17 +349,16 @@ function Game:gamepadaxis(joystick, axis, value)
   Input:gamepadaxis(joystick, axis, value)
 end
 
--- Window lost focus or got minimized: any release event due while it was
--- unfocused/hidden can be swallowed by the OS instead of delivered here,
--- which would otherwise leave a held direction stuck on.
+-- Window focus/visibility flips: a release due while unfocused/hidden can
+-- be swallowed by the OS. Reset on both edges -- gaining focus with a
+-- physically held key won't re-fire keypressed, so trusting leftover
+-- state is worse than asking the player to re-press.
 function Game:focus(f)
-  if f then return end
   Input:reset()
   TouchInput:reset()
 end
 
 function Game:visible(v)
-  if v then return end
   Input:reset()
   TouchInput:reset()
 end
@@ -369,6 +368,7 @@ end
 -- flags it owned.
 function Game:joystickremoved(joystick)
   Input:reset()
+  TouchInput:reset()
 end
 
 function Game:touchpressed(id, x, y)
@@ -433,6 +433,7 @@ function Game:applyOptions(opts)
   require("src.render.Tilt").applyOptions(opts)
   require("src.render.GBCFX").applyOptions(opts)
   require("src.core.VideoMode").applyOptions(opts)
+  Input:applyBindings(opts.bindings)
 end
 
 function Game:restoreSave(loaded, recovered)

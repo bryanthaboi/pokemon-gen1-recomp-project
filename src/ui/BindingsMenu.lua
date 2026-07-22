@@ -1,11 +1,12 @@
 -- Rebinding over the logical Game Boy buttons (gap C2's file-12 half,
 -- 12-ui-extensibility 4.4): one row per button, A arms a "PRESS A BUTTON"
 -- capture and the captured key or pad button lands in
--- save.options.bindings -- the overlay src/core/Bindings.lua
--- (04-mod-api-core) reads back over Input's fixed map.
+-- save.options.bindings, which Input:applyBindings layers over its fixed
+-- default map (see src/core/Input.lua and Game:applyOptions).
 
 local Font = require("src.render.Font")
 local ListMenu = require("src.ui.ListMenu")
+local Input = require("src.core.Input")
 
 local BindingsMenu = setmetatable({}, { __index = ListMenu })
 BindingsMenu.__index = BindingsMenu
@@ -78,6 +79,7 @@ function BindingsMenu:storeBinding(slot, value)
   b[slot] = value
   opts.bindings[item.button.id] = b
   item.right = boundKey(opts.bindings, item.button):upper()
+  Input:applyBindings(opts.bindings)
   if game.writeOptions then game:writeOptions() end
 end
 

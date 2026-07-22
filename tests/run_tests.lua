@@ -2578,6 +2578,9 @@ do
   check(status == 0 or status == true, "save_editor_mod_tests suite")
 end
 
+-- ---------------------------------------------- input hold regressions
+runSuites({ "tests/input_hold_test.lua" })
+
 -- ---------------------------------------------- parity workstream tests
 -- Each tests/parity_*.lua is a self-contained file (own bootstrap + check,
 -- error()s if any assertion fails).  Globbed, so dropping a new parity

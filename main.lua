@@ -184,7 +184,10 @@ end
 -- unfocused, so reset input on either transition rather than trust it.
 function love.focus(f)
   if editorMode then return end
-  if Importer then return end
+  if Importer then
+    if Importer.focus then Importer:focus(f) end
+    return
+  end
   Game:focus(f)
 end
 

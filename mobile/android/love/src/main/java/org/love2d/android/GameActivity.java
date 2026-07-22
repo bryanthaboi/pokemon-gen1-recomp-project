@@ -61,6 +61,13 @@ public class GameActivity extends SDLActivity {
     protected final int[] recordAudioRequestDummy = new int[1];
     public static final int EXTERNAL_STORAGE_REQUEST_CODE = 2;
     public static final int RECORD_AUDIO_REQUEST_CODE = 3;
+    public static final int ROM_PICKER_REQUEST_CODE = 4;
+    // Mirrors conf.lua's t.identity ("pokemon-love2d"): where the picked ROM
+    // is dropped so RomImporter's existing folder scan finds it -- see
+    // src/import/RomImporter.lua and Filesystem::setIdentity (sets Android's
+    // save directory to getExternalFilesDir()/save/<identity>).
+    private static final String ROM_SAVE_IDENTITY = "pokemon-love2d";
+    private static final String PICKED_ROM_FILENAME = "picked_rom.gb";
     private static boolean immersiveActive = false;
     private static boolean needToCopyGameInArchive = false;
     private boolean storagePermissionUnnecessary = false;
@@ -330,6 +337,64 @@ public class GameActivity extends SDLActivity {
     public static boolean openURLFromLOVE(String url) {
         Log.d("GameActivity", "opening url = " + url);
         return openURL(url) == 0;
+    }
+
+    /**
+     * Shows the system document picker (Storage Access Framework) so the
+     * player can pick their ROM from anywhere (Downloads, Drive, etc.)
+     * without needing to know where the app's external files folder is.
+     * Requires API 19+ (ACTION_OPEN_DOCUMENT); the picked file (if any)
+     * arrives later in onActivityResult, not synchronously here.
+     */
+    @Keep
+    public static boolean showRomFilePicker() {
+        if (android.os.Build.VERSION.SDK_INT < 19) return false;
+        GameActivity self = (GameActivity) mSingleton;
+        if (self == null) return false;
+
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        try {
+            self.startActivityForResult(intent, ROM_PICKER_REQUEST_CODE);
+            return true;
+        } catch (Exception e) {
+            Log.d("GameActivity", "could not open ROM file picker: " + e.getMessage());
+            return false;
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != ROM_PICKER_REQUEST_CODE) return;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            Log.d("GameActivity", "ROM picker returned no file (cancelled?)");
+            return;
+        }
+
+        Uri uri = data.getData();
+        File destDir = new File(new File(getExternalFilesDir(null), "save"), ROM_SAVE_IDENTITY);
+        if (!destDir.exists() && !destDir.mkdirs()) {
+            Log.d("GameActivity", "could not create " + destDir);
+            return;
+        }
+        File destFile = new File(destDir, PICKED_ROM_FILENAME);
+
+        InputStream source;
+        try {
+            source = getContentResolver().openInputStream(uri);
+        } catch (FileNotFoundException e) {
+            Log.d("GameActivity", "could not open picked ROM: " + e.getMessage());
+            return;
+        }
+        if (source == null) {
+            Log.d("GameActivity", "ContentResolver returned no stream for picked ROM");
+            return;
+        }
+        if (!copyAssetFile(source, destFile.getPath())) {
+            Log.d("GameActivity", "could not copy picked ROM to " + destFile);
+        }
     }
 
     /**

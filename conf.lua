@@ -45,6 +45,12 @@ function love.conf(t)
     t.window.height = 1920
     t.window.fullscreen = true
     t.window.highdpi = true
+    -- Android only (irrelevant on iOS): puts the save directory under the
+    -- app's external-files folder, which is readable/writable via USB or a
+    -- file manager with no runtime permission, so RomImporter can ask the
+    -- player to copy their ROM there instead of needing a native file
+    -- picker (LOVE 11.5 on Android has none -- see src/import/RomImporter.lua).
+    t.externalstorage = osName == "Android"
   else
     t.window.resizable = true
   end
