@@ -199,13 +199,47 @@ build_linux() {
   fi
   chmod +x "$love_appimage"
 
-  # Same fusion trick as the Windows exe: love looks for a zip appended to
-  # its own running binary, and an AppImage is just an ELF executable, so
-  # concatenating game.love onto it works the same way `cat love.exe
-  # game.love` does on Windows.
+  # The Windows-style `cat love.exe game.love` fusion does NOT work here:
+  # an AppImage is a small runtime ELF with a squashfs appended, and at
+  # launch the runtime mounts the squashfs and executes bin/love from
+  # *inside* it -- bytes appended to the outer file are never read, so
+  # users would just get vanilla LÖVE's no-game screen. Instead, unpack
+  # the squashfs, drop game.love in, point AppRun's FUSE_PATH hook at it
+  # (the hook ships commented-out in LÖVE's official AppImage), and glue
+  # runtime + repacked squashfs back together.
+  command -v unsquashfs >/dev/null && command -v mksquashfs >/dev/null \
+    || fail "squashfs tools not found; install with: brew install squashfs"
+
+  # The squashfs starts right where the ELF ends:
+  # e_shoff + e_shnum * e_shentsize (all little-endian in the ELF64 header).
+  local e_shoff e_shentsize e_shnum sfs_offset
+  e_shoff=$(od -An -j40 -N8 -tu8 "$love_appimage" | tr -d ' ')
+  e_shentsize=$(od -An -j58 -N2 -tu2 "$love_appimage" | tr -d ' ')
+  e_shnum=$(od -An -j60 -N2 -tu2 "$love_appimage" | tr -d ' ')
+  sfs_offset=$((e_shoff + e_shentsize * e_shnum))
+  [ "$(dd if="$love_appimage" bs=1 skip="$sfs_offset" count=4 2>/dev/null)" = "hsqs" ] \
+    || fail "no squashfs superblock at computed offset $sfs_offset (unexpected AppImage layout)"
+
+  local appdir="$WORK/linux-appdir"
+  rm -rf "$appdir"
+  unsquashfs -q -no-xattrs -o "$sfs_offset" -d "$appdir" "$love_appimage" >/dev/null
+
+  cp "$LOVE_FILE" "$appdir/game.love"
+  sed -i '' 's|^#FUSE_PATH="$APPDIR/my_game.love"$|FUSE_PATH="$APPDIR/game.love"|' "$appdir/AppRun"
+  grep -q '^FUSE_PATH="\$APPDIR/game.love"$' "$appdir/AppRun" \
+    || fail "failed to enable FUSE_PATH in AppRun (upstream AppRun changed?)"
+
+  # Match the upstream image's compression (gzip, 128K blocks) so the
+  # bundled runtime can read it.
+  local sfs_out="$WORK/game.squashfs"
+  rm -f "$sfs_out"
+  mksquashfs "$appdir" "$sfs_out" \
+    -comp gzip -b 131072 -noappend -all-root -no-xattrs -quiet >/dev/null
+
   local out_bin="$WORK/$APP_NAME-x86_64.AppImage"
   rm -f "$out_bin"
-  cat "$love_appimage" "$LOVE_FILE" > "$out_bin"
+  head -c "$sfs_offset" "$love_appimage" > "$out_bin"
+  cat "$sfs_out" >> "$out_bin"
   chmod +x "$out_bin"
 
   local zip_out="$DIST/linux/$APP_NAME-linux.zip"
