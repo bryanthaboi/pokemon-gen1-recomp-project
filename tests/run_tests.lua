@@ -2091,6 +2091,7 @@ do
   local GBCFX = require("src.render.GBCFX")
   local GameSpeed = require("src.core.GameSpeed")
   local VideoMode = require("src.core.VideoMode")
+  local FrameCap = require("src.core.FrameCap")
   local SD = require("src.core.SaveData")
   -- Isolate from earlier save/options writes in this suite
   SD.saveOptions(SD.defaultOptions())
@@ -2155,7 +2156,16 @@ do
   eq(og.save.options.videoMode, "windowed",
      "VIDEO MODE wraps back to WINDOWED")
   press("down")
-  eq(om.index, 12, "cursor reaches GAME SPEED")
+  eq(om.index, 12, "cursor reaches MAX FPS")
+  press("a")
+  eq(og.save.options.fpsCap, 75, "A cycles MAX FPS up from 60 to 75")
+  eq(FrameCap.current, 75, "the live render cap tracks the MAX FPS option")
+  -- Driven by the step list rather than a literal press count, like GAME
+  -- SPEED below: a full loop of #STEPS presses returns to the 60 default.
+  for _ = 1, #FrameCap.STEPS - 1 do press("a") end
+  eq(og.save.options.fpsCap, 60, "MAX FPS wraps back to 60")
+  press("down")
+  eq(om.index, 13, "cursor reaches GAME SPEED")
   press("a")
   eq(og.save.options.speed, 2, "A cycles GAME SPEED to 2X")
   -- Driven by the level list rather than a literal press count: adding a
@@ -2164,19 +2174,19 @@ do
   for _ = 1, #GameSpeed.LEVELS - 1 do press("a") end
   eq(og.save.options.speed, 1, "GAME SPEED wraps back to NORMAL")
   press("down")
-  eq(om.index, 13, "cursor reaches MODS")
+  eq(om.index, 14, "cursor reaches MODS")
   press("down")
-  eq(om.index, 14, "cursor reaches CONTROLS")
+  eq(om.index, 15, "cursor reaches CONTROLS")
   press("down")
-  eq(om.index, 15, "CANCEL stays the fixed final row")
-  eq(om.scroll, 10, "CANCEL keeps the last option boxes on screen")
+  eq(om.index, 16, "CANCEL stays the fixed final row")
+  eq(om.scroll, 11, "CANCEL keeps the last option boxes on screen")
   om:draw() -- smoke: scrolled layout draws under the headless stub
   press("a")
   check(popped, "A on CANCEL closes the options menu")
   local om2 = OptionsMenu.new(og)
   OInput.pressed = { up = true }; om2:update(1 / 60); OInput.pressed = {}
-  eq(om2.index, 15, "up from the top wraps to CANCEL")
-  eq(om2.scroll, 10, "wrapping to CANCEL scrolls to the tail")
+  eq(om2.index, 16, "up from the top wraps to CANCEL")
+  eq(om2.scroll, 11, "wrapping to CANCEL scrolls to the tail")
   -- headless-safe: no love.audio, setters only update internal state
   require("src.core.Music").applyOptions(og.save.options)
   require("src.core.Sound").applyOptions(og.save.options)

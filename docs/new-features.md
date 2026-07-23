@@ -149,3 +149,5 @@ migrated once into `options.lua` on load.
   SuperPalettes + per-species mon colors)
 - TILT (OFF / 15 / 35 / 50),  also hotkey `3` while free-roaming
 - GBC FX (OFF / 1 / 2 / 3 / 4),  also hotkey `5`
+- MAX FPS (30 / 40 / 50 / 60 / 75 / 90 / 100 / 120 / 144 / 160, default 60),
+  a hard render frame-rate cap (`save.options.fpsCap`).

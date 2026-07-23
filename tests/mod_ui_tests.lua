@@ -22,6 +22,7 @@ local StateStack = require("src.core.StateStack")
 local ManagerState = require("src.mods.ManagerState")
 local ModUI = require("src.ui.ModUI")
 local Theme = require("src.ui.Theme")
+local FrameCap = require("src.core.FrameCap")
 
 local savedEvents, savedHooks, savedErrors =
   Runtime.events, Runtime.hooks, Runtime.errors
@@ -205,7 +206,7 @@ end
 local om = OptionsMenu.new(optGame())
 local WANT_IDS = { "textSpeed", "animations", "battleStyle", "ruleset",
                    "musicVol", "sfxVol", "musicFilter", "colors", "tilt",
-                   "gbcfx", "videoMode", "speed", "mods", "controls" }
+                   "gbcfx", "videoMode", "fpsCap", "speed", "mods", "controls" }
 check(#om.rows == #WANT_IDS, "vanilla options row count (plus MODS/CONTROLS)")
 for i, id in ipairs(WANT_IDS) do
   check(om.rows[i].id == id, "options row order: " .. id)
@@ -235,10 +236,47 @@ check(om.game.save.options.musicVol == 6, "music volume steps down")
 for _ = 1, 10 do om.rows[5].step(om.game, -1) end
 check(om.game.save.options.musicVol == 0, "music volume clamps at 0")
 
+-- the MAX FPS row cycles the render-cap steps and shows the value plain
+om.game.save.options.fpsCap = nil
+check(om.rows[12].value(om.game) == "60",
+  "MAX FPS row defaults to 60 with no saved cap")
+om.rows[12].step(om.game, 1)
+check(om.game.save.options.fpsCap == 75, "MAX FPS steps up from 60 to 75")
+check(om.rows[12].value(om.game) == "75", "the MAX FPS row renders the cap")
+om.game.save.options.fpsCap = 160
+om.rows[12].step(om.game, 1)
+check(om.game.save.options.fpsCap == 30, "MAX FPS wraps past the ceiling to 30")
+om.rows[12].step(om.game, -1)
+check(om.game.save.options.fpsCap == 160, "MAX FPS wraps back down to the ceiling")
+
+-- ------- FrameCap normalize / cycle (issue #88)
+check(FrameCap.normalize(nil) == 60, "FrameCap defaults nil to 60")
+check(FrameCap.normalize("junk") == 60, "FrameCap defaults garbage to 60")
+check(FrameCap.normalize(60) == 60, "FrameCap keeps an exact step")
+check(FrameCap.normalize(58) == 60, "FrameCap snaps 58 to the nearest step 60")
+check(FrameCap.normalize(72) == 75, "FrameCap snaps 72 to the nearest step 75")
+check(FrameCap.normalize(0) == 30, "FrameCap clamps below the floor to 30")
+check(FrameCap.normalize(9999) == 160, "FrameCap clamps above the ceiling to 160")
+check(FrameCap.normalize(30) == 30 and FrameCap.normalize(160) == 160,
+  "FrameCap keeps the exact floor and ceiling")
+check(FrameCap.label(nil) == "60" and FrameCap.label(144) == "144",
+  "FrameCap.label renders the normalized cap as plain text")
+check(FrameCap.cycle(60, 1) == 75, "FrameCap cycles 60 up to 75")
+check(FrameCap.cycle(60, -1) == 50, "FrameCap cycles 60 down to 50")
+check(FrameCap.cycle(160, 1) == 30, "FrameCap cycle wraps the ceiling to the floor")
+check(FrameCap.cycle(30, -1) == 160, "FrameCap cycle wraps the floor to the ceiling")
+check(FrameCap.cycle(nil, 1) == 75,
+  "FrameCap cycle normalizes a nil cap (60) before stepping")
+-- apply drives the live value the run loop paces to; never touches love.timer
+FrameCap.apply(144)
+check(FrameCap.current == 144, "FrameCap.apply stores the live cap")
+FrameCap.applyOptions({})
+check(FrameCap.current == 60, "FrameCap.applyOptions defaults a missing key to 60")
+
 -- the MODS row is the manager's discoverable home
 local mgGame = optGame()
 om = OptionsMenu.new(mgGame)
-om.rows[13].activate(mgGame)
+om.rows[14].activate(mgGame)
 check(getmetatable(mgGame.stack:top()) == ManagerState,
   "the MODS row opens the manager")
 check(mgGame.stack:top().screenId == "ManagerState",
@@ -248,7 +286,7 @@ check(mgGame.stack:top().screenId == "ManagerState",
 local BindingsMenu = require("src.ui.BindingsMenu")
 local cbGame = optGame()
 om = OptionsMenu.new(cbGame)
-om.rows[14].activate(cbGame)
+om.rows[15].activate(cbGame)
 local bm = cbGame.stack:top()
 check(getmetatable(bm) == BindingsMenu,
   "the CONTROLS row opens the rebind list")
