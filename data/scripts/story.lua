@@ -712,6 +712,29 @@ M.HALL_OF_FAME = {
     local toggles = game.save.objectToggles and game.save.objectToggles.HALL_OF_FAME
     if toggles then toggles.HALLOFFAME_OAK = nil end
 
+    -- Make the Hall of Fame recording machine interactable.  The console
+    -- juts from the north wall as the two solid cells (4,1) and (5,1); a
+    -- sign on each lets the player face the machine (from below, or from
+    -- either side) and press A to run the TEXT_HALLOFFAME_PC talk script.
+    -- maps.lua is generated from the ROM and gitignored, so the sign is
+    -- injected here (a tracked script) rather than baked into map data.
+    local def = ow.map.def
+    def.signs = def.signs or {}
+    local present = false
+    for _, s in ipairs(def.signs) do
+      if s.text == "TEXT_HALLOFFAME_PC" then present = true break end
+    end
+    if not present then
+      table.insert(def.signs, { text = "TEXT_HALLOFFAME_PC", x = 4, y = 1 })
+      table.insert(def.signs, { text = "TEXT_HALLOFFAME_PC", x = 5, y = 1 })
+    end
+    -- the live Map instance built its signAt lookup from def.signs before
+    -- this hook ran, so rebuild it (idempotent) to pick up the injection
+    ow.map.signAt = {}
+    for _, s in ipairs(def.signs) do
+      ow.map.signAt[s.y * ow.map.widthCells + s.x] = s
+    end
+
     if not game.save.pendingHallOfFame then return end
     game.save.pendingHallOfFame = false
     ow:queueScript({
@@ -725,6 +748,17 @@ M.HALL_OF_FAME = {
       { "record_hall_of_fame" },                       -- predef HallOfFamePC: induction + credits
     })
   end,
+  talk = {
+    -- The recording machine doubles as a "warp home" PC: a YES/NO prompt
+    -- that teleports back to the new-game bedroom spawn (special_warps.asm
+    -- NewGameWarp: REDS_HOUSE_2F, 3, 6, facing down).  Fabricated
+    -- convenience -- there is no such prompt in the original ROM.
+    TEXT_HALLOFFAME_PC = {
+      { "ask", "Return to\nPALLET TOWN?" },             -- 1  YES/NO -> lastCheck
+      { "jump_if_false", "end" },                       -- 2  NO: back away
+      { "warp", "REDS_HOUSE_2F", 3, 6, "down" },        -- 3  YES: home to your room
+    },
+  },
 }
 
 -- -------------------------------------------------------------------
