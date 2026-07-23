@@ -41,6 +41,32 @@ jobs:
       - name: run every ROM-free tier
         run: ./scripts/test.sh
 
+  linux-package:
+    name: Linux distributable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Linux package
+        run: scripts/build.sh linux
+      - name: Validate package
+        run: |
+          set -euo pipefail
+          archive="dist/linux/PokemonRed-linux-x86_64.zip"
+          unzip -q "$archive" -d .bazinga/ci-linux
+          appimage=".bazinga/ci-linux/PokemonRed-linux-x86_64/PokemonRed-x86_64.AppImage"
+          test -x "$appimage"
+          file "$appimage" | grep -q 'ELF 64-bit'
+          "$appimage" --appimage-version
+          (cd .bazinga/ci-linux && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null)
+          test -f .bazinga/ci-linux/squashfs-root/game.love
+          grep -Fq 'FUSE_PATH="$APPDIR/game.love"' .bazinga/ci-linux/squashfs-root/AppRun
+          unzip -t "$archive"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PokemonRed-linux-x86_64
+          path: dist/linux/PokemonRed-linux-x86_64.zip
+          if-no-files-found: error
+
   fixture-dataset:
     name: fixture dataset integrity
     runs-on: ubuntu-latest

@@ -30,7 +30,7 @@ mobile/ios/love-src/
 mobile/ios/cache/
 mobile/ios/build/
 
-# Final packaged build artifacts (mac/win/web/android/ios) — see scripts/build.sh
+# Final packaged build artifacts (mac/win/linux/web/android/ios) — see scripts/build.sh
 /dist/
 
 # Legacy manual convenience-copy location (superseded by /dist/android/)

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Packages the LÖVE2D Pokémon Red port into distributable macOS and
-# Windows builds. Runs entirely on macOS (no cross-compiling needed, 
-# the Windows build reuses LÖVE's prebuilt win64 binaries).
+# Packages the LÖVE2D Pokémon Red port into desktop and mobile builds.
+# Desktop releases use LÖVE's official platform artifacts.
 #
-# Usage: scripts/build.sh [mac|win|android|ios|all] [--version X.Y.Z] [--identity "Developer ID Application: ..."]
+# Usage: scripts/build.sh [mac|win|linux|android|ios|all] [--version X.Y.Z] [--identity "Developer ID Application: ..."]
 #                          [--notary-profile NAME] [--no-notarize]
 #                          [--release]   # android/ios: release config instead of debug
 #
 # Output: dist/mac/PokemonRed-macos.zip
 #         dist/win/PokemonRed-win64.zip
+#         dist/linux/PokemonRed-linux-x86_64.zip
 #         dist/android/{debug,release}/*.apk (full gradle output stays under
 #           mobile/android/app/build/outputs/apk/embedNoRecord/)
 #         dist/ios/<Config>-<sdk>/PokemonRed.app (full xcodebuild output stays
@@ -41,7 +41,7 @@ fail() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    mac|win|android|ios|all) TARGET="$1" ;;
+    mac|win|linux|android|ios|all) TARGET="$1" ;;
     --version) VERSION="$2"; shift ;;
     --identity) IDENTITY="$2"; shift ;;
     --notary-profile) NOTARY_PROFILE="$2"; shift ;;
@@ -52,7 +52,11 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-mkdir -p "$CACHE" "$WORK" "$DIST/mac" "$DIST/win"
+mkdir -p "$CACHE" "$WORK" "$DIST/mac" "$DIST/win" "$DIST/linux"
+
+# Linux packaging is kept in a sourceable helper so it shares this context.
+# Executing the helper directly reports the supported entry point.
+source "$ROOT/scripts/build_linux.sh"
 
 # --------------------------------------------------------------- game.love
 say "packing game.love"
@@ -188,23 +192,21 @@ build_ios() {
   "$ROOT/scripts/build_ios.sh" ${args[@]+"${args[@]}"}
 }
 
-# --------------------------------------------------------------- iOS
-build_ios() {
-  say "building linux (delegating to scripts/build_ios.sh)"
-  local args=()
-  if [ "$LINUX_RELEASE" = true ]; then
-    args+=(--release)
-  fi
-  "$ROOT/scripts/build_linux.sh" ${args[@]+"${args[@]}"}
-}
-
 case "$TARGET" in
   mac) build_mac ;;
   win) build_win ;;
   android) build_android ;;
   ios) build_ios ;;
-  linux) build_linux;;
-  all) build_mac; build_win ; build_linux ;;
+  linux) build_linux ;;
+  all)
+    # macOS tooling only exists on Darwin; the other desktop artifacts are
+    # assembled from official prebuilt runtimes on either supported host.
+    if [ "$(uname -s)" = "Darwin" ]; then
+      build_mac
+    fi
+    build_win
+    build_linux
+    ;;
 esac
 
 case "$TARGET" in

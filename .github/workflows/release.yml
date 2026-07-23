@@ -1,7 +1,7 @@
 name: Release
 
-# Builds the macOS and Windows desktop apps on the self-hosted Mac runner
-# and publishes them as a GitHub Release.
+# Builds Linux on GitHub-hosted Ubuntu, builds macOS and Windows on the
+# self-hosted Mac runner, and publishes them as a GitHub Release.
 #
 # Versioning:
 #   - First ever release is 0.1.0.
@@ -37,7 +37,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  linux-package:
+    name: Linux distributable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/build.sh linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PokemonRed-linux-x86_64
+          path: dist/linux/PokemonRed-linux-x86_64.zip
+          if-no-files-found: error
+
   release:
+    needs: linux-package
     runs-on: [self-hosted, macOS]
 
     steps:
@@ -158,7 +171,8 @@ jobs:
           # Sign in-build (identity auto-detected from the temp keychain);
           # notarize separately below so it uses secret credentials, not a
           # login-keychain profile.
-          scripts/build.sh all --version "${{ steps.ver.outputs.version }}" --no-notarize
+          scripts/build.sh mac --version "${{ steps.ver.outputs.version }}" --no-notarize
+          scripts/build.sh win --version "${{ steps.ver.outputs.version }}" --no-notarize
 
       - name: Notarize & staple macOS app
         run: |
@@ -194,6 +208,12 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
           echo "Notarized + stapled ✓"
 
+      - name: Download Linux package
+        uses: actions/download-artifact@v4
+        with:
+          name: PokemonRed-linux-x86_64
+          path: dist/linux
+
       - name: Stage release assets
         id: assets
         run: |
@@ -204,6 +224,7 @@ jobs:
           mkdir -p "$outdir"
           cp "dist/mac/PokemonRed-macos.zip" "$outdir/PokemonRed-${v}-macos.zip"
           cp "dist/win/PokemonRed-win64.zip" "$outdir/PokemonRed-${v}-windows.zip"
+          cp "dist/linux/PokemonRed-linux-x86_64.zip" "$outdir/PokemonRed-${v}-linux-x86_64.zip"
           ls -lh "$outdir"
 
       - name: Publish GitHub Release
@@ -254,7 +275,8 @@ jobs:
             --title "$v" \
             --notes "$notes" \
             "dist/release/PokemonRed-${v}-macos.zip" \
-            "dist/release/PokemonRed-${v}-windows.zip"
+            "dist/release/PokemonRed-${v}-windows.zip" \
+            "dist/release/PokemonRed-${v}-linux-x86_64.zip"
 
           echo "Published release $tag"
 
