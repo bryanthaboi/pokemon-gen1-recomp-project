@@ -40,6 +40,8 @@ stub.graphics = {
   newSpriteBatch = function(image, size)
     local batch = { image = image, sprites = {} }
     function batch:add(quad, x, y) table.insert(self.sprites, { quad, x, y }) end
+    function batch:clear() self.sprites = {} end
+    function batch:setTexture(tex) self.texture = tex end
     return batch
   end,
   draw = noop, rectangle = noop, setColor = noop, clear = noop,

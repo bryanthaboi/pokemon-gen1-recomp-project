@@ -68,19 +68,31 @@ Game Boy equivalent:
 
 ## Colors mode
 
-The `2` key (and the Options menu COLORS row) cycles the global shade-remap
-display mode through **GBC → OG → OG INV → GBC INV → CLASSIC → GBC**:
+The `2` key (and the Options menu COLORS row) cycles the display mode
+through **OG RED → SGB → RED++ → OG → OG INV → SGB INV → CLASSIC → OG RED**.
+The first three are the real colorizations; the rest are DMG-shade novelties:
 
-- **GBC** (default): current SGB / GBC zone palettes.
+- **OG RED**: the Game Boy Color boot-ROM look for Pokemon Red -- one global
+  red BG palette + one green OBJ palette, every map, no per-map variation
+  (Pokemon Red has no CGB code, so on a GBC the boot ROM colors it globally).
+  The player/NPCs stay green over the red terrain via the OBP bake +
+  post-zone redraw (`PaletteFX.GBC_BG` / `GBC_OBJ`).
+- **SGB** (default): the per-map Super Game Boy region palettes
+  (`data/sgb/sgb_palettes.asm`). Sprites tint with the region palette, as on
+  real SGB. (This is the mode formerly mislabeled "GBC".)
+- **RED++**: pokered-gbc SuperPalettes -- real per-tile GBC coloring plus
+  per-species mon colors (`data/palettes_gbc.lua`).
 - **OG**: force the four DMG grays (colorization off).
 - **OG INV**: inverted DMG grays.
-- **GBC INV**: each SGB zone palette with shade order reversed.
+- **SGB INV**: each SGB zone palette with shade order reversed.
 - **CLASSIC**: original Game Boy pea-soup greens
   (`#9BBC0F` / `#8BAC0F` / `#306230` / `#0F380F`).
 
-The transform is applied centrally in `PaletteFX.sendColors`, so it covers
-overworld, menus, battles, and tilt upright billboards. Persisted as
-`save.options.colors`.
+The shade-remap transform is applied centrally in `PaletteFX.sendColors`, so
+it covers overworld, menus, battles, and tilt upright billboards. OG RED's
+global BG palette is supplied by `OverworldState:overworldBgColors` (per-map
+override in the overworld pass). Persisted as `save.options.colors`; the
+`gbc` / `gbc_inv` save ids are kept for back-compat under the new labels.
 
 ## GBC FX
 
@@ -132,7 +144,8 @@ migrated once into `options.lua` on load.
 - Music / SFX volume
 - Music Filter
 - OG GLITCHES on / off (Gen 1 quirks vs. modern-clean battle rules)
-- COLORS (GBC / RED++ / OG / OG INV / GBC INV / CLASSIC),  also hotkey `2`
-  (RED++ uses pokered-gbc SuperPalettes + per-species mon colors)
+- COLORS (OG RED / SGB / RED++ / OG / OG INV / SGB INV / CLASSIC),  also
+  hotkey `2` (OG RED = GBC boot-ROM look; RED++ uses pokered-gbc
+  SuperPalettes + per-species mon colors)
 - TILT (OFF / 15 / 35 / 50),  also hotkey `3` while free-roaming
 - GBC FX (OFF / 1 / 2 / 3 / 4),  also hotkey `5`

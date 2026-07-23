@@ -194,6 +194,13 @@ function Game:update(dt)
   -- frame dt (not the fixed logic step) for a smooth ~0.25s glide.
   require("src.render.Tilt").update(dt)
   pcall(function() require("src.core.DiscordPresence").update(dt) end)
+  -- Steady-state memory backstop: advance the incremental collector one
+  -- small step every rendered frame.  The heavy GPU objects are now freed
+  -- explicitly (map eviction, battle exit, canvas/renderer swaps), so this
+  -- only has to keep ordinary Lua-heap garbage (per-frame tables/closures)
+  -- from drifting upward over a long session, and to spread collection out
+  -- so the default lazy schedule never batches it into a visible pause.
+  if collectgarbage then collectgarbage("step", 1) end
 end
 
 -- render.zones' identity default: unhooked, the zone list reaches the blit

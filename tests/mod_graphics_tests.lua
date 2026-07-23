@@ -113,6 +113,7 @@ love.graphics = {
   newSpriteBatch = function(image, size)
     local batch = { image = image, sprites = {} }
     function batch:add(quad, x, y) table.insert(self.sprites, { quad, x, y }) end
+    function batch:clear() self.sprites = {} end
     function batch:setTexture(tex) self.texture = tex end
     return batch
   end,
@@ -287,6 +288,8 @@ local renderer = TileRenderer.new(map)
 check(#renderer.anims == 1, "a declared animatedTiles entry builds one anim")
 check(renderer.anims[1].period == 12, "the declared period is honored")
 check(#renderer.anims[1].textures == 3, "the declared frame images load")
+-- the camera-window fill gathers the on-screen animated cells into anims[].batch
+renderer:draw(0, 0)
 check(renderer.anims[1].batch ~= nil, "the animated tile collected cells")
 
 -- the vanilla water cycle, driven through the same data path: eight
@@ -307,6 +310,8 @@ local sea = TileRenderer.new({
 check(#sea.anims == 1, "an OVERWORLD tileset animates its water with no record edit")
 check(#sea.anims[1].textures == 8, "the water entry builds 8 shifted variants")
 
+-- fill the camera window so the water cells are gathered into the batch
+sea:draw(0, 0)
 local seen = {}
 for step = 1, 8 do
   sea:drawAnimated(0, 0)

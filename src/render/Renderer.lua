@@ -79,6 +79,10 @@ function Renderer:beginWorldPass()
   local vw, vh = self:worldViewSize()
   if not self.worldCanvas or self.worldCanvas:getWidth() ~= vw
      or self.worldCanvas:getHeight() ~= vh then
+    -- free the old canvas before replacing it: a zoom/tilt tween changes
+    -- the view size every frame, so without this the superseded canvases
+    -- pile up in VRAM until a GC finalizer happens to run
+    if self.worldCanvas and self.worldCanvas.release then self.worldCanvas:release() end
     self.worldCanvas = love.graphics.newCanvas(vw, vh)
     self.worldCanvas:setFilter("nearest", "nearest")
   end
@@ -107,6 +111,7 @@ function Renderer:beginUprightPass()
   local cw, ch = vw + 2 * M, vh + 2 * M
   if not self.uprightCanvas or self.uprightCanvas:getWidth() ~= cw
      or self.uprightCanvas:getHeight() ~= ch then
+    if self.uprightCanvas and self.uprightCanvas.release then self.uprightCanvas:release() end
     self.uprightCanvas = love.graphics.newCanvas(cw, ch)
     self.uprightCanvas:setFilter("nearest", "nearest")
   end
@@ -200,6 +205,7 @@ function Renderer:drawTiltedWorld(zoneList, s, wox, woy, target)
   -- 2x for extra crispness.
   if not self.tiltCanvas or self.tiltCanvas:getWidth() ~= wvw
      or self.tiltCanvas:getHeight() ~= wvh then
+    if self.tiltCanvas and self.tiltCanvas.release then self.tiltCanvas:release() end
     self.tiltCanvas = love.graphics.newCanvas(wvw, wvh)
     self.tiltCanvas:setFilter("linear", "linear")
   end

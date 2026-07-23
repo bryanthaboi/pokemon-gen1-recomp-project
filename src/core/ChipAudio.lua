@@ -708,14 +708,27 @@ local function soundData(engine, samples, channels)
   return result
 end
 
-local function fillMusic()
+-- Amortized queue fill.  The queue is deep (MUSIC_BUFFER_COUNT buffers, ~6s)
+-- for stall tolerance, but synthesizing all of it at once -- which is what a
+-- song change did -- renders ~6 seconds of Game Boy audio in a single frame:
+-- that was the map-switch stutter (a new map's theme starts a new song).  So
+-- cap how many buffers each fill renders.  Playback drains ~1 buffer every ~11
+-- frames while update() tops up a few per frame, so the deep queue still ramps
+-- to full within a fraction of a second and keeps its headroom -- it just gets
+-- there gradually instead of all on the frame the song starts.
+local MUSIC_FILL_INITIAL = 4  -- buffers rendered when a song first starts
+local MUSIC_FILL_PER_CALL = 3 -- buffers rendered per update()/recovery tick
+
+local function fillMusic(limit)
   local music = currentMusic
   if not music or music.engine:finished() then return end
+  limit = limit or MUSIC_FILL_PER_CALL
   local free = music.source:getFreeBufferCount()
-  while free > 0 and not music.engine:finished() do
+  while free > 0 and limit > 0 and not music.engine:finished() do
     music.source:queue(soundData(
       music.engine, MUSIC_BUFFER_SAMPLES, 2))
     free = free - 1
+    limit = limit - 1
   end
 end
 
@@ -728,7 +741,9 @@ function ChipAudio.playMusic(data, header, allowLoops)
   if not ok then return nil, source end
   ChipAudio.stopMusic()
   currentMusic = { source = source, engine = engine }
-  fillMusic()
+  -- only a small starting cushion here; update() ramps the deep queue to full
+  -- over the next frames so the song-start frame never renders the whole queue
+  fillMusic(MUSIC_FILL_INITIAL)
   source:play()
   return source
 end
@@ -741,7 +756,7 @@ function ChipAudio.ensureMusicPlaying()
   if not music or music.engine:finished() then return end
   local ok, playing = pcall(music.source.isPlaying, music.source)
   if ok and not playing then
-    fillMusic()
+    fillMusic(MUSIC_FILL_INITIAL)
     pcall(music.source.play, music.source)
   end
 end

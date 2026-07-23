@@ -357,20 +357,32 @@ end
 -- widened to everything the current view size can show so a full
 -- zoom-out never runs past the rendered set.  Re-run whenever the view
 -- grows (zoom/resize), not only on setMap.
+--
+-- Neighbors are built eagerly here.  A TileRenderer is now a light object --
+-- the tile layer draws windowed to the camera, so nothing per-map is
+-- constructed up front (see TileRenderer) -- so there is no build cost to
+-- amortize and no prefetch race to lose at a seam.  That is what the old
+-- one-per-frame streaming queue existed to hide, and it is gone.
 function OverworldState:rebuildNeighbors()
   local mapId = self.map.id
   self.neighbors = {}
   local hops = FieldDefaults.world(Game.data, "neighborHops") or NEIGHBOR_HOPS
   local vw, vh = Game.renderer:worldViewSize()
   self.neighborViewW, self.neighborViewH = vw, vh
+  -- resident set the eviction pass must never touch: the current map plus
+  -- every drawn neighbor
+  local keep = { [mapId] = true }
   for _, n in ipairs(OverworldState.computeNeighbors(Game.data.maps, mapId,
                                                      hops,
                                                      math.floor(vw / 2) + 64,
                                                      math.floor(vh / 2) + 64)) do
-    table.insert(self.neighbors,
-                 { map = MapLoader.load(Game.data, n.id),
-                   ox = n.ox, oy = n.oy })
+    keep[n.id] = true
+    local m = MapLoader.load(Game.data, n.id)
+    table.insert(self.neighbors, { map = m, ox = n.ox, oy = n.oy })
   end
+  -- bound resident memory: drop maps behind us that are neither current nor
+  -- a drawn neighbor, releasing their window batch / border image / atlas
+  MapLoader.trim(keep)
 
   -- visual-only NPCs on connected maps (survey zoom): same spawn filter
   -- as a real map entry, but they never join self.entities -- no sight
@@ -434,7 +446,9 @@ function OverworldState:paletteNameFor(map)
   return Runtime.call("map.palette", samePalette, name, map)
 end
 
--- UI-pass palette (text boxes and menus tint with the current map)
+-- UI-pass palette (text boxes and menus tint with the current map).  OG RED
+-- resolves every name to the one global red BG palette inside PaletteFX.pal,
+-- so this needs no mode-specific branch.
 function OverworldState:sgbPalettes()
   local PaletteFX = require("src.render.PaletteFX")
   return PaletteFX.wholeNamed(Game.data, self:paletteNameFor(self.map))
@@ -3346,9 +3360,9 @@ function OverworldState:drawWorld()
   -- reorder (no draws), so they run once for both paths.
   local tilt = Tilt.active()
   self.map.renderer:drawBorderFill(cam.x, bgY, vw, vh)
-  self.map.renderer:draw(cam.x, bgY)
+  self.map.renderer:draw(cam.x, bgY, vw, vh)
   for _, nb in ipairs(self.neighbors) do
-    nb.map.renderer:drawMapOnly(cam.x - nb.ox, bgY - nb.oy)
+    nb.map.renderer:drawMapOnly(cam.x - nb.ox, bgY - nb.oy, vw, vh)
   end
   -- per-billboard SGB palette source; only needed (and only paid for) when
   -- tilting.  nil headless / on stale palettes -> billboards go uncolorized.
@@ -3492,11 +3506,21 @@ function OverworldState:drawWorld()
       end)
       -- EXCLAMATION_BUBBLE is index 0 -> first crop; the emote command
       -- picks question/happy crops instead
-      local rect = bubble.bubbles and bubble.bubbles[self.emote.bubble or 1]
+      local bi = self.emote.bubble or 1
+      local rect = bubble.bubbles and bubble.bubbles[bi]
       if ok and img and rect then
         love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.draw(img, love.graphics.newQuad(rect.x, rect.y,
-                           rect.w, rect.h, img:getDimensions()), ex, ey)
+        -- one Quad per bubble crop, cached: this draws every frame the "!"
+        -- (or the emote-command crops) is up, so a fresh Quad here churned
+        -- the GC.  The bubble set is small and fixed, so the cache is bounded.
+        self.emoteQuads = self.emoteQuads or {}
+        local q = self.emoteQuads[bi]
+        if not q then
+          q = love.graphics.newQuad(rect.x, rect.y, rect.w, rect.h,
+                                    img:getDimensions())
+          self.emoteQuads[bi] = q
+        end
+        love.graphics.draw(img, q, ex, ey)
         drawn = true
       end
     end
