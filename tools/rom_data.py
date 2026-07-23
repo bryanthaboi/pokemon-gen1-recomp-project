@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 
 CANONICAL_RED_SHA1 = "ea9bcae617fdf159b045185467ae58b2e4a48b9a"
+CANONICAL_BLUE_SHA1 = "d7037c83e1ae5b39bde3c30787637ba1d4c48ce2"
 ROM_BANK_SIZE = 0x4000
 
 

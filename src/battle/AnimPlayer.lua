@@ -144,6 +144,25 @@ function AnimPlayer.new(data)
   }, AnimPlayer)
 end
 
+-- Release the tilesheet images and quads this player built.  They live in
+-- per-instance caches (a fresh AnimPlayer is made per battle), so unlike a
+-- shared module cache they are dead the moment the battle ends -- freeing
+-- them here instead of waiting on a GC finalizer keeps grinding battles
+-- from piling orphaned VRAM up faster than the (Lua-heap-triggered) GC
+-- reclaims it.
+function AnimPlayer:release()
+  for _, img in pairs(self.images) do
+    if img and img.release then pcall(img.release, img) end
+  end
+  self.images = {}
+  for _, byTile in pairs(self.quads) do
+    for _, q in pairs(byTile) do
+      if q and q.release then pcall(q.release, q) end
+    end
+  end
+  self.quads = {}
+end
+
 function AnimPlayer:warnOnce(key, fmt, ...)
   if not self.warned[key] then
     self.warned[key] = true

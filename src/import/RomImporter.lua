@@ -1,9 +1,19 @@
+local GameVersion = require("src.core.GameVersion")
+
 local RomImporter = {}
 RomImporter.__index = RomImporter
 
-local ROM_SHA1 = "ea9bcae617fdf159b045185467ae58b2e4a48b9a"
-local CACHE_MARKER = "rom-cache-v7:" .. ROM_SHA1
+-- Cache generation tag; bump to force every imported version to re-extract.
+local CACHE_FORMAT = "rom-cache-v7:"
+-- The completion marker is written under each version's cache prefix
+-- (rom-cache.complete for Red, blue/rom-cache.complete for Blue).
 local MARKER_PATH = "rom-cache.complete"
+
+-- The marker a finished import writes for a version: the generation tag plus
+-- that version's ROM hash, so both a format bump and a swapped ROM invalidate.
+local function markerFor(version)
+  return CACHE_FORMAT .. GameVersion.info(version).sha1
+end
 local COMMUNITY_URL = "https://bois.icu"
 local TRUST_WARNING = "if you did not get this from bryanthaboi's github " ..
   "or a link from the discord that bryanthaboi himself posted, just know " ..
@@ -23,18 +33,62 @@ local REQUIRED_FILES = {
   "assets/generated/audio/programs.bin",
 }
 
-local function allRequiredFilesExist()
-  -- CacheFs.exists checks the game folder directly for a portable install,
-  -- otherwise the save directory through love.filesystem.
+-- "Split-screen ROM selector" first-run palette (matches FirstRun.dc.html from
+-- the Claude Design project): a dark neon arcade panel, one column per game.
+-- Red is live; Blue and Yellow are lit placeholders until those games are
+-- supported.  Values are 0-255 RGB; alpha is applied per draw.
+local PAL = {
+  -- radial background gradient (bright navy at top-centre -> near black)
+  bgTop       = { 22, 34, 74 },   -- #16224a
+  bgBot       = { 7, 11, 29 },    -- #070b1d
+  -- neon accents, one per cartridge
+  red         = { 255, 60, 72 },  -- rgb(255,60,72)
+  blue        = { 70, 150, 255 }, -- rgb(70,150,255)
+  gold        = { 255, 203, 5 },  -- rgb(255,203,5)
+  -- card interiors (the dark colour the accent tint fades into)
+  cardRed     = { 20, 12, 26 },   -- #140c1a
+  cardBlue    = { 12, 18, 40 },   -- #0c1228
+  cardGold    = { 30, 22, 8 },    -- #1e1608
+  -- text
+  heading     = { 255, 255, 255 },
+  detail      = { 198, 208, 230 }, -- #c6d0e6
+  warning     = { 159, 176, 208 }, -- #9fb0d0
+  link        = { 127, 208, 255 }, -- #7fd0ff, the bois.icu link
+  linkHover   = { 191, 234, 255 }, -- #bfeaff, brighter on hover
+  white       = { 255, 255, 255 },
+  -- "Play" button (green gradient) + its ink
+  playTop     = { 62, 224, 138 }, -- #3ee08a
+  playBot     = { 22, 163, 90 },  -- #16a35a
+  playInk     = { 6, 32, 18 },    -- #062012
+  -- "Choose ROM" button (red gradient)
+  chooseTop   = { 255, 83, 97 },  -- #ff5361
+  chooseBot   = { 214, 31, 44 },  -- #d61f2c
+  -- disabled "Coming soon" button
+  disabled    = { 120, 132, 158 },
+  disabledInk = { 149, 161, 189 }, -- #95a1bd
+}
+
+-- CacheFs.exists checks the game folder directly for a portable install,
+-- otherwise the save directory through love.filesystem.  It honors
+-- CacheFs.prefix, so we point it at the version's cache subtree (Red at the
+-- root, Blue under blue/).
+local function allRequiredFilesExist(version)
   local CacheFs = require("src.import.CacheFs")
+  local saved = CacheFs.prefix
+  CacheFs.prefix = GameVersion.cachePrefix(version)
+  local ok = true
   for _, path in ipairs(REQUIRED_FILES) do
-    if not CacheFs.exists(path) then return false end
+    if not CacheFs.exists(path) then ok = false; break end
   end
-  return true
+  CacheFs.prefix = saved
+  return ok
 end
 
+-- A developer checkout / Python build leaves Red's generated data in the
+-- physfs SOURCE at the un-prefixed root; that is always current.  Only Red
+-- ships this way (Blue is import-only), so this stays a Red-root check.
 local function sourceTreeHasData()
-  if not allRequiredFilesExist() or not love.filesystem.getRealDirectory then
+  if not allRequiredFilesExist("red") or not love.filesystem.getRealDirectory then
     return false
   end
   local real = love.filesystem.getRealDirectory(REQUIRED_FILES[1])
@@ -92,38 +146,49 @@ local function purgeSaveDirCache()
     f:close()
     return true
   end
-  if not (saveDirHas(MARKER_PATH) or saveDirHas(REQUIRED_FILES[1])) then
-    return
+  -- Purge each version's stale save-directory copy (Red at the root, Blue
+  -- under blue/) so it cannot shadow the portable game-folder cache.
+  for _, version in ipairs(GameVersion.ORDER) do
+    local prefix = GameVersion.cachePrefix(version)
+    if saveDirHas(prefix .. MARKER_PATH) or saveDirHas(prefix .. REQUIRED_FILES[1]) then
+      removeTree(prefix .. "data/generated")
+      removeTree(prefix .. "assets/generated")
+      love.filesystem.remove(prefix .. MARKER_PATH)
+    end
   end
-  removeTree("data/generated")
-  removeTree("assets/generated")
-  love.filesystem.remove(MARKER_PATH)
 end
 
-function RomImporter.isReady()
+-- Whether a given game version's ROM has already been imported and cached.
+function RomImporter.isReady(version)
+  version = version or "red"
   local CacheFs = require("src.import.CacheFs")
   if CacheFs.root() then
     -- Portable: the cache lives in the game folder next to the executable
     -- (mounted onto the read path for a fused build).  Drop any stale
-    -- save-directory copy that would otherwise shadow it at runtime -- and,
-    -- for a source run, hide the game folder from sourceTreeHasData below.
+    -- save-directory copy that would otherwise shadow it at runtime.
     purgeSaveDirCache()
   end
-  -- Generated data sitting in the physfs source -- a developer checkout, a
-  -- Python/bootstrap build, or a source-run portable import -- is always
-  -- current (as it has always been).  A fused portable install is not the
-  -- source, so it falls through to the version-marker gate.
-  if sourceTreeHasData() then return true end
-  return CacheFs.read(MARKER_PATH) == CACHE_MARKER and allRequiredFilesExist()
+  -- Red generated data in the physfs source (developer checkout / Python
+  -- build) is always current; Blue is import-only and falls through to the
+  -- version-marker gate.
+  if version == "red" and sourceTreeHasData() then return true end
+  local saved = CacheFs.prefix
+  CacheFs.prefix = GameVersion.cachePrefix(version)
+  local marker = CacheFs.read(MARKER_PATH)
+  CacheFs.prefix = saved
+  return marker == markerFor(version) and allRequiredFilesExist(version)
 end
 
-local function decodeManifest()
-  local raw, readError = love.filesystem.read("tools/rom_manifest.json")
+-- Load the import manifest for a version and confirm it matches that ROM.
+local function decodeManifest(version)
+  local path = GameVersion.info(version).manifest
+  local raw, readError = love.filesystem.read(path)
   if not raw then error("ROM import metadata is missing: " .. tostring(readError)) end
   local Json = require("src.link.Json")
   local manifest, decodeError = Json.decode(raw)
   if not manifest then error("ROM import metadata is invalid: " .. tostring(decodeError)) end
-  assert(manifest.romSha1 == ROM_SHA1, "ROM import metadata version mismatch")
+  assert(manifest.romSha1 == GameVersion.info(version).sha1,
+    "ROM import metadata version mismatch")
   return manifest
 end
 
@@ -180,16 +245,19 @@ local function scanForRom()
   return nil
 end
 
-local function chooseRom()
+local function chooseRom(promptName)
+  promptName = promptName or "Pokemon"
+  local prompt = "Choose your " .. promptName .. " ROM"
   local platform = love.system.getOS()
   if platform == "OS X" then
     return commandOutput(
-      [[osascript -e 'POSIX path of (choose file with prompt "Choose your Pokemon Red ROM" of type {"gb"})' 2>/dev/null]])
+      ([[osascript -e 'POSIX path of (choose file with prompt "%s" of type {"gb"})' 2>/dev/null]])
+        :format(prompt))
   elseif platform == "Windows" then
     local script = table.concat({
       "Add-Type -AssemblyName System.Windows.Forms;",
       "$d=New-Object System.Windows.Forms.OpenFileDialog;",
-      "$d.Title='Choose your Pokemon Red ROM';",
+      "$d.Title='" .. prompt .. "';",
       "$d.Filter='Game Boy ROM (*.gb)|*.gb|All files (*.*)|*.*';",
       "if($d.ShowDialog() -eq 'OK'){[Console]::Write($d.FileName)}",
     })
@@ -197,7 +265,8 @@ local function chooseRom()
       'powershell -NoProfile -STA -Command "' .. script .. '"')
   elseif platform == "Linux" then
     local path = commandOutput(
-      [[zenity --file-selection --title="Choose your Pokemon Red ROM" --file-filter="Game Boy ROM | *.gb" 2>/dev/null]])
+      ([[zenity --file-selection --title="%s" --file-filter="Game Boy ROM | *.gb" 2>/dev/null]])
+        :format(prompt))
     if path then return path end
     return commandOutput(
       [[kdialog --getopenfilename "$HOME" "*.gb|Game Boy ROM" 2>/dev/null]])
@@ -205,37 +274,53 @@ local function chooseRom()
   return nil
 end
 
-function RomImporter.new(onComplete)
-  local previousMarker = require("src.import.CacheFs").read(MARKER_PATH)
-  local returning = previousMarker ~= nil and previousMarker ~= CACHE_MARKER
+-- The launcher runs Red and Blue as two independent columns.  Each dropped or
+-- chosen ROM is routed to its version by SHA-1, extracted into that version's
+-- own cache (Red at the root, Blue under blue/), so both can be imported and
+-- played side by side.  onComplete(version) hands the chosen game off to boot.
+-- opts: launcher (a fresh import stays on the launcher instead of auto-booting),
+-- forceImport (treat every version as not-yet-imported, so re-import is forced).
+function RomImporter.new(onComplete, opts)
+  opts = opts or {}
   local android = love.system.getOS() == "Android"
+  local CacheFs = require("src.import.CacheFs")
   local self = setmetatable({
     onComplete = onComplete,
+    launcher = opts.launcher or false,
+    forceImport = opts.forceImport or false,
+    android = android,
     logo = love.graphics.newImage("assets/logo/logo.png"),
     bcg = love.graphics.newImage("assets/logo/bcg.png"),
-    state = "waiting",
-    returning = returning,
-    android = android,
-    status = returning and "More assets are needed from your ROM"
-      or "Choose or drop a Pokemon Red ROM",
-    detail = returning
-      and "This update pulls a few more things from your ROM. "
-        .. "Please re-import it to continue (it's quick)."
-      or "The ROM is verified before any files are created.",
-    progress = 0,
-    stageCurrent = 0,
-    stageTotal = 1,
-    pulse = 0,
-    button = {},
+    ready = {}, returning = {}, romName = {},
+    importing = nil,      -- the version currently extracting, or nil
+    workState = nil,      -- "working" / "complete" / "error" for that import
+    errorVersion = nil,   -- which column shows the current error
+    notice = nil,         -- { version, status, detail } transient hint (Android)
+    status = "", detail = "", progress = 0,
+    stageCurrent = 0, stageTotal = 1, pulse = 0,
   }, RomImporter)
 
-  if android then
-    self.status = returning and "More ROM assets needed" or "Get your Pokemon Red ROM (.gb) in"
-    self.detail = "Tap Choose ROM to pick your file"
+  for _, version in ipairs(GameVersion.ORDER) do
+    local info = GameVersion.info(version)
+    local ready = RomImporter.isReady(version) and not self.forceImport
+    self.ready[version] = ready
+    -- a marker present but for an older cache generation / different ROM means
+    -- "update required" (re-import) rather than a clean first-run choose
+    local saved = CacheFs.prefix
+    CacheFs.prefix = info.cachePrefix
+    local marker = CacheFs.read(MARKER_PATH)
+    CacheFs.prefix = saved
+    self.returning[version] =
+      (not ready) and marker ~= nil and marker ~= markerFor(version)
+    self.romName[version] = "pokemon_" .. info.id .. ".gb"
+  end
+
+  -- Android has no native picker until the player copies a ROM into the
+  -- external folder; import any .gb already there (routed by SHA-1) unless
+  -- both games are already imported.
+  if android and not (self.ready.red and self.ready.blue) then
     local name = scanForRom()
-    if name then
-      self:startData(love.filesystem.read(name), name)
-    end
+    if name then self:startData(love.filesystem.read(name), name) end
   end
 
   return self
@@ -247,15 +332,18 @@ end
 -- it into the folder scanForRom checks, so a rescan on refocus picks it up
 -- without the player needing to tap the button again.
 function RomImporter:focus(f)
-  if not (f and self.android and self.state ~= "working") then return end
+  if not (f and self.android and self.workState ~= "working") then return end
+  if self.ready.red and self.ready.blue then return end
   local name = scanForRom()
-  if name then
-    self:startData(love.filesystem.read(name), name)
-  end
+  if name then self:startData(love.filesystem.read(name), name) end
 end
 
-function RomImporter:setError(message)
-  self.state = "error"
+function RomImporter:setError(message, version)
+  require("src.import.CacheFs").prefix = ""
+  self.workState = "error"
+  self.errorVersion = version or self.importing or self.chooseVersion or "red"
+  self.importing = nil
+  self.notice = nil
   self.status = "That ROM could not be imported"
   self.detail = tostring(message)
   self.progress = 0
@@ -263,42 +351,52 @@ function RomImporter:setError(message)
   self.romData = nil
 end
 
+-- Verify + extract a ROM.  The version is decided by the ROM's own SHA-1, so
+-- dropping a Red or Blue cart into either column always lands in the right one.
 function RomImporter:startData(data, displayName)
-  if self.state == "working" then return end
+  if self.workState == "working" then return end
   if type(data) ~= "string" then
     self:setError("The selected file could not be read.")
     return
   end
   if #data ~= 1024 * 1024 then
-    self:setError(("Expected a 1 MiB Pokemon Red ROM; this file is %.2f MiB.")
+    self:setError(("Expected a 1 MiB Game Boy ROM; this file is %.2f MiB.")
       :format(#data / 1024 / 1024))
     return
   end
+  local actualHash = sha1(data)
+  local version = GameVersion.forSha1(actualHash)
+  if not version then
+    self:setError(("Unsupported ROM (SHA-1 %s). Use an unmodified US Pokemon "
+      .. "Red or Blue ROM."):format(actualHash))
+    return
+  end
+  local info = GameVersion.info(version)
 
-  self.state = "working"
-  self.status = "Verifying ROM"
-  self.detail = displayName or "Pokemon Red"
+  self.importing = version
+  self.workState = "working"
+  self.notice = nil
+  self.status = "Verifying " .. info.displayName
+  self.detail = displayName or info.displayName
   self.progress = 0
   self.romData = data
   self.worker = coroutine.create(function()
-    local actualHash = sha1(self.romData)
-    if actualHash ~= ROM_SHA1 then
-      error(("Unsupported ROM (SHA-1 %s). Use an unmodified US Pokemon Red ROM.")
-        :format(actualHash))
-    end
     self.status = "Preparing private game data"
     coroutine.yield()
-    -- Clear any previous cache from both possible homes: the save directory
-    -- (removeTree) and, for a portable install, the game folder (CacheFs).
+    -- Redirect every cache write to this version's subtree, then clear only
+    -- that version's previous cache from both homes (save directory and, for
+    -- a portable install, the game folder).  The other version is untouched.
     local CacheFs = require("src.import.CacheFs")
-    removeTree("data/generated")
-    removeTree("assets/generated")
-    love.filesystem.remove(MARKER_PATH)
+    local prefix = info.cachePrefix
+    CacheFs.prefix = prefix
+    removeTree(prefix .. "data/generated")
+    removeTree(prefix .. "assets/generated")
+    love.filesystem.remove(prefix .. MARKER_PATH)
     CacheFs.removeTree("data/generated")
     CacheFs.removeTree("assets/generated")
     CacheFs.remove(MARKER_PATH)
 
-    local manifest = decodeManifest()
+    local manifest = decodeManifest(version)
     local RomExtractor = require("src.import.RomExtractor")
     local extractor = RomExtractor.new(self.romData, manifest,
       function(progress, total, stage, current, stageTotal)
@@ -312,16 +410,25 @@ function RomImporter:startData(data, displayName)
     self.romData = nil
     collectgarbage("collect")
     -- Written last: the marker is what isReady() checks, so it must only
-    -- appear once every required file is in place.  CacheFs puts it beside
-    -- the cache -- the game folder for a portable install, else the save
-    -- directory.
-    local ok, writeError = CacheFs.write(MARKER_PATH, CACHE_MARKER)
+    -- appear once every required file is in place.
+    local ok, writeError = CacheFs.write(MARKER_PATH, markerFor(version))
+    CacheFs.prefix = ""   -- restore the default so later writes stay at the root
     if not ok then error("could not finish the private cache: " .. tostring(writeError)) end
-    self.state = "complete"
+    self.ready[version] = true
+    self.returning[version] = false
+    self.romName[version] = (displayName
+      and (displayName:match("[^/\\]+$") or displayName)) or self.romName[version]
+    self.importing = nil
+    self.workState = "complete"
+    self.completeVersion = version
     self.status = "Ready"
-    self.detail = "Starting Pokemon Red..."
+    self.detail = "Starting " .. info.displayName .. "..."
     self.progress = 1
-    if self.onComplete then self.onComplete() end
+    if self.launcher then
+      -- Stay on the launcher; the player presses Play to boot the new game.
+      return
+    end
+    if self.onComplete then self.onComplete(version) end
   end)
 end
 
@@ -336,7 +443,7 @@ function RomImporter:startPath(path)
 end
 
 function RomImporter:filedropped(file)
-  if self.state == "working" then return end
+  if self.workState == "working" then return end
   local data, readError = readDroppedFile(file)
   if not data then
     self:setError("Could not read the dropped file: " .. tostring(readError))
@@ -345,25 +452,30 @@ function RomImporter:filedropped(file)
   self:startData(data, file:getFilename())
 end
 
-function RomImporter:choose()
-  if self.state == "working" then return end
+-- Open a picker (or, on Android, scan the external folder) for a column.  The
+-- version argument only titles the dialog and steers error/notice text; the
+-- picked ROM is still routed by its SHA-1, so choosing a Blue cart in the Red
+-- column imports Blue.
+function RomImporter:choose(version)
+  if self.workState == "working" then return end
+  self.chooseVersion = version or "red"
   if self.android then
     local name = scanForRom()
     if name then
       self:startData(love.filesystem.read(name), name)
     elseif not love.system.pickFile() then
       -- Picker unavailable (API < 19, or no document-picker app installed):
-      -- fall back to the USB folder-drop path. Not setError(): that status
-      -- text ("could not be imported") reads as a rejected file, not "none
-      -- found yet" -- and detail only renders 3 wrapped lines, so the path
-      -- again gets the line to itself.
-      self.state = "waiting"
-      self.status = "No picker available, copy your ROM into:"
-      self.detail = love.filesystem.getSaveDirectory()
+      -- fall back to the USB folder-drop path as a friendly notice, not an
+      -- error (which would read as a rejected file).
+      self.notice = {
+        version = self.chooseVersion,
+        status = "No picker available, copy your ROM into:",
+        detail = love.filesystem.getSaveDirectory(),
+      }
     end
     return
   end
-  local path = chooseRom()
+  local path = chooseRom(GameVersion.info(self.chooseVersion).displayName)
   if path then
     self:startPath(path)
   elseif love.system.getOS() ~= "OS X"
@@ -375,7 +487,7 @@ end
 
 function RomImporter:update(dt)
   self.pulse = self.pulse + dt
-  if self.state ~= "working" or not self.worker then return end
+  if self.workState ~= "working" or not self.worker then return end
   local started = love.timer.getTime()
   repeat
     local ok, workerError = coroutine.resume(self.worker)
@@ -391,146 +503,586 @@ function RomImporter:update(dt)
   until love.timer.getTime() - started >= 0.008
 end
 
-local function setColor255(r, g, b, a)
-  love.graphics.setColor(r / 255, g / 255, b / 255, (a or 255) / 255)
+-- Player pressed Play on a game whose ROM is imported: hand off to boot.
+function RomImporter:play(version)
+  if self.workState == "working" then return end
+  if not self.ready[version] then return end
+  if self.onComplete then self.onComplete(version) end
 end
 
-local function printCentered(text, y, font, width)
-  love.graphics.setFont(font)
-  love.graphics.printf(text, 0, y, width, "center")
+-- "re-import" a column: drop it back to the choose/drop state so a fresh ROM
+-- can be selected (the extract replaces that version's cache).
+function RomImporter:reimport(version)
+  if self.workState == "working" then return end
+  if not self.ready[version] then return end
+  self.ready[version] = false
+  self.returning[version] = false
+  self.chooseVersion = version
+end
+
+local function clamp(v, lo, hi)
+  return math.max(lo, math.min(hi, v))
+end
+
+-- set the current draw colour from a PAL triple (0-255), with optional alpha 0-1
+local function col(c, a)
+  love.graphics.setColor(c[1] / 255, c[2] / 255, c[3] / 255, a or 1)
+end
+
+-- Faux-bold: the launcher's UI font ships no bold face, so 800-weight text
+-- (headings, buttons) is thickened with a second sub-pixel pass.
+local function printfB(text, x, y, w, align)
+  love.graphics.printf(text, x, y, w, align)
+  love.graphics.printf(text, x + 0.6, y, w, align)
+end
+local function printB(text, x, y)
+  love.graphics.print(text, x, y)
+  love.graphics.print(text, x + 0.6, y)
+end
+
+-- One reusable unit quad, recoloured per call, for every vertical gradient
+-- fill (LOVE has no gradient primitive and a per-frame newMesh would churn
+-- the GPU).  Callers set the blend mode; this only touches colour + geometry.
+local gradMesh
+local function setGrad(cTop, cBot, aTop, aBot)
+  if not gradMesh then gradMesh = love.graphics.newMesh(4, "fan", "dynamic") end
+  gradMesh:setVertices({
+    { 0, 0, 0, 0, cTop[1] / 255, cTop[2] / 255, cTop[3] / 255, aTop },
+    { 1, 0, 1, 0, cTop[1] / 255, cTop[2] / 255, cTop[3] / 255, aTop },
+    { 1, 1, 1, 1, cBot[1] / 255, cBot[2] / 255, cBot[3] / 255, aBot },
+    { 0, 1, 0, 1, cBot[1] / 255, cBot[2] / 255, cBot[3] / 255, aBot },
+  })
+end
+local function fillGrad(x, y, w, h, cTop, cBot, aTop, aBot)
+  setGrad(cTop, cBot, aTop, aBot)
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.draw(gradMesh, x, y, 0, w, h)
+end
+-- vertical gradient clipped to a rounded rectangle (via the stencil buffer)
+local function fillGradRounded(x, y, w, h, r, cTop, cBot, aTop, aBot)
+  love.graphics.stencil(function()
+    love.graphics.rectangle("fill", x, y, w, h, r, r)
+  end, "replace", 1)
+  love.graphics.setStencilTest("greater", 0)
+  fillGrad(x, y, w, h, cTop, cBot, aTop, aBot)
+  love.graphics.setStencilTest()
+end
+
+-- Soft additive neon halo around a rounded rect.  LOVE has no blur, so stack
+-- progressively larger, fainter translucent rounded rects.
+local function neonGlow(x, y, w, h, r, c, strength)
+  strength = math.max(0, strength)
+  if strength == 0 then return end
+  love.graphics.setBlendMode("add")
+  local layers = 7
+  for i = 1, layers do
+    local g = i * 2.4
+    love.graphics.setColor(c[1] / 255, c[2] / 255, c[3] / 255,
+      strength * 0.05 * (1 - (i - 1) / layers))
+    love.graphics.rectangle("fill", x - g, y - g, w + 2 * g, h + 2 * g, r + g, r + g)
+  end
+  love.graphics.setBlendMode("alpha")
+end
+
+-- A white shine band that sweeps across an active button, clipped to its
+-- rounded shape.  phase is 0..1 (left of the button -> right of it).
+local shineMesh
+local function buttonShine(x, y, w, h, r, phase)
+  if not shineMesh then
+    -- triangle strip: three columns (transparent, white, transparent)
+    shineMesh = love.graphics.newMesh({
+      { 0,   0, 0,   0, 1, 1, 1, 0 },
+      { 0,   1, 0,   1, 1, 1, 1, 0 },
+      { 0.5, 0, 0.5, 0, 1, 1, 1, 0.5 },
+      { 0.5, 1, 0.5, 1, 1, 1, 1, 0.5 },
+      { 1,   0, 1,   0, 1, 1, 1, 0 },
+      { 1,   1, 1,   1, 1, 1, 1, 0 },
+    }, "strip", "static")
+  end
+  local bandW = w * 0.6
+  local bx = x - bandW + phase * (w + bandW)
+  love.graphics.stencil(function()
+    love.graphics.rectangle("fill", x, y, w, h, r, r)
+  end, "replace", 1)
+  love.graphics.setStencilTest("greater", 0)
+  love.graphics.setBlendMode("add")
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.draw(shineMesh, bx, y, 0, bandW, h)
+  love.graphics.setBlendMode("alpha")
+  love.graphics.setStencilTest()
 end
 
 function RomImporter:draw()
   local width, height = love.graphics.getDimensions()
-  setColor255(241, 243, 232)
-  love.graphics.rectangle("fill", 0, 0, width, height)
-  setColor255(181, 35, 42)
-  love.graphics.rectangle("fill", 0, 0, width, math.max(8, height * 0.025))
+  local third = width / 3
+  local s = clamp(height / 768, 0.7, 1.6)
+  local pulse = self.pulse
 
+  -- Hover state (desktop only -- touch has no cursor).  anyHover and ptIn are
+  -- captured by drawCard and the footer below; the cursor is set at the end.
+  local mx, my = love.mouse.getPosition()
+  local hoverEnabled = not self.android
+  local anyHover = false
+  local function ptIn(r)
+    return r and mx >= r.x and mx <= r.x + r.width and my >= r.y and my <= r.y + r.height
+  end
+
+  -- Fonts + size-dependent scenery, rebuilt only when the window size changes.
   local fontKey = ("%dx%d"):format(width, height)
   if self.fontKey ~= fontKey then
     self.fontKey = fontKey
-    self.bodyFont = love.graphics.newFont(
-      math.max(16, math.min(22, height * 0.038)))
-    self.smallFont = love.graphics.newFont(
-      math.max(13, math.min(17, height * 0.029)))
-    self.warningFont = love.graphics.newFont(
-      math.max(10, math.min(12, height * 0.022)))
+    local function f(px) return love.graphics.newFont(math.max(8, math.floor(px + 0.5))) end
+    self.headFont    = f(19 * s)
+    self.detailFont  = f(14 * s)
+    self.buttonFont  = f(19 * s)
+    self.hintFont    = f(13 * s)
+    self.warningFont = f(11 * s)
+
+    -- Background: a radial gradient (bright navy at top-centre -> near black).
+    -- A triangle fan from the top-centre gives the radial falloff; the screen
+    -- is cleared to the outer colour first so the corners it does not reach
+    -- match seamlessly.
+    do
+      local cx, cy = width / 2, 0
+      local rx, ry = width * 1.3, height * 1.08
+      local n = 72
+      local verts = { { cx, cy, 0, 0,
+        PAL.bgTop[1] / 255, PAL.bgTop[2] / 255, PAL.bgTop[3] / 255, 1 } }
+      for i = 0, n do
+        local a = (i / n) * math.pi * 2
+        verts[#verts + 1] = { cx + math.cos(a) * rx, cy + math.sin(a) * ry, 0, 0,
+          PAL.bgBot[1] / 255, PAL.bgBot[2] / 255, PAL.bgBot[3] / 255, 1 }
+      end
+      self.bgMesh = love.graphics.newMesh(verts, "fan", "static")
+    end
+
+    -- CRT vignette: a gentle edge darkening, centred slightly above the middle.
+    do
+      local cx, cy = width / 2, height * 0.45
+      local rx, ry = width * 0.78, height * 0.78
+      local n = 72
+      local verts = { { cx, cy, 0, 0, 0, 0, 0, 0 } }
+      for i = 0, n do
+        local a = (i / n) * math.pi * 2
+        verts[#verts + 1] =
+          { cx + math.cos(a) * rx, cy + math.sin(a) * ry, 0, 0, 0, 0, 0, 0.32 }
+      end
+      self.vignetteMesh = love.graphics.newMesh(verts, "fan", "static")
+    end
+
+    -- CRT scanlines: a 1px dark line every 3px, baked into a tiny tile and
+    -- drawn once with a repeat-wrapped quad (one draw call, correct alpha).
+    if not self.scanlineImage then
+      local id = love.image.newImageData(1, 3)
+      id:setPixel(0, 0, 0, 0, 0, 0.08)
+      id:setPixel(0, 1, 0, 0, 0, 0)
+      id:setPixel(0, 2, 0, 0, 0, 0)
+      self.scanlineImage = love.graphics.newImage(id)
+      self.scanlineImage:setWrap("repeat", "repeat")
+      self.scanlineImage:setFilter("nearest", "nearest")
+    end
+    self.scanlineQuad = love.graphics.newQuad(0, 0, width, height, 1, 3)
   end
-  local bodyFont, smallFont, warningFont =
-    self.bodyFont, self.smallFont, self.warningFont
-  local contentWidth = math.min(width - 40, 520)
-  local left = (width - contentWidth) / 2
 
-  local logoWidth, logoHeight = self.logo:getDimensions()
-  local logoScale = math.min(
-    math.min(width - 48, 420) / logoWidth,
-    height * 0.15 / logoHeight)
-  love.graphics.setColor(1, 1, 1, 1)
-  love.graphics.draw(
-    self.logo,
-    (width - logoWidth * logoScale) / 2,
-    height * 0.075,
-    0, logoScale, logoScale)
-  setColor255(74, 88, 72)
-  printCentered(self.returning and "UPDATE REQUIRED" or "FIRST RUN",
-    height * 0.205, smallFont, width)
-
-  local zoneY, zoneH = height * 0.29, math.min(180, height * 0.31)
-  setColor255(215, 220, 202)
-  love.graphics.rectangle("fill", left, zoneY, contentWidth, zoneH)
-  setColor255(74, 88, 72)
-  love.graphics.setLineWidth(2)
-  love.graphics.rectangle("line", left, zoneY, contentWidth, zoneH)
-
-  setColor255(25, 31, 28)
-  printCentered(self.status, zoneY + zoneH * 0.25, bodyFont, width)
-  setColor255(74, 88, 72)
-  love.graphics.setFont(smallFont)
-  local _, wrapped = smallFont:getWrap(self.detail, contentWidth - 48)
-  local visible = {}
-  for index = 1, math.min(#wrapped, 3) do visible[index] = wrapped[index] end
-  love.graphics.printf(table.concat(visible, "\n"),
-    left + 24, zoneY + zoneH * 0.52, contentWidth - 48, "center")
-
-  if self.state == "working" or self.state == "complete" then
-    local barY = zoneY + zoneH - 24
-    setColor255(164, 172, 151)
-    love.graphics.rectangle("fill", left + 24, barY, contentWidth - 48, 8)
-    setColor255(181, 35, 42)
-    love.graphics.rectangle("fill", left + 24, barY,
-      (contentWidth - 48) * self.progress, 8)
-  else
-    local buttonWidth = math.min(260, contentWidth - 80)
-    local buttonHeight = math.max(46, math.min(56, height * 0.09))
-    local buttonX = (width - buttonWidth) / 2
-    local buttonY = math.min(height - buttonHeight - 34, zoneY + zoneH + 36)
-    self.button = {
-      x = buttonX, y = buttonY, width = buttonWidth, height = buttonHeight,
+  -- Invert shader: the Boi's Club Games mark is dark ink; on this dark panel it
+  -- is rendered white (the design's filter:invert(1)).  Built lazily so a
+  -- headless require never needs a GL context.
+  self.invertShader = self.invertShader or love.graphics.newShader([[
+    vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
+      vec4 p = Texel(tex, tc);
+      return vec4((vec3(1.0) - p.rgb) * color.rgb, p.a * color.a);
     }
-    setColor255(25, 31, 28)
-    love.graphics.rectangle("fill", buttonX, buttonY, buttonWidth, buttonHeight)
-    setColor255(255, 255, 255)
-    love.graphics.setFont(bodyFont)
-    love.graphics.printf("Choose ROM", buttonX,
-      buttonY + (buttonHeight - bodyFont:getHeight()) / 2,
-      buttonWidth, "center")
-    setColor255(74, 88, 72)
-    love.graphics.setFont(smallFont)
-    love.graphics.printf(
-      self.android and "or copy the .gb via USB" or "or drop the .gb file here",
-      0, buttonY + buttonHeight + 12, width, "center")
+  ]])
+
+  -- Shine shader: the same white sweep the active buttons get, but clipped to
+  -- the logo's own shape (a soft band brightens the pixels it crosses; fully
+  -- transparent pixels stay transparent).
+  self.shineShader = self.shineShader or love.graphics.newShader([[
+    extern number shinePos;
+    extern number shineW;
+    vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
+      vec4 p = Texel(tex, tc);
+      float band = smoothstep(shineW, 0.0, abs(tc.x - shinePos));
+      return vec4(p.rgb + band * 0.55, p.a) * color;
+    }
+  ]])
+
+  -- background
+  col(PAL.bgBot)
+  love.graphics.rectangle("fill", 0, 0, width, height)
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.draw(self.bgMesh)
+
+  -- neon tri-segment top bar (Red | Blue | Yellow) with a soft downward bloom
+  local barH = math.max(10, 16 * s)
+  local segs = {
+    { PAL.red,  0,         third },
+    { PAL.blue, third,     third },
+    { PAL.gold, 2 * third, width - 2 * third },
+  }
+  love.graphics.setBlendMode("add")
+  for _, seg in ipairs(segs) do
+    fillGrad(seg[2], 0, seg[3], barH * 3.2, seg[1], seg[1], 0.30, 0.0)
+  end
+  love.graphics.setBlendMode("alpha")
+  for _, seg in ipairs(segs) do
+    col(seg[1]); love.graphics.rectangle("fill", seg[2], 0, seg[3], barH)
   end
 
-  local bcgWidth, bcgHeight = self.bcg:getDimensions()
-  love.graphics.setFont(warningFont)
-  local warningWidth = math.min(width - 32, 600)
-  local _, warningLines = warningFont:getWrap(TRUST_WARNING, warningWidth)
-  local warningHeight = #warningLines * warningFont:getHeight()
-  local warningY = height - warningHeight - 8
-  local bcgScale = math.min(
-    math.min(width - 48, 220) / bcgWidth,
-    height * 0.08 / bcgHeight)
-  local bcgDrawWidth = bcgWidth * bcgScale
-  local bcgDrawHeight = bcgHeight * bcgScale
-  local bcgX = (width - bcgDrawWidth) / 2
-  local bcgY = warningY - bcgDrawHeight - 8
-  self.bcgButton = {
-    x = bcgX, y = bcgY,
-    width = bcgDrawWidth, height = bcgDrawHeight,
+  -- Footer (Boi's Club Games logo + trust warning), measured first so the
+  -- columns know where they must stop.  Drawn near the end.
+  local warningWidth = math.min(width - 32, 620)
+  local _, warningLines = self.warningFont:getWrap(TRUST_WARNING, warningWidth)
+  local warningH = #warningLines * self.warningFont:getHeight()
+  local warningY = height - warningH - 10
+  local bcgW, bcgH = self.bcg:getDimensions()
+  local bcgScale = math.min(math.min(width - 48, 200) / bcgW, height * 0.07 / bcgH)
+  local bcgDW, bcgDH = bcgW * bcgScale, bcgH * bcgScale
+  local bcgX, bcgY = (width - bcgDW) / 2, warningY - bcgDH - 8
+  self.bcgButton = { x = bcgX, y = bcgY, width = bcgDW, height = bcgDH }
+  local footerTop = bcgY - 12
+
+  -- Logo metrics (drawn later with a bob so the cards never shift; layout uses
+  -- the resting position).
+  local logoW, logoH = self.logo:getDimensions()
+  local logoScale = math.min(math.min(width - 40, 440 * s) / logoW, height * 0.20 / logoH)
+  local logoDW, logoDH = logoW * logoScale, logoH * logoScale
+  local logoY = barH + 20 * s
+
+  -- shared card metrics so the three columns line up exactly
+  local padX      = 20 * s
+  local padTop    = 22 * s
+  local padBot    = 24 * s
+  local cardW     = math.min(third - 24 * s, 300 * s)
+  local buttonH   = 50 * s
+  local gapHead   = 8 * s
+  local gapDetail = 18 * s
+  local gapButton = 10 * s
+  local hintH     = self.hintFont:getHeight()
+
+  -- natural height a card needs for its (wrapped) heading + detail
+  local function contentH(spec)
+    local innerW = cardW - 2 * padX
+    local _, hl = self.headFont:getWrap(spec.heading, innerW)
+    local _, dl = self.detailFont:getWrap(spec.detail, innerW)
+    local headH = math.max(1, #hl) * self.headFont:getHeight()
+    local detH  = math.max(1, #dl) * self.detailFont:getHeight()
+    return padTop + headH + gapHead + detH + gapDetail
+      + buttonH + gapButton + hintH + padBot
+  end
+
+  -- Red and Blue are each live: a column shows Play once its ROM is imported,
+  -- Choose ROM / drag-drop before that, and a progress bar while extracting.
+  local dropHint = self.android and "or copy the .gb via USB"
+    or "or drop the .gb file here"
+  local function columnSpec(version, style)
+    local info = GameVersion.info(version)
+    local spec = {
+      version = version,
+      accent = style.accent, interior = style.interior,
+      alpha = 1, glowScale = 1, period = style.period,
+    }
+    local importing = self.importing == version
+    local erroring = self.workState == "error" and self.errorVersion == version
+    local notice = self.notice and self.notice.version == version and self.notice
+    if importing and
+        (self.workState == "working" or self.workState == "complete") then
+      spec.heading  = self.status
+      spec.detail   = self.detail
+      spec.progress = self.progress or 0
+    elseif self.ready[version] then
+      spec.heading = info.label .. " ROM ready"
+      spec.detail  = "Your ROM is verified. Press Play to start."
+      spec.button  = { kind = "play", text = "Play " .. info.label }
+      spec.link    = { name = self.romName[version] }
+    elseif erroring then
+      spec.heading = "That ROM could not be imported"
+      spec.detail  = self.detail
+      spec.button  = { kind = "choose", text = "Choose ROM" }
+      spec.hint    = dropHint
+    elseif notice then
+      spec.heading = notice.status
+      spec.detail  = notice.detail
+      spec.button  = { kind = "choose", text = "Choose ROM" }
+      spec.hint    = dropHint
+    elseif self.returning[version] then
+      spec.heading = "Update required"
+      spec.detail  = "This build needs a few more things from your "
+        .. info.label .. " ROM. Re-import to continue."
+      spec.button  = { kind = "choose", text = "Choose ROM" }
+      spec.hint    = dropHint
+    else
+      spec.heading = "Choose or drop a " .. info.label .. " ROM"
+      spec.detail  = "The ROM is verified before any files are created."
+      spec.button  = { kind = "choose", text = "Choose ROM" }
+      spec.hint    = dropHint
+    end
+    return spec
+  end
+
+  local redSpec = columnSpec("red",
+    { accent = PAL.red, interior = PAL.cardRed, period = 2.6 })
+  local blueSpec = columnSpec("blue",
+    { accent = PAL.blue, interior = PAL.cardBlue, period = 3.4 })
+  -- Yellow stays a lit placeholder until that game is supported.
+  local yellowSpec = {
+    accent = PAL.gold, interior = PAL.cardGold,
+    alpha = 0.92, glowScale = 0.5, period = 3.8,
+    heading = "Choose or drop a Yellow ROM", detail = "Yellow support is on the way.",
+    button = { kind = "disabled", text = "Coming soon" }, hint = "not yet available",
   }
+
+  local cardH = math.max(contentH(redSpec), contentH(blueSpec), contentH(yellowSpec))
+  local regionTop = logoY + logoDH + 14 * s
+  local top = regionTop + math.max(0, (footerTop - regionTop - cardH) / 2)
+
+  -- Draw one neon cartridge card and return its button/link hit rects.
+  local function drawCard(colX, spec, ty)
+    local cx = colX + third / 2
+    local x = cx - cardW / 2
+    local y = ty
+    local a = spec.alpha or 1
+    local r = 16 * s
+
+    -- pulsing neon halo
+    local g = 0.5 + 0.5 * math.sin(pulse * 2 * math.pi / spec.period)
+    neonGlow(x, y, cardW, cardH, r, spec.accent, (0.35 + 0.55 * g) * (spec.glowScale or 1))
+
+    -- card body: accent tint at the top fading into a dark interior, + border
+    fillGradRounded(x, y, cardW, cardH, r, spec.accent, spec.interior, 0.16 * a, 0.55 * a)
+    love.graphics.setLineWidth(math.max(1, 1.5 * s))
+    col(spec.accent, 0.6 * a)
+    love.graphics.rectangle("line", x, y, cardW, cardH, r, r)
+
+    local contentY = y + padTop
+
+    -- heading
+    love.graphics.setFont(self.headFont)
+    col(PAL.heading, a)
+    printfB(spec.heading, x + padX, contentY, cardW - 2 * padX, "center")
+    local _, hl = self.headFont:getWrap(spec.heading, cardW - 2 * padX)
+    contentY = contentY + math.max(1, #hl) * self.headFont:getHeight() + gapHead
+
+    -- detail
+    love.graphics.setFont(self.detailFont)
+    col(PAL.detail, a)
+    love.graphics.printf(spec.detail, x + padX, contentY, cardW - 2 * padX, "center")
+    local _, dl = self.detailFont:getWrap(spec.detail, cardW - 2 * padX)
+    contentY = contentY + math.max(1, #dl) * self.detailFont:getHeight() + gapDetail
+
+    -- button, or a neon progress bar while extracting
+    local bx, bw, by = x + padX, cardW - 2 * padX, contentY
+    local buttonRect
+    if spec.progress ~= nil then
+      local h2 = math.max(8, 10 * s)
+      local track = by + (buttonH - h2) / 2
+      col(PAL.bgBot, 0.85)
+      love.graphics.rectangle("fill", bx, track, bw, h2, h2 / 2, h2 / 2)
+      local pw = bw * clamp(spec.progress, 0, 1)
+      if pw > h2 then
+        neonGlow(bx, track, pw, h2, h2 / 2, spec.accent, 0.6)
+        col(spec.accent, a)
+        love.graphics.rectangle("fill", bx, track, pw, h2, h2 / 2, h2 / 2)
+      end
+    elseif spec.button then
+      local br = 12 * s
+      local kind = spec.button.kind
+      buttonRect = { x = bx, y = by, width = bw, height = buttonH }
+      if kind == "disabled" then
+        col(PAL.disabled, 0.4 * a)
+        love.graphics.rectangle("fill", bx, by, bw, buttonH, br, br)
+        love.graphics.setLineWidth(1)
+        col(spec.accent, 0.3 * a)
+        love.graphics.rectangle("line", bx, by, bw, buttonH, br, br)
+        love.graphics.setFont(self.buttonFont)
+        col(PAL.disabledInk, a)
+        printfB(spec.button.text, bx, by + (buttonH - self.buttonFont:getHeight()) / 2, bw, "center")
+        buttonRect = nil -- placeholder columns are inert
+      else
+        local cTop, cBot, ink
+        if kind == "play" then cTop, cBot, ink = PAL.playTop, PAL.playBot, PAL.playInk
+        else cTop, cBot, ink = PAL.chooseTop, PAL.chooseBot, PAL.white end
+        local hot = hoverEnabled and ptIn(buttonRect)
+        if hot then anyHover = true end
+        neonGlow(bx, by, bw, buttonH, br, cTop, (0.7 + 0.25 * g) * (hot and 1.7 or 1))
+        fillGradRounded(bx, by, bw, buttonH, br, cTop, cBot, 1, 1)
+        if hot then
+          -- brighten the face on hover
+          love.graphics.setBlendMode("add")
+          love.graphics.setColor(1, 1, 1, 0.12)
+          love.graphics.rectangle("fill", bx, by, bw, buttonH, br, br)
+          love.graphics.setBlendMode("alpha")
+        end
+        buttonShine(bx, by, bw, buttonH, br, (pulse % 2.8) / 2.8)
+        love.graphics.setFont(self.buttonFont)
+        if kind == "play" then
+          -- filled play triangle + label, centred as a group
+          local label = spec.button.text
+          local tw = self.buttonFont:getWidth(label)
+          local tri = self.buttonFont:getHeight() * 0.55
+          local groupW = tri + 12 * s + tw
+          local gx = bx + (bw - groupW) / 2
+          local gy = by + buttonH / 2
+          col(ink)
+          love.graphics.polygon("fill", gx, gy - tri / 2, gx, gy + tri / 2, gx + tri * 0.9, gy)
+          printB(label, gx + tri + 12 * s, by + (buttonH - self.buttonFont:getHeight()) / 2)
+        else
+          col(ink)
+          printfB(spec.button.text, bx, by + (buttonH - self.buttonFont:getHeight()) / 2, bw, "center")
+        end
+      end
+    end
+    contentY = by + buttonH + gapButton
+
+    -- subline: a hint, or the "<rom>  ·  re-import" link
+    love.graphics.setFont(self.hintFont)
+    local linkRect
+    if spec.link then
+      local prefix = spec.link.name .. "   ·   "
+      local link = "re-import"
+      local pw = self.hintFont:getWidth(prefix)
+      local lw = self.hintFont:getWidth(link)
+      local startX = cx - (pw + lw) / 2
+      col(PAL.detail, a)
+      love.graphics.print(prefix, startX, contentY)
+      love.graphics.print(link, startX + pw, contentY)
+      love.graphics.setLineWidth(1)
+      love.graphics.line(startX + pw, contentY + hintH, startX + pw + lw, contentY + hintH)
+      linkRect = { x = startX + pw, y = contentY, width = lw, height = hintH + 3 }
+    elseif spec.hint then
+      col(PAL.detail, a)
+      love.graphics.printf(spec.hint, x + padX, contentY, cardW - 2 * padX, "center")
+    end
+
+    return buttonRect, linkRect
+  end
+
+  -- Per-column hit rects, rebuilt each frame and keyed by version so clicks
+  -- route to the right game (Yellow has none -- it is inert).
+  self.buttons = {}
+  self.reimportRects = {}
+  local function place(colX, spec)
+    local b, l = drawCard(colX, spec, top)
+    if spec.version then
+      self.buttons[spec.version] = b
+      self.reimportRects[spec.version] = l
+    end
+  end
+  place(0, redSpec)
+  place(third, blueSpec)
+  place(2 * third, yellowSpec)
+
+  -- logo, centred over the split, with a gentle bob + gold glow
+  local bob = math.sin(pulse * (2 * math.pi / 4)) * 6 * s
+  local lx, ly = (width - logoDW) / 2, logoY + bob
+  love.graphics.setBlendMode("add")
+  love.graphics.setColor(1, 0.85, 0.2, 0.16 + 0.12 * (0.5 + 0.5 * math.sin(pulse * 1.6)))
+  love.graphics.draw(self.logo, (width - logoDW * 1.05) / 2, ly - logoDH * 0.025, 0,
+    logoScale * 1.05, logoScale * 1.05)
+  love.graphics.setBlendMode("alpha")
+  -- main logo, with the same sweeping shine the active buttons get
+  local shineW = 0.16
+  self.shineShader:send("shinePos", -shineW + ((pulse % 2.8) / 2.8) * (1 + 2 * shineW))
+  self.shineShader:send("shineW", shineW)
+  love.graphics.setShader(self.shineShader)
   love.graphics.setColor(1, 1, 1, 1)
-  love.graphics.draw(
-    self.bcg,
-    bcgX, bcgY,
-    0, bcgScale, bcgScale)
-  setColor255(74, 88, 72)
-  love.graphics.printf(
-    TRUST_WARNING,
-    (width - warningWidth) / 2, warningY,
-    warningWidth, "center")
+  love.graphics.draw(self.logo, lx, ly, 0, logoScale, logoScale)
+  love.graphics.setShader()
+
+  -- footer: BCG mark (inverted to white, glowing brighter on hover) + warning
+  local bcgHot = hoverEnabled and ptIn(self.bcgButton)
+  if bcgHot then anyHover = true end
+  love.graphics.setShader(self.invertShader)
+  love.graphics.setBlendMode("add")
+  love.graphics.setColor(1, 1, 1, bcgHot and 0.5 or 0.22)
+  love.graphics.draw(self.bcg, bcgX - bcgDW * 0.02, bcgY - bcgDH * 0.02, 0,
+    bcgScale * 1.04, bcgScale * 1.04)
+  love.graphics.setBlendMode("alpha")
   love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.draw(self.bcg, bcgX, bcgY, 0, bcgScale, bcgScale)
+  love.graphics.setShader()
+
+  -- trust warning; the bois.icu URL inside it is a real hover link
+  love.graphics.setFont(self.warningFont)
+  col(PAL.warning)
+  love.graphics.printf(TRUST_WARNING, (width - warningWidth) / 2, warningY, warningWidth, "center")
+  self.linkUrlRect = nil
+  do
+    local wrapX = (width - warningWidth) / 2
+    local lh = self.warningFont:getHeight()
+    local _, lines = self.warningFont:getWrap(TRUST_WARNING, warningWidth)
+    for i, line in ipairs(lines) do
+      local sidx = line:find(COMMUNITY_URL, 1, true)
+      if sidx then
+        -- the URL sits on a centred wrapped line: find its exact x-offset so the
+        -- coloured link overdraws the plain-warning glyphs already printed there
+        local before = line:sub(1, sidx - 1)
+        local lineW = self.warningFont:getWidth(line)
+        local ux = wrapX + (warningWidth - lineW) / 2 + self.warningFont:getWidth(before)
+        local uy = warningY + (i - 1) * lh
+        local uw = self.warningFont:getWidth(COMMUNITY_URL)
+        self.linkUrlRect = { x = ux, y = uy, width = uw, height = lh }
+        local linkHot = hoverEnabled and ptIn(self.linkUrlRect)
+        if linkHot then anyHover = true end
+        col(linkHot and PAL.linkHover or PAL.link)
+        love.graphics.print(COMMUNITY_URL, ux, uy)
+        love.graphics.setLineWidth(1)
+        love.graphics.line(ux, uy + lh - 1, ux + uw, uy + lh - 1)
+        break
+      end
+    end
+  end
+
+  -- CRT scanlines + vignette, over everything
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.draw(self.scanlineImage, self.scanlineQuad, 0, 0)
+  love.graphics.draw(self.vignetteMesh)
+  love.graphics.setColor(1, 1, 1, 1)
+
+  -- pointer cursor over any interactive element (desktop only)
+  if hoverEnabled and love.mouse.isCursorSupported and love.mouse.isCursorSupported() then
+    if anyHover then
+      self.handCursor = self.handCursor or love.mouse.getSystemCursor("hand")
+      love.mouse.setCursor(self.handCursor)
+    else
+      self.arrowCursor = self.arrowCursor or love.mouse.getSystemCursor("arrow")
+      love.mouse.setCursor(self.arrowCursor)
+    end
+  end
+end
+
+local function inside(r, x, y)
+  return r and x >= r.x and x <= r.x + r.width and y >= r.y and y <= r.y + r.height
 end
 
 function RomImporter:mousepressed(x, y, button)
   if button ~= 1 then return end
-  local logo = self.bcgButton or {}
-  if x >= (logo.x or 0) and x <= (logo.x or 0) + (logo.width or 0)
-      and y >= (logo.y or 0) and y <= (logo.y or 0) + (logo.height or 0) then
+  if inside(self.bcgButton, x, y) or inside(self.linkUrlRect, x, y) then
     love.system.openURL(COMMUNITY_URL)
     return
   end
-  if self.state == "working" then return end
-  local rect = self.button
-  if x >= (rect.x or 0) and x <= (rect.x or 0) + (rect.width or 0)
-      and y >= (rect.y or 0) and y <= (rect.y or 0) + (rect.height or 0) then
-    self:choose()
+  if self.workState == "working" then return end
+  local buttons = self.buttons or {}
+  local reimports = self.reimportRects or {}
+  for _, version in ipairs(GameVersion.ORDER) do
+    if self.ready[version] then
+      if inside(reimports[version], x, y) then self:reimport(version); return
+      elseif inside(buttons[version], x, y) then self:play(version); return end
+    elseif inside(buttons[version], x, y) then
+      self:choose(version); return
+    end
   end
 end
 
 function RomImporter:keypressed(key)
-  if (key == "return" or key == "space") and self.state ~= "working" then
-    self:choose()
+  if self.workState == "working" then return end
+  if key == "return" or key == "space" or key == "kpenter" then
+    -- Keyboard is ambiguous across columns: Play the first imported game,
+    -- otherwise open the Red picker.
+    for _, version in ipairs(GameVersion.ORDER) do
+      if self.ready[version] then self:play(version); return end
+    end
+    self:choose("red")
   end
 end
 

@@ -15,8 +15,8 @@
 #   - mobile/ios/love-src/ (see --fetch / mobile/ios/README.md)
 #   - prebuilt iOS libraries under love-src/platform/xcode/ios/libraries/
 #
-# Output: dist/ios/<Config>-<sdk>/PokemonRed.app (convenience copy)
-#         mobile/ios/build/Build/Products/<Config>-<sdk>/PokemonRed.app
+# Output: dist/ios/<Config>-<sdk>/gen1recomp.app (convenience copy)
+#         mobile/ios/build/Build/Products/<Config>-<sdk>/gen1recomp.app
 
 set -euo pipefail
 
@@ -33,8 +33,8 @@ RESOURCES_DIR="$XCODE_DIR/ios/resources"
 LOVE_FILE="$RESOURCES_DIR/game.love"
 LIBS_DIR="$XCODE_DIR/ios/libraries"
 
-APP_NAME="PokemonRed"
-DISPLAY_NAME="Pokemon Red"
+APP_NAME="gen1recomp"
+DISPLAY_NAME="gen1recomp"
 BUNDLE_ID="com.theboisclub.pokemonred"
 LOVE_VERSION="$(tr -d '[:space:]' < "$IOS_DIR/LOVE_VERSION" 2>/dev/null || echo 11.5)"
 IOS_SOURCE_ZIP="love-${LOVE_VERSION}-ios-source.zip"
@@ -166,7 +166,7 @@ pack_game_love() {
   rm -f "$LOVE_FILE"
   # Same payload as scripts/build.sh / build_android.sh: game sources only.
   (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
-    main.lua conf.lua src data assets tools/rom_manifest.json \
+    main.lua conf.lua src data assets tools/rom_manifest.json tools/rom_manifest_blue.json \
     -x '*.DS_Store' -x '*/.git/*' -x '*/.DS_Store' \
     -x 'data/generated/*' -x 'assets/generated/*')
   if unzip -Z1 "$LOVE_FILE" \

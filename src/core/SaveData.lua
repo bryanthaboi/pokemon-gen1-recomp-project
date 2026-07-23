@@ -18,14 +18,30 @@ local Semver = require("src.mods.Semver")
 local Boxes = require("src.pokemon.Boxes")
 local Bag = require("src.inventory.Bag")
 
+local GameVersion = require("src.core.GameVersion")
+
 local SaveData = {}
 
-local FILENAME = "save.lua"
+-- Progress files carry the game-version suffix so Red and Blue saves coexist:
+-- Red keeps save.lua / .bak / .tmp exactly as before; Blue is save_blue.lua
+-- (+ .bak/.tmp).  options.lua is deliberately shared across versions (it holds
+-- global preferences and the mod enable-state, not per-playthrough data).
 local OPTIONS_FILENAME = "options.lua"
--- one rolling backup plus the staged-write witness; load promotes either
--- when the main file is missing or fails to parse
-local BACKUP_FILENAME = FILENAME .. ".bak"
-local TMP_FILENAME = FILENAME .. ".tmp"
+
+-- Main / backup / staged-witness names for a version (defaults to the active
+-- one).  The backup is a rolling copy and .tmp is the staged-write witness;
+-- load promotes either when the main file is missing or fails to parse.
+local function saveNames(version)
+  local main = "save" .. GameVersion.saveSuffix(version) .. ".lua"
+  return main, main .. ".bak", main .. ".tmp"
+end
+
+-- The main save filename for a version -- used by the title screen's
+-- CONTINUE gate so it looks for the right game's save.
+function SaveData.saveFilename(version)
+  local main = saveNames(version)
+  return main
+end
 
 -- ------- portable mode
 -- LÖVE's save directory is always the OS per-user path derived from the
@@ -96,7 +112,7 @@ local function detectPortable()
   local src = love.filesystem.getSource and love.filesystem.getSource()
   local sbd = love.filesystem.getSourceBaseDirectory
     and love.filesystem.getSourceBaseDirectory()
-  -- A packaged macOS build nests the game inside PokemonRed.app/Contents/
+  -- A packaged macOS build nests the game inside gen1recomp.app/Contents/
   -- Resources, so getSource()/getSourceBaseDirectory() point INSIDE the
   -- bundle -- not where the player drops portable.txt (next to the .app).
   -- Recover the folder containing the .app so a packaged app finds its
@@ -449,6 +465,17 @@ SaveData.addCoreMigration(1, function(save)
   Boxes.ensure(save)
 end)
 
+-- game version (Red vs Blue) prep: saves written before Blue support
+-- existed carry no `version` tag, and Red is the only game that ever
+-- shipped, so default every untagged save to Red.  from=2 so it catches
+-- every pre-bump save (format 1 and 2) and is skipped once re-stamped to
+-- the current format.
+SaveData.addCoreMigration(2, function(save)
+  if not save.version then
+    save.version = "red"
+  end
+end)
+
 -- ------- write
 
 -- Game progress only; options are written separately via saveOptions.
@@ -458,6 +485,9 @@ end)
 -- itself rolls the last good save into .bak and stages the new bytes as
 -- a .tmp witness before the swap, so a crash mid-write is recoverable.
 function SaveData.save(data, mods)
+  -- write to the file matching this save's own version, not just the active
+  -- one, so a Blue playthrough always lands in save_blue.lua
+  local FILENAME, BACKUP_FILENAME, TMP_FILENAME = saveNames(data.version)
   if data.options then
     SaveData.saveOptions(data.options)
   end
@@ -497,7 +527,10 @@ end
 -- returns the parsed save plus "tmp"/"bak" when the main file was gone
 -- or corrupt and a staged/backup copy was promoted; Game surfaces the
 -- recovery on the load report
-function SaveData.load()
+function SaveData.load(version)
+  -- version defaults to the active game (set at boot from the launcher);
+  -- an explicit version lets callers/tests load a specific game's save.
+  local FILENAME, BACKUP_FILENAME, TMP_FILENAME = saveNames(version)
   local fs = persistFs(nil)
   local data, err = readTable(fs, FILENAME)
   local recovered
@@ -785,6 +818,9 @@ function SaveData.newGame(boot)
   local heal = SaveData.defaultHeal(boot)
   local save = {
     meta = { format = Version.saveFormat, mods = {} },
+    -- which game this playthrough is (Red vs Blue).  Only Red ships today;
+    -- boot carries the choice once Blue support lands.
+    version = boot.version or "red",
     player = {
       map = map,
       x = x,

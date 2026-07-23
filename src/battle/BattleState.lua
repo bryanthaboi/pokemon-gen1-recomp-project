@@ -934,6 +934,20 @@ end
 -- (end_of_battle.asm clears wLowHealthAlarm when a battle ends)
 function BattleState:exit()
   require("src.core.Sound").stopLoop("Low_Health_Alarm")
+  -- Free this battle's own GPU objects now rather than waiting on a GC
+  -- finalizer: the two full-screen wavy-effect canvases (colorMode) and
+  -- the AnimPlayer's per-instance tilesheet images/quads.  The shared
+  -- module caches (imageCache/imagePadBottom, keyed by path+palette) are
+  -- reused by the next battle, so they are deliberately left alone -- only
+  -- the per-instance objects, which are dead once this battle is popped,
+  -- are released here.
+  local function rel(o) if o and o.release then pcall(o.release, o) end end
+  rel(self.bgCanvas); self.bgCanvas = nil
+  rel(self.waveCanvas); self.waveCanvas = nil
+  self.colorFxReady = nil
+  if self.animPlayer and self.animPlayer.release then
+    self.animPlayer:release()
+  end
 end
 
 -- An action the battler is locked into (bypasses the menu), or nil.
@@ -3551,12 +3565,28 @@ function BattleState:sgbBattlePals()
     if placeholder or not b then return pals.MEWMON or pals.GREENBAR end
     return PaletteFX.monPal(self.data, b.mon.species) or pals.MEWMON
   end
-  return {
+  local out = {
     [0] = bar(self.player),
     [1] = bar(self.enemy),
     [2] = mon(self.player, self.showPlayerBack or self.safari or self.demo),
     [3] = mon(self.enemy, self.showEnemyTrainer),
   }
+  -- OG RED: the Game Boy Color drew the whole battle from one BG palette --
+  -- white paper, black ink -- so every zone shares the same background and
+  -- outline; only the two mid shades differ per element (green HP bar, red
+  -- mon pic).  The bar/base zones otherwise carry the SGB off-white
+  -- (255,239,255) as color 0 while the mon zones (monPal -> GBC_BG) carry a
+  -- true white, which is what drew a white box around each pic on the pink
+  -- field.  Snap every zone's color 0/3 to the global GBC white/black; the
+  -- mid shades (and the green bar the user prefers) stay untouched.
+  if PaletteFX.mode == "ogred" then
+    local white, black = PaletteFX.GBC_BG[1], PaletteFX.GBC_BG[4]
+    for i = 0, 3 do
+      local c = out[i]
+      out[i] = { white, c[2], c[3], black }
+    end
+  end
+  return out
 end
 
 -- the SGB palette covering a screen pixel (BlkPacket_Battle regions)

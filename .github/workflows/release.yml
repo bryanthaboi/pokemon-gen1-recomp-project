@@ -177,8 +177,8 @@ jobs:
           set -a; . "$ci_dir/notary.env"; set +a
           echo "::add-mask::$APPLE_APP_PASSWORD"
 
-          app=".bazinga/work/PokemonRed.app"
-          zip="dist/mac/PokemonRed-macos.zip"
+          app=".bazinga/work/gen1recomp.app"
+          zip="dist/mac/gen1recomp-macos.zip"
           [ -d "$app" ] || { echo "::error::signed app not found at $app"; exit 1; }
           if [ -z "${APPLE_ID:-}" ] || [ -z "${APPLE_APP_PASSWORD:-}" ] || [ -z "${APPLE_TEAM_ID:-}" ]; then
             echo "::error::notary.env is missing APPLE_ID / APPLE_APP_PASSWORD / APPLE_TEAM_ID."
@@ -208,12 +208,12 @@ jobs:
           outdir="dist/release"
           rm -rf "$outdir"
           mkdir -p "$outdir"
-          cp "dist/mac/PokemonRed-macos.zip" "$outdir/PokemonRed-${v}-macos.zip"
-          cp "dist/win/PokemonRed-win64.zip" "$outdir/PokemonRed-${v}-windows.zip"
-          cp "dist/linux/PokemonRed-linux.zip" "$outdir/PokemonRed-${v}-linux.zip"
+          cp "dist/mac/gen1recomp-macos.zip" "$outdir/gen1recomp-${v}-macos.zip"
+          cp "dist/win/gen1recomp-win64.zip" "$outdir/gen1recomp-${v}-windows.zip"
+          cp "dist/linux/gen1recomp-linux.zip" "$outdir/gen1recomp-${v}-linux.zip"
           apk="$(find dist/android/debug -name '*.apk' | head -1)"
           [ -n "$apk" ] || { echo "::error::no Android APK found under dist/android/debug"; exit 1; }
-          cp "$apk" "$outdir/PokemonRed-${v}-android.apk"
+          cp "$apk" "$outdir/gen1recomp-${v}-android.apk"
           ls -lh "$outdir"
 
       - name: Publish GitHub Release
@@ -263,10 +263,10 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "$v" \
             --notes "$notes" \
-            "dist/release/PokemonRed-${v}-macos.zip" \
-            "dist/release/PokemonRed-${v}-windows.zip" \
-            "dist/release/PokemonRed-${v}-linux.zip" \
-            "dist/release/PokemonRed-${v}-android.apk"
+            "dist/release/gen1recomp-${v}-macos.zip" \
+            "dist/release/gen1recomp-${v}-windows.zip" \
+            "dist/release/gen1recomp-${v}-linux.zip" \
+            "dist/release/gen1recomp-${v}-android.apk"
 
           echo "Published release $tag"
 

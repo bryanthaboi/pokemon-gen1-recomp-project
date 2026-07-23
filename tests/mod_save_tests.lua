@@ -196,6 +196,7 @@ do
   check(#loaded.meta.mods == 0, "old vanilla save records an empty mod set")
   check(loaded.boxes and loaded.boxes[1][1].species == "PIDGEY", "box list folded into boxes[1]")
   check(loaded.box == nil, "legacy box key gone")
+  check(loaded.version == "red", "untagged save defaults to the Red version")
   local opts = SaveSerializer.decode(files["options.lua"])
   check(opts and opts.musicVol == 2, "embedded options split into options.lua")
 
@@ -203,7 +204,16 @@ do
   local current = { meta = { format = Version.saveFormat, mods = {} },
                     player = { map = "PALLET_TOWN", x = 1, y = 1 } }
   SaveData.runMigrations(current)
-  check(current.player.id == nil, "format-2 save skips the id backfill")
+  check(current.player.id == nil, "current-format save skips the id backfill")
+
+  -- a format-2 save (Blue support not yet shipped) gains the Red tag;
+  -- a save that already names a version keeps it
+  local untagged = { meta = { format = 2, mods = {} }, player = {} }
+  SaveData.runMigrations(untagged)
+  check(untagged.version == "red", "pre-version save defaults to Red")
+  local tagged = { meta = { format = 2, mods = {} }, version = "blue", player = {} }
+  SaveData.runMigrations(tagged)
+  check(tagged.version == "blue", "an existing version tag is left untouched")
 
   love.filesystem = realFS
 end

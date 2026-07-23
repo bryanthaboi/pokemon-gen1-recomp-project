@@ -7,13 +7,13 @@ local Version = {
   engine = "1.0.0",       -- game/engine release (semver triple)
   modApi = 2,             -- mod API major (manifest `api`)
   linkProtocol = 2,       -- link handshake wire version (Handshake.PROTOCOL)
-  saveFormat = 2,         -- save.meta.format
+  saveFormat = 3,         -- save.meta.format
   cache = "rom-cache-v5", -- ROM import cache generation (RomImporter marker)
 }
 
--- "Pokemon Red (Gen 1 Recompilation Project) v1.0.0"
+-- "gen1recomp v1.0.0"
 function Version.title(base)
-  return (base or "Pokemon Red (Gen 1 Recompilation Project)")
+  return (base or "gen1recomp")
     .. " v" .. Version.engine
 end
 

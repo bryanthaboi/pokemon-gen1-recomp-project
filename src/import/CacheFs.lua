@@ -31,6 +31,20 @@ local CacheFs = {}
 
 local SEP = package.config:sub(1, 1)
 
+-- Cache-relative paths are prefixed with this before every read/write, so a
+-- Blue import lands in blue/ (see src.core.GameVersion) while a Red import
+-- keeps the historical root.  The launcher sets it per import / per readiness
+-- check; it stays "" for Red.  Runtime *reads* (require / newImage) do NOT go
+-- through here -- CacheFs.mountVersion overlays the active version's subtree
+-- onto the un-prefixed paths instead.
+CacheFs.prefix = ""
+
+local function withPrefix(rel)
+  local p = CacheFs.prefix
+  if p == nil or p == "" then return rel end
+  return p .. rel
+end
+
 -- lazily-resolved windowless mkdir: function(absolutePath) or false when
 -- FFI is unavailable (the cache then stays on the save directory)
 local mkdirFn = nil
@@ -86,8 +100,9 @@ local function resolveMount()
     if okl and lib then
       local oks, fn = pcall(function() return lib.PHYSFS_mount end)
       if oks and fn then
-        physfsMountFn = function(d)
-          local okr, ret = pcall(fn, d, "", 1)
+        physfsMountFn = function(d, append)
+          if append == nil then append = true end
+          local okr, ret = pcall(fn, d, "", append and 1 or 0)
           return okr and ret ~= 0
         end
         break
@@ -97,10 +112,14 @@ local function resolveMount()
   return physfsMountFn
 end
 
-local function mountReadable(dir)
+-- append (default true): the game's own source wins a name clash, matching
+-- how the portable cache root has always been mounted.  Pass false to
+-- prepend, so the mounted tree wins -- used to overlay the active version's
+-- cache on top of the root (Red) copy and the source.
+local function mountReadable(dir, append)
   local fn = resolveMount()
   if not fn then return false end
-  return fn(dir)
+  return fn(dir, append)
 end
 
 -- The portable game folder when the cache should live there, else nil.
@@ -152,6 +171,7 @@ end
 -- write cache-relative `rel` (forward-slash path) with the given bytes;
 -- returns ok, err like love.filesystem.write
 function CacheFs.write(rel, data)
+  rel = withPrefix(rel)
   local root = CacheFs.root()
   if root then
     ensureParents(root, rel)
@@ -173,6 +193,7 @@ end
 
 -- read cache-relative `rel`; returns the bytes or nil
 function CacheFs.read(rel)
+  rel = withPrefix(rel)
   local root = CacheFs.root()
   if root then
     local f = io.open(realPath(root, rel), "rb")
@@ -186,6 +207,7 @@ end
 
 -- does cache-relative `rel` exist as a file?
 function CacheFs.exists(rel)
+  rel = withPrefix(rel)
   local root = CacheFs.root()
   if root then
     local f = io.open(realPath(root, rel), "rb")
@@ -198,6 +220,7 @@ end
 
 -- remove a single cache-relative file
 function CacheFs.remove(rel)
+  rel = withPrefix(rel)
   local root = CacheFs.root()
   if root then
     os.remove(realPath(root, rel))
@@ -213,6 +236,7 @@ end
 -- love.filesystem (the game folder is mounted) and the real files deleted
 -- with os.remove; empty directories are harmless and left in place.
 function CacheFs.removeTree(rel)
+  rel = withPrefix(rel)
   local root = CacheFs.root()
   if not root then return end
   local function walk(r)
@@ -227,6 +251,33 @@ function CacheFs.removeTree(rel)
     end
   end
   walk(rel)
+end
+
+-- Overlay the active version's extracted cache onto the un-prefixed read
+-- paths, so require("data.generated.*") and love.graphics.newImage(
+-- "assets/generated/*") resolve to that version's files.  Red lives at the
+-- cache root and needs nothing; Blue lives under blue/ and is *prepended* so
+-- it wins over any Red copy at the root and over the game source.  Called
+-- once at boot, before Game:load (main.lua).  Returns true when nothing was
+-- needed or the mount succeeded.
+function CacheFs.mountVersion(version)
+  local prefix = require("src.core.GameVersion").cachePrefix(version)
+  if prefix == "" then return true end            -- Red: already at the root
+  local sub = prefix:gsub("/+$", "")              -- "blue/" -> "blue"
+  -- The cache root is the portable game folder when active, else LÖVE's OS
+  -- save directory (where love.filesystem wrote blue/...).
+  local base = CacheFs.root()
+  if not base and love.filesystem.getSaveDirectory then
+    base = love.filesystem.getSaveDirectory()
+  end
+  if not base then return false end
+  if mountReadable(base .. SEP .. sub, false) then return true end
+  -- Fallback when FFI/PHYSFS_mount is unavailable: LÖVE can mount a folder
+  -- that lives in the save directory by name (prepended: appendToPath=false).
+  if love.filesystem.mount then
+    return love.filesystem.mount(sub, "", false)
+  end
+  return false
 end
 
 return CacheFs

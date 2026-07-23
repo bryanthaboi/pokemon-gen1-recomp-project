@@ -8,12 +8,12 @@
 #                          [--notary-profile NAME] [--no-notarize]
 #                          [--release]   # ios only: release config instead of debug
 #
-# Output: dist/mac/PokemonRed-macos.zip
-#         dist/win/PokemonRed-win64.zip
-#         dist/linux/PokemonRed-linux.zip (fused x86_64 AppImage)
+# Output: dist/mac/gen1recomp-macos.zip
+#         dist/win/gen1recomp-win64.zip
+#         dist/linux/gen1recomp-linux.zip (fused x86_64 AppImage)
 #         dist/android/debug/*.apk (full gradle output stays under
 #           mobile/android/app/build/outputs/apk/embedNoRecord/)
-#         dist/ios/<Config>-<sdk>/PokemonRed.app (full xcodebuild output stays
+#         dist/ios/<Config>-<sdk>/gen1recomp.app (full xcodebuild output stays
 #           under mobile/ios/build/Build/Products/)
 
 set -euo pipefail
@@ -25,7 +25,7 @@ WORK="$HERE/work"
 DIST="$ROOT/dist"
 ENTITLEMENTS="$ROOT/scripts/macos-entitlements.plist"
 
-APP_NAME="PokemonRed"
+APP_NAME="gen1recomp"
 BUNDLE_ID="com.theboisclub.pokemonred"
 LOVE_VERSION="11.5"
 VERSION="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
@@ -60,7 +60,7 @@ say "packing game.love"
 LOVE_FILE="$WORK/game.love"
 rm -f "$LOVE_FILE"
 (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
-  main.lua conf.lua src data assets tools/rom_manifest.json \
+  main.lua conf.lua src data assets tools/rom_manifest.json tools/rom_manifest_blue.json \
   -x '*.DS_Store' 'data/generated/*' 'assets/generated/*')
 if unzip -Z1 "$LOVE_FILE" \
     | grep -Eq '^(data|assets)/generated/[^/]+|^(data|assets)/generated/.+/'; then

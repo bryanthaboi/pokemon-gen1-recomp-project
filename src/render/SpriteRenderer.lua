@@ -114,14 +114,12 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip)
       image = getObpImage(self.def.image, colors, group)
     end
   elseif PaletteFX.usesSpriteObp() and PaletteFX.spriteRedrawPassActive() then
-    -- plain GBC: the terrain zone shader still runs over the world canvas,
-    -- so the baked sprite is also queued for a post-zone redraw
-    -- (PaletteFX.markSpriteRedraw) that restores its own OBP colors on top
-    local colors, group = PaletteFX.spriteObp(self.def, self.seed)
-    if colors then
-      image = getObpImage(self.def.image, colors, group)
-      redraw = true
-    end
+    -- OG RED (GBC boot-ROM look): every OBJ wears the one global green
+    -- object palette.  The red BG zone shader still runs over the world
+    -- canvas, so the baked sprite is queued for a post-zone redraw
+    -- (PaletteFX.markSpriteRedraw) that restores its green pixels on top.
+    image = getObpImage(self.def.image, PaletteFX.GBC_OBJ, "gbcobj")
+    redraw = true
   end
   -- single-frame sprites (item balls, fossils...) have one fixed pose;
   -- still 3-frame sprites turn to face (the nurse at her machine,

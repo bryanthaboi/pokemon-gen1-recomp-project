@@ -90,8 +90,8 @@ function TileRenderer.setSpinning(active)
 end
 
 -- true while the spinner arrow tiles should show the 'blur' graphic; false
--- means draw nothing extra (the static mapBatch/ringBatch tile shows
--- through, matching the asm's restore-to-original behavior). The 8-tick
+-- means draw nothing extra (the static window tile shows through,
+-- matching the asm's restore-to-original behavior). The 8-tick
 -- half-period approximates one GB movement step (2px/frame); this is a
 -- deliberate approximation of wSimulatedJoypadStatesIndex bit-0 parity, not
 -- a cycle-accurate replication -- the port's tweened scriptMove has no
@@ -426,22 +426,24 @@ function TileRenderer.new(map, data)
   end
 
   local def = map.def
-  local wB, hB = def.width, def.height
-  -- two batches: the border-block ring around the map, and the map body.
-  -- Connected-map strips draw body-only on top of this map's ring.
-  local total = (wB + 2 * BORDER_BLOCKS) * (hB + 2 * BORDER_BLOCKS) * 16
-  self.ringBatch = love.graphics.newSpriteBatch(self.image, total, "static")
-  self.mapBatch = love.graphics.newSpriteBatch(self.image, wB * hB * 16, "static")
-  -- animated tiles overdraw the static batches each frame.  Entry order
-  -- decides which one claims a tile listed twice, so the vanilla defaults
-  -- keep the old water-then-flower-then-spinner precedence.
+  -- The map body measured in 8px tiles (each block is 4x4 tiles).  The tile
+  -- layer is drawn windowed to the camera (see :ensureWindow) instead of
+  -- baked into a whole-map SpriteBatch, so a map becoming visible -- a warp,
+  -- a connection seam -- costs nothing to "build": there is no per-map batch
+  -- construction that scales with map size, which is what stuttered.
+  self.bodyTilesW = def.width * 4
+  self.bodyTilesH = def.height * 4
+  -- Animated tiles overdraw the static window each frame.  Only the per-entry
+  -- render spec (textures/sequence/gate) is kept here; the animated cells are
+  -- gathered per camera window in :ensureWindow, so nothing here scales with
+  -- map size either.  Entry order decides which entry claims a tile listed
+  -- twice (the vanilla water-then-flower-then-spinner precedence).
   local anims, claimedBy = {}, {}
   local declared = map.tileset.animatedTiles
                    or TileRenderer.defaultAnimatedTiles(map.tileset)
   for _, spec in ipairs(declared) do
     local anim = buildAnim(spec, map.tileset.image, perRow, self.quads, gbcCtx)
     if anim then
-      anim.cells = {}
       anims[#anims + 1] = anim
       for _, tile in ipairs(anim.tiles) do
         if claimedBy[tile] == nil then claimedBy[tile] = anim end
@@ -460,66 +462,9 @@ function TileRenderer.new(map, data)
       aliasMap[al.block] = cells
     end
   end
-
-  for by = -BORDER_BLOCKS, hB + BORDER_BLOCKS - 1 do
-    for bx = -BORDER_BLOCKS, wB + BORDER_BLOCKS - 1 do
-      local inside = bx >= 0 and by >= 0 and bx < wB and by < hB
-      local batch = inside and self.mapBatch or self.ringBatch
-      -- beyond-edge ring cells use the same override drawBorderFill does,
-      -- so the ring and the far background fill agree (OVERWORLD maps
-      -- whose raw border_block is water still ring with the tree wall)
-      local blockId = inside and map:blockAt(bx, by) or borderBlockFor(map)
-      local block = map.tileset.blocks[blockId + 1]
-      if not block then
-        -- a tileset without the tree-wall block keeps its own border
-        blockId = map:blockAt(bx, by)
-        block = map.tileset.blocks[blockId + 1]
-      end
-      local remap = aliasMap and aliasMap[blockId]
-      for ty = 0, 3 do
-        for tx = 0, 3 do
-          local ci = ty * 4 + tx
-          local tile = block[ci + 1]
-          if remap and remap[ci] then tile = remap[ci] end
-          local quad = self.quads[tile]
-          if quad then
-            batch:add(quad, bx * 32 + tx * 8, by * 32 + ty * 8)
-          end
-          local anim = claimedBy[tile]
-          if anim then
-            local cells = anim.cells
-            cells[#cells + 1] = { bx * 32 + tx * 8, by * 32 + ty * 8, inside, tile }
-          end
-        end
-      end
-    end
-  end
-
-  -- animated overdraw batches: the full set (ring + body) for the
-  -- current map, and a body-only set for connected-map drawing --
-  -- a neighbor's water ring must never overdraw this map's tiles.
-  -- `quadFor`, when given, looks up a per-entry quad (used by toggle
-  -- entries, whose texture is a full tileset-atlas clone rather than a
-  -- single-tile image like the hshift/frames variants).
-  local function animBatches(entries, image, quadFor)
-    if #entries == 0 then return nil, nil end
-    local all = love.graphics.newSpriteBatch(image, #entries, "static")
-    local body
-    for _, c in ipairs(entries) do
-      if quadFor then all:add(quadFor(c[4]), c[1], c[2]) else all:add(c[1], c[2]) end
-      if c[3] then
-        body = body or love.graphics.newSpriteBatch(image, #entries, "static")
-        if quadFor then body:add(quadFor(c[4]), c[1], c[2]) else body:add(c[1], c[2]) end
-      end
-    end
-    return all, body
-  end
-  for _, anim in ipairs(anims) do
-    anim.batch, anim.bodyBatch =
-      animBatches(anim.cells, anim.textures[1], anim.quadFor)
-    anim.cells = nil
-  end
+  self.aliasMap = aliasMap
   self.anims = anims
+  self.claimedBy = claimedBy
 
   -- a repeating 32x32 image of the border block, tiled behind
   -- everything the 3-block ring doesn't cover (the survey zoom sees
@@ -554,8 +499,16 @@ function TileRenderer:drawBorderFill(camX, camY, vw, vh)
   if not self.borderFill then return end
   if self.trueColor then PaletteFX.markTrueColor(0, 0, vw, vh) end
   local x, y = math.floor(camX), math.floor(camY)
-  local quad = love.graphics.newQuad(x, y, vw, vh, 32, 32)
-  love.graphics.draw(self.borderFill, quad, 0, 0)
+  -- one reused Quad per renderer, mutated in place: this runs every
+  -- overworld frame, so allocating a fresh Quad here churned the GC
+  local q = self.borderQuad
+  if q then
+    q:setViewport(x, y, vw, vh, 32, 32)
+  else
+    q = love.graphics.newQuad(x, y, vw, vh, 32, 32)
+    self.borderQuad = q
+  end
+  love.graphics.draw(self.borderFill, q, 0, 0)
 end
 
 -- GB OBJ-to-BG priority: sprites show through BG color 0 and hide under
@@ -616,19 +569,98 @@ function TileRenderer:markCellBottomRedraw(cx, cy, camX, camY, colors)
   end
 end
 
--- animated overdraw at the current step; bodyOnly skips the ring
--- positions (connected maps draw body-only)
-function TileRenderer:drawAnimated(camX, camY, bodyOnly)
+-- Window cover for the static tile layer.  Refill the reusable window batch
+-- (and the per-entry animated batches) only when the camera has scrolled past
+-- what they already cover; a small margin keeps small scrolls free.  Cost
+-- scales with the view, never the map -- crossing a seam or warping in builds
+-- nothing.  The beyond-body area (what the old 3-block ring drew) is painted
+-- by :drawBorderFill, whose world-aligned border-block tiling is identical
+-- there, so only body tiles are gathered here.
+local WINDOW_MARGIN = 8 -- tiles of slack kept around the view between refills
+
+function TileRenderer:ensureWindow(camX, camY, vw, vh)
+  local W, H = self.bodyTilesW, self.bodyTilesH
+  vw = vw or W * 8 -- a nil view (headless draw) means the whole body
+  vh = vh or H * 8
+  -- visible body-tile range (8px tiles), clamped to the map body
+  local tx0 = math.min(W, math.max(0, math.floor(camX / 8)))
+  local ty0 = math.min(H, math.max(0, math.floor(camY / 8)))
+  local tx1 = math.max(0, math.min(W, math.floor((camX + vw) / 8) + 1))
+  local ty1 = math.max(0, math.min(H, math.floor((camY + vh) / 8) + 1))
+  local win = self.win
+  if win and tx0 >= win.tx0 and ty0 >= win.ty0
+     and tx1 <= win.tx1 and ty1 <= win.ty1 then
+    return -- still inside the last fill
+  end
+  -- refill with margin so the next few scrolled pixels stay covered
+  tx0 = math.max(0, tx0 - WINDOW_MARGIN)
+  ty0 = math.max(0, ty0 - WINDOW_MARGIN)
+  tx1 = math.min(W, tx1 + WINDOW_MARGIN)
+  ty1 = math.min(H, ty1 + WINDOW_MARGIN)
+  if not self.winBatch then
+    self.winBatch = love.graphics.newSpriteBatch(self.image, 1024, "dynamic")
+  end
+  self.winBatch:clear()
+  local anims = self.anims
+  for _, anim in ipairs(anims) do
+    if not anim.batch then
+      anim.batch = love.graphics.newSpriteBatch(anim.textures[1], 256, "dynamic")
+    end
+    anim.batch:clear()
+  end
+  local map, quads = self.map, self.quads
+  local claimedBy, aliasMap = self.claimedBy, self.aliasMap
+  for ty = ty0, ty1 - 1 do
+    local by = math.floor(ty / 4)
+    local ty4 = ty % 4
+    for tx = tx0, tx1 - 1 do
+      local blockId = map:blockAt(math.floor(tx / 4), by)
+      local block = map.tileset.blocks[blockId + 1]
+      if block then
+        local ci = ty4 * 4 + (tx % 4)
+        local tile = block[ci + 1]
+        local remap = aliasMap and aliasMap[blockId]
+        if remap and remap[ci] then tile = remap[ci] end
+        local wx, wy = tx * 8, ty * 8
+        local quad = quads[tile]
+        if quad then self.winBatch:add(quad, wx, wy) end
+        local anim = claimedBy[tile]
+        if anim then
+          if anim.quadFor then
+            anim.batch:add(anim.quadFor(tile), wx, wy)
+          else
+            anim.batch:add(wx, wy)
+          end
+        end
+      end
+    end
+  end
+  self.win = { tx0 = tx0, ty0 = ty0, tx1 = tx1, ty1 = ty1 }
+end
+
+-- draw the static tile window, then its animated overdraw, at the camera offset
+function TileRenderer:drawWindow(camX, camY, vw, vh)
+  self:ensureWindow(camX, camY, vw, vh)
+  if self.winBatch then
+    love.graphics.draw(self.winBatch, -math.floor(camX), -math.floor(camY))
+  end
+  self:drawAnimated(camX, camY)
+end
+
+-- animated overdraw at the current step, over the static window batch.  The
+-- cells were gathered for the current camera window by :ensureWindow, so this
+-- only ever touches on-screen animated tiles.
+function TileRenderer:drawAnimated(camX, camY)
   local anims = self.anims
   if not anims then return end
   local x, y = -math.floor(camX), -math.floor(camY)
   for _, anim in ipairs(anims) do
-    local batch = bodyOnly and anim.bodyBatch or anim.batch
+    local batch = anim.batch
     if batch then
       if anim.gate then
         -- a gated entry has only the two frames the asm has (patch /
         -- restore-to-static); when the gate is shut draw nothing so the
-        -- already-static mapBatch/ringBatch tile shows through unchanged
+        -- already-static window tile shows through unchanged
         if gateOpen(anim.gate) then love.graphics.draw(batch, x, y) end
       else
         local step = math.floor(animFrame / anim.period) % #anim.sequence + 1
@@ -649,30 +681,68 @@ function TileRenderer:markTrueColor(camX, camY, blocks)
                           (def.height + 2 * blocks) * 32)
 end
 
-function TileRenderer:draw(camX, camY)
+function TileRenderer:draw(camX, camY, vw, vh)
   if self.trueColor then self:markTrueColor(camX, camY, BORDER_BLOCKS) end
-  love.graphics.draw(self.ringBatch, -math.floor(camX), -math.floor(camY))
-  love.graphics.draw(self.mapBatch, -math.floor(camX), -math.floor(camY))
-  self:drawAnimated(camX, camY)
+  self:drawWindow(camX, camY, vw, vh)
 end
 
--- body only, for connected-map strips
-function TileRenderer:drawMapOnly(camX, camY)
+-- body only, for connected-map strips.  Identical to :draw now that the
+-- border ring is served by :drawBorderFill for the current map too -- the
+-- only remaining difference is the trueColor mark extent.
+function TileRenderer:drawMapOnly(camX, camY, vw, vh)
   if self.trueColor then self:markTrueColor(camX, camY, 0) end
-  love.graphics.draw(self.mapBatch, -math.floor(camX), -math.floor(camY))
-  self:drawAnimated(camX, camY, true)
+  self:drawWindow(camX, camY, vw, vh)
 end
 
--- rebuild after a block change (Cut trees)
+local function safeRelease(o)
+  if o and o.release then pcall(o.release, o) end
+end
+
+-- Release only the GPU objects this instance built and uniquely owns: the
+-- two SpriteBatches, the border-fill image and its quad, the per-tile
+-- quads, and the animated-overdraw batches.  Deliberately leaves the
+-- tileset atlas (self.image, shared through Assets/imageCache) and the
+-- animation textures (shared module caches) alone -- other maps still use
+-- them.  Used by :rebuild before it swaps in fresh batches, and by
+-- :release on eviction.
+function TileRenderer:releaseBatches()
+  safeRelease(self.winBatch); self.winBatch = nil
+  safeRelease(self.borderFill); self.borderFill = nil
+  safeRelease(self.borderQuad); self.borderQuad = nil
+  self.win = nil
+  if self.quads then
+    for _, q in pairs(self.quads) do safeRelease(q) end
+    self.quads = nil
+  end
+  if self.anims then
+    for _, a in ipairs(self.anims) do
+      safeRelease(a.batch); a.batch = nil
+      -- a.textures are shared, module-cached: never released here
+    end
+  end
+end
+
+-- Full teardown for eviction (MapLoader.evict): the owned batches, plus
+-- the RED++ per-map recolored atlas, which -- unlike the plain tileset
+-- atlas -- is unique to this map (gbcAtlasCache is keyed by map id).
+function TileRenderer:release()
+  self:releaseBatches()
+  if self.gbcAtlas and self.image then
+    local key = self.map.tileset.image .. "#gbc:" .. self.map.id
+    if gbcAtlasCache[key] == self.image then gbcAtlasCache[key] = nil end
+    safeRelease(self.image)
+    self.image = nil
+    self.gbcAtlas = nil
+  end
+  self.anims = nil
+end
+
+-- rebuild after a block change (Cut trees, card-key doors).  The tile layer
+-- is read live from the map on every window fill, so a block swap only needs
+-- the cached window dropped -- the next draw re-reads the changed blocks.  No
+-- SpriteBatch is reconstructed; that is the whole point of the windowed draw.
 function TileRenderer:rebuild()
-  local fresh = TileRenderer.new(self.map, self.data)
-  self.image = fresh.image
-  self.gbcAtlas = fresh.gbcAtlas
-  self.quads = fresh.quads
-  self.ringBatch = fresh.ringBatch
-  self.mapBatch = fresh.mapBatch
-  self.anims = fresh.anims
-  self.borderFill = fresh.borderFill
+  self.win = nil
 end
 
 -- drop every atlas and every derived animation texture so the next
