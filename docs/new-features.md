@@ -42,8 +42,10 @@ Game Boy equivalent:
   rows above the player recede and rows below come toward the viewer. Only
   things that actually *stand* on the ground draw as upright billboards,
   unscaled and pixel-identical to flat mode: the player, NPCs, item balls,
-  and the screen-anchored FX attached to them (heal machine glow, emote
-  bubbles, the fishing rod, the FLY bird). An earlier revision tried
+  and the standing FX attached to them (emote bubbles, the fishing rod,
+  the FLY bird). The Poké Center heal-machine overlay stays on the ground
+  plane with the machine tiles (it is OAM glued to a BG graphic, not a
+  standing sprite). An earlier revision tried
   billboarding buildings/trees/signs too (cutting them out of the ground
   per hand-curated per-tileset tables); that chased an endless tail of
   special cases,  dense tree canopy, fences fused into grass, building

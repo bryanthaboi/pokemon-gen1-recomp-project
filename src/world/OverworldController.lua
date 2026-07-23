@@ -3415,8 +3415,11 @@ function OverworldState:drawWorld()
           love.graphics.setShader(shader)
         end
       end
-      local ox = ha.px - 64 - cam.x
-      local oy = ha.py - 64 - cam.y
+      -- TileRenderer windows with -floor(cam), so the overlay must use the
+      -- same snap or a fractional camera (odd fill/tilt view sizes) parks
+      -- the balls a pixel off the machine tiles
+      local ox = ha.px - 64 - math.floor(cam.x)
+      local oy = ha.py - 64 - math.floor(cam.y)
       love.graphics.setColor(1, 1, 1, 1)
       love.graphics.draw(img, self.healMachineQuads[1], ox + 44, oy + 20)
       for i = 1, math.min(ha.lit, #HEAL_BALL_XY) do
@@ -3632,11 +3635,13 @@ function OverworldState:drawWorld()
   else
     -- === TILT PATH: ground-hugging FX stay on the projected ground, all
     -- standing things billboard upright over it in a separate pass. ======
-    -- Dust is ground-hugging smoke -> ground canvas (puts it
-    -- with the flat layer, so it projects with the ground).  Flat mode
-    -- draws it last, over the sprites, in the same canvas; here the two
+    -- Dust / cut / the Poké Center heal overlay hug the BG (the heal
+    -- machine is a tileset graphic; its OAM balls must ride that plane or
+    -- they float off the machine once the ground foreshortens).  Flat mode
+    -- draws them last, over the sprites, in the same canvas; here the two
     -- layers are separate and composited ground-under-upright, so drawing
-    -- it now into the still-active ground canvas is order-equivalent.
+    -- them now into the still-active ground canvas is order-equivalent.
+    fxHeal()
     fxDust()
     fxCutTree()
 
@@ -3692,18 +3697,11 @@ function OverworldState:drawWorld()
       end
     end
 
-    -- Screen-anchored world FX : each billboards at the
-    -- ground foot of the character it belongs to, so it stands upright and
-    -- scales with that character's depth.
-    --   heal machine  -> the healed player's foot (the machine stands on
-    --                    the ground in front of where the player was)
+    -- Standing world FX: each billboards at the ground foot of the
+    -- character it belongs to, so it stays upright over the tilted ground.
     --   emote bubble  -> the spotting NPC's foot (rides above its head)
     --   fly bird, rod -> the player's foot
-    if self.healAnim then
-      local fx = self.healAnim.px - cam.x + 8
-      local fy = self.healAnim.py - cam.y + 16
-      self:billboard(fx, fy, vw, vh, zoneColorsAt(zones, fx, fy), false, fxHeal)
-    end
+    -- (heal machine is ground-hugging -- drawn above with dust/cut)
     if self.emote and self.emote.npc then
       local fx = self.emote.npc.px - cam.x + 8
       local fy = self.emote.npc.py - cam.y + 16

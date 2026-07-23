@@ -230,6 +230,25 @@ function ChipAudio.ensureMusicPlaying()
   end
 end
 
+-- Threaded playMusic returns an empty QueueableSource and only calls
+-- Source:play once the first worker buffer lands (~1 frame later).  Until
+-- then Source:isPlaying is false -- callers that treat that as "song over"
+-- (Music.oneShotPlaying / pendingRestore) must wait here instead, or a
+-- playOnce jingle like Music_PkmnHealed is cut off before it starts.
+local forceAwaitingFirstBuffer -- test-only override (see _simulate*)
+
+function ChipAudio.awaitingFirstBuffer()
+  if forceAwaitingFirstBuffer then return true end
+  local m = currentMusic
+  if not (m and m.threaded and not m.started and not m.finished) then
+    return false
+  end
+  -- a dead worker will never deliver the first buffer
+  if workerReady == false then return false end
+  if worker and worker.getError and worker:getError() then return false end
+  return true
+end
+
 function ChipAudio.stopMusic()
   if currentMusic and currentMusic.source then
     pcall(currentMusic.source.stop, currentMusic.source)
@@ -240,6 +259,7 @@ function ChipAudio.stopMusic()
   end
   pendingBuf = nil
   currentMusic = nil
+  forceAwaitingFirstBuffer = nil
 end
 
 -- hot reload: the next play re-reads programs.bin (a mod may have swapped the
@@ -301,6 +321,20 @@ end
 -- ---------------------------------------------------------------------------
 -- test hooks (headless): synchronous synthesis straight through ChipSynth
 -- ---------------------------------------------------------------------------
+
+-- Force the "threaded, first buffer not yet queued" window so Music's
+-- playOnce / pendingRestore race can be asserted without love.thread.
+-- Returns a clear() that drops the override (call after the assertion).
+function ChipAudio._simulateAwaitingFirstBufferForTest()
+  local m = currentMusic
+  if not m or not m.source then return nil end
+  m.threaded = true
+  m.started = false
+  m.finished = false
+  pcall(function() m.source.playing = false end)
+  forceAwaitingFirstBuffer = true
+  return function() forceAwaitingFirstBuffer = nil end
+end
 
 function ChipAudio._renderMusicForTest(data, header, seconds)
   local engine = ChipSynth.newEngine(data, header, { allowLoops = true })

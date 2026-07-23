@@ -254,6 +254,7 @@ function Music.stop()
   require("src.core.ChipAudio").stopMusic()
   state.current, state.source, state.loopSource, state.fade = nil, nil, nil, nil
   state.chip = false
+  state.pendingRestore = nil
   if previous and Runtime.wants("music.stopped") then
     Runtime.emit("music.stopped", { song = previous })
   end
@@ -347,14 +348,24 @@ end
 function Music.playOnce(data, song)
   if not songDef(data, song) then return false end
   Music.play(data, song, false, { reason = "once" })
+  -- play() can no-op (hook silence, failed def); only arm restore when
+  -- the jingle actually became current
+  if state.current ~= song then return false end
   state.pendingRestore = true
   return true
+end
+
+local function chipAwaitingFirstBuffer()
+  return state.chip
+     and require("src.core.ChipAudio").awaitingFirstBuffer()
 end
 
 -- is a playOnce jingle still sounding?  (AnimateHealingMachine's
 -- .waitLoop2 holds the healing machine until MUSIC_PKMN_HEALED ends)
 function Music.oneShotPlaying()
   if not state.pendingRestore then return false end
+  -- threaded chip songs start silent for ~1 frame; that gap is not "over"
+  if chipAwaitingFirstBuffer() then return true end
   local src = state.source
   if not src then return false end
   local ok, playing = pcall(src.isPlaying, src)
@@ -441,8 +452,10 @@ function Music.update(data)
     state.source = loopSrc
     pcall(loopSrc.play, loopSrc)
   end
+  -- do not treat "threaded source still waiting on its first buffer" as
+  -- ended, or playOnce jingles get restored over before they can sound
   if state.pendingRestore and sourceStopped(state.source)
-     and not state.loopSource then
+     and not state.loopSource and not chipAwaitingFirstBuffer() then
     Music.restoreMap(data)
   end
 end
