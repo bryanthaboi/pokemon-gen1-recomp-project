@@ -347,9 +347,10 @@ local function getGbcAtlas(imagePath, tilesetId, mapId, perRow, data)
     if groupColors then
       local src = Assets.imageData(imagePath)
       local iw, ih = src:getDimensions()
+      local total = (iw / 8) * (ih / 8)
       local out = love.image.newImageData(iw, ih)
       local tileColors = {}
-      for t = 0, (iw / 8) * (ih / 8) - 1 do
+      for t = 0, total - 1 do
         local colors = tileColors[t]
         if colors == nil then
           local group = PaletteFX.worldGroupAt(tilesetId, mapId, t)
@@ -363,6 +364,25 @@ local function getGbcAtlas(imagePath, tilesetId, mapId, perRow, data)
             local r, g, b, a = src:getPixel(sx, sy)
             r, g, b, a = recolorSample(r, g, b, a, colors)
             out:setPixel(sx, sy, r, g, b, a)
+          end
+        end
+      end
+      -- duplicate-tile aliases: bake a copy of a shared tile graphic into
+      -- a spare slot under a different palette group, so block cells that
+      -- draw the alias can color apart from cells sharing the raw tile
+      for _, al in ipairs(PaletteFX.TILE_ALIASES and PaletteFX.TILE_ALIASES[mapId] or {}) do
+        if al.alias < total then
+          local colors = groupColors[al.group + 1]
+          local sxo = (al.tile % perRow) * 8
+          local syo = math.floor(al.tile / perRow) * 8
+          local dxo = (al.alias % perRow) * 8
+          local dyo = math.floor(al.alias / perRow) * 8
+          for py = 0, 7 do
+            for px = 0, 7 do
+              local r, g, b, a = src:getPixel(sxo + px, syo + py)
+              r, g, b, a = recolorSample(r, g, b, a, colors)
+              out:setPixel(dxo + px, dyo + py, r, g, b, a)
+            end
           end
         end
       end
@@ -429,14 +449,38 @@ function TileRenderer.new(map, data)
     end
   end
 
+  -- duplicate-tile alias remap (RED++ atlas only): [blockId][0-based cell]
+  -- -> alias tile id (see PaletteFX.TILE_ALIASES / getGbcAtlas's bake)
+  local aliasMap
+  if gbcCtx then
+    for _, al in ipairs(PaletteFX.TILE_ALIASES and PaletteFX.TILE_ALIASES[map.id] or {}) do
+      aliasMap = aliasMap or {}
+      local cells = aliasMap[al.block] or {}
+      for ci in pairs(al.cells) do cells[ci] = al.alias end
+      aliasMap[al.block] = cells
+    end
+  end
+
   for by = -BORDER_BLOCKS, hB + BORDER_BLOCKS - 1 do
     for bx = -BORDER_BLOCKS, wB + BORDER_BLOCKS - 1 do
       local inside = bx >= 0 and by >= 0 and bx < wB and by < hB
       local batch = inside and self.mapBatch or self.ringBatch
-      local block = map.tileset.blocks[map:blockAt(bx, by) + 1]
+      -- beyond-edge ring cells use the same override drawBorderFill does,
+      -- so the ring and the far background fill agree (OVERWORLD maps
+      -- whose raw border_block is water still ring with the tree wall)
+      local blockId = inside and map:blockAt(bx, by) or borderBlockFor(map)
+      local block = map.tileset.blocks[blockId + 1]
+      if not block then
+        -- a tileset without the tree-wall block keeps its own border
+        blockId = map:blockAt(bx, by)
+        block = map.tileset.blocks[blockId + 1]
+      end
+      local remap = aliasMap and aliasMap[blockId]
       for ty = 0, 3 do
         for tx = 0, 3 do
-          local tile = block[ty * 4 + tx + 1]
+          local ci = ty * 4 + tx
+          local tile = block[ci + 1]
+          if remap and remap[ci] then tile = remap[ci] end
           local quad = self.quads[tile]
           if quad then
             batch:add(quad, bx * 32 + tx * 8, by * 32 + ty * 8)
@@ -554,6 +598,22 @@ function TileRenderer:drawCellBottom(cx, cy, camX, camY)
   if shader then love.graphics.setShader(shader) end
   self:drawCellBottomRaw(cx, cy, camX, camY)
   if shader then love.graphics.setShader() end
+end
+
+-- queue the same bottom tile row for the post-zone sprite-redraw pass
+-- (GBC mode: OBP-baked sprites replay after the zone shader, so the
+-- grass patch that hides their feet must replay over them, colorized
+-- with the map's palette and color-0 keyed)
+function TileRenderer:markCellBottomRedraw(cx, cy, camX, camY, colors)
+  local ty = cy * 2 + 1
+  for i = 0, 1 do
+    local tx = cx * 2 + i
+    local quad = self.quads[self.map:tileAt(tx, ty)]
+    if quad then
+      PaletteFX.markSpriteRedraw(self.image, quad, tx * 8 - math.floor(camX),
+                                 ty * 8 - math.floor(camY), 1, colors, true)
+    end
+  end
 end
 
 -- animated overdraw at the current step; bodyOnly skips the ring

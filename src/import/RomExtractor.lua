@@ -1253,14 +1253,24 @@ function RomExtractor:extractTrainers()
         "battle/trainers/" .. picture.imageBase .. ".png")
       written[picture.imageBase] = true
     end
+    local parties = self:trainerParties(
+      pointers.bank, partyStarts[index], partyEnds[index])
+    -- ChiefData is empty in the ROM (the Celadon Chief battle is unused/
+    -- cut content); tools/rom_manifest.json carries a hand-authored party
+    -- for the trainers this project reimplements, since no ROM data exists
+    -- to extract for them.
+    if #parties == 0 then
+      local override = self.manifest.trainerPartyOverrides
+        and self.manifest.trainerPartyOverrides[trainerId]
+      if override then parties = { copy(override) } end
+    end
     out[trainerId] = {
       id = trainerId, index = index, name = decodedNames[index],
       source = "ROM:TrainerDataPointers",
       pic = picture and picture.path or nil,
       baseMoney = math.floor(Rom.bcd(rawMoney) / 100),
       aiMods = aiMods[index],
-      parties = self:trainerParties(
-        pointers.bank, partyStarts[index], partyEnds[index]),
+      parties = parties,
     }
     self:tick("Trainers", index, #order)
   end
@@ -1426,7 +1436,7 @@ end
 
 function RomExtractor:extractField()
   self:beginStage("Interface artwork")
-  local done, total = 0, 48
+  local done, total = 0, 49
   local function tick()
     done = done + 1
     self:tick("Interface artwork", math.min(done, total), total)
@@ -1576,6 +1586,34 @@ function RomExtractor:extractField()
       "fx/" .. spec[4], { transparent = true })
     tick()
   end
+
+  -- The cuttable tree's own sprite: InitCutAnimOAM (engine/overworld/cut.asm)
+  -- copies Overworld_GFX tiles $2d-$2e (top half) and $3d-$3e (bottom half)
+  -- into the OAM tiles the Cut animation slides apart, so this comes out of
+  -- the OVERWORLD tileset's own graphics blob rather than a named symbol.
+  do
+    local overworldIndex
+    for i, name in ipairs(self.manifest.constants.tilesetOrder) do
+      if name == "OVERWORLD" then overworldIndex = i break end
+    end
+    assert(overworldIndex, "OVERWORLD tileset not found in tilesetOrder")
+    local tilesetHeaders = self:symbol("Tilesets")
+    local rowAddress = tilesetHeaders.address + (overworldIndex - 1) * 12
+    local gfxBank = self.rom:byte(tilesetHeaders.bank, rowAddress)
+    local gfxPointer = self.rom:word(tilesetHeaders.bank, rowAddress + 3)
+    local cutTree = ImageWriter.blank(16, 16, 1, 1, 1, 0)
+    for _, spec in ipairs({
+      { 0x2d, 0, 0 }, { 0x2e, 8, 0 }, { 0x3d, 0, 8 }, { 0x3e, 8, 8 },
+    }) do
+      local tileIndex, dx, dy = spec[1], spec[2], spec[3]
+      local tile = ImageWriter.decode2bpp(
+        self.rom:bytes(gfxBank, gfxPointer + tileIndex * 16, 16),
+        8, 8, true)
+      ImageWriter.blit(cutTree, tile, dx, dy)
+    end
+    self:save(cutTree, "fx/cut_tree.png"); tick()
+  end
+
   self:raw2bpp("BattleTransitionTile", 8, 8,
     "fx/battle_transition.png"); tick()
   self:raw2bpp("PokedexTileGraphics", 24, 48,
@@ -1631,10 +1669,11 @@ function RomExtractor:extractAudio()
     chunks[index] = self.rom.data:sub(first, first + 0x3FFF)
     self:tick("Sound programs", index, #bankOrder + 2)
   end
-  local ok, writeError = love.filesystem.createDirectory(
-    "assets/generated/audio")
-  if ok == false then error("could not create audio cache: " .. tostring(writeError)) end
-  ok, writeError = love.filesystem.write(
+  -- CacheFs (not love.filesystem directly) so a portable install lands this
+  -- in the game folder with the rest of the cache; it creates the parent
+  -- directory too.
+  local CacheFs = require("src.import.CacheFs")
+  local ok, writeError = CacheFs.write(
     "assets/generated/audio/programs.bin", table.concat(chunks))
   if not ok then error("could not write audio programs: " .. tostring(writeError)) end
 

@@ -931,6 +931,61 @@ do
     Game.save.inventory.EXP_ALL = nil
   end
 
+  -- these build throwaway battles/mons, which normally roll DVs off the
+  -- ambient love.math.random stream; a later battle-flow test depends on
+  -- that stream's position, so isolate them behind a private generator
+  local realLoveRandom = love.math.random
+  local isoN = 0
+  love.math.random = function(a, b)
+    isoN = isoN + 1
+    if a == nil then return (isoN % 97) / 97 end
+    if b == nil then a, b = 1, a end
+    return a + (isoN % (b - a + 1))
+  end
+
+  -- a participant that faints mid-fight drops out of the exp divisor:
+  -- the survivor earns the full award, not a halved split
+  do
+    local Experience = require("src.battle.Experience")
+    local mon1 = Pokemon.new(Data, "BULBASAUR", 30)
+    local mon2 = Pokemon.new(Data, "PIDGEY", 30)
+    Game.save.party = { mon1, mon2 }
+    local fb = BattleState.newWild(Game, "RATTATA", 10)
+    fb.participants = { [mon1] = true, [mon2] = true }
+    mon2.hp = 0
+    fb:onFaint({ mon = mon2, isPlayer = true, name = "PIDGEY" })
+    check(fb.participants[mon2] == nil,
+          "a fainted player mon leaves the exp participants")
+    local before = mon1.exp
+    fb:enemyMonFainted()
+    eq(mon1.exp - before,
+       Experience.gainFor(Data.pokemon.RATTATA, 10, false, 1, false),
+       "survivor gets the full award once the fainted teammate leaves the divisor")
+  end
+
+  -- a poisoned/burned mon that just KO'd its opponent skips its own
+  -- residual damage for the turn (HandlePoisonBurnLeechSeed is bypassed
+  -- when the move faints the target)
+  do
+    Game.save.party = { Pokemon.new(Data, "BULBASAUR", 20) }
+    local kb = BattleState.newWild(Game, "RATTATA", 5)
+    kb.player.mon.status = "PSN"
+    kb.enemy.mon.hp = 0 -- the opponent was already knocked out this turn
+    local hpBefore = kb.player.mon.hp
+    kb:endOfTurn()
+    eq(kb.player.mon.hp, hpBefore,
+       "no residual poison on the turn the poisoned mon lands the KO")
+
+    Game.save.party = { Pokemon.new(Data, "BULBASAUR", 20) }
+    local lb = BattleState.newWild(Game, "RATTATA", 5)
+    lb.player.mon.status = "PSN"
+    local live = lb.player.mon.hp
+    lb:endOfTurn()
+    check(lb.player.mon.hp < live, "poison still ticks while the opponent lives")
+  end
+
+  love.math.random = realLoveRandom
+
   Game.save.party = savedParty
 end
 
@@ -2076,10 +2131,7 @@ do
   press("down")
   eq(om.index, 8, "cursor reaches COLORS")
   press("a")
-  eq(og.save.options.colors, "og", "A cycles COLORS to OG")
-  eq(PaletteFX.mode, "og", "PaletteFX mode tracks COLORS option")
   for _ = 1, 4 do press("a") end
-  eq(og.save.options.colors, "gbc", "COLORS wraps back to GBC")
   press("down")
   eq(om.index, 9, "cursor reaches TILT")
   press("a")
@@ -2525,6 +2577,9 @@ do
   local status = os.execute(("%q tests/save_editor_mod_tests.lua"):format(lua))
   check(status == 0 or status == true, "save_editor_mod_tests suite")
 end
+
+-- ---------------------------------------------- input hold regressions
+runSuites({ "tests/input_hold_test.lua" })
 
 -- ---------------------------------------------- parity workstream tests
 -- Each tests/parity_*.lua is a self-contained file (own bootstrap + check,

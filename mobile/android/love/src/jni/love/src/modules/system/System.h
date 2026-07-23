@@ -107,6 +107,15 @@ public:
 	virtual void vibrate(double seconds) const;
 
 	/**
+	 * Shows the platform's native "pick a file" UI, if one is available.
+	 * Android only for now; the result (if any) is not returned here -- see
+	 * love::android::showFilePicker and src/import/RomImporter.lua.
+	 *
+	 * @return Whether the picker was shown.
+	 **/
+	virtual bool pickFile() const;
+
+	/**
 	 * Gets if the user is playing music on background.
 	 * Throws an exception on unsupported platforms.
 	 *

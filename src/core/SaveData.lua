@@ -27,6 +27,133 @@ local OPTIONS_FILENAME = "options.lua"
 local BACKUP_FILENAME = FILENAME .. ".bak"
 local TMP_FILENAME = FILENAME .. ".tmp"
 
+-- ------- portable mode
+-- LÖVE's save directory is always the OS per-user path derived from the
+-- identity (conf.lua), so it can't be relocated at runtime. Portable mode
+-- instead drops a plain-Lua io.* filesystem next to the game whenever a
+-- `portable.txt` marker sits beside the executable/source, letting a USB
+-- copy carry its own save.lua/options.lua (and, through options.lua, the
+-- mod enable-state) rather than leaving them on the host machine.
+local PORTABLE_MARKER = "portable.txt"
+local SEP = package.config:sub(1, 1)
+
+local portableChecked = false
+local portableBase = false      -- resolved base dir when active, else false
+local portableFsCache = nil
+
+local function pathExists(path)
+  local f = io.open(path, "rb")
+  if not f then return false end
+  f:close()
+  return true
+end
+
+-- an io.* filesystem exposing the love.filesystem subset the save/options
+-- round-trip needs (getInfo/read/write/remove), rooted at `dir`
+local function makePortableFs(dir)
+  local function full(name) return dir .. SEP .. name end
+  return {
+    getInfo = function(name)
+      if not pathExists(full(name)) then return nil end
+      return { type = "file" }
+    end,
+    read = function(name)
+      local f = io.open(full(name), "rb")
+      if not f then return nil, "no file: " .. name end
+      local data = f:read("*a")
+      f:close()
+      return data
+    end,
+    write = function(name, data)
+      local f, err = io.open(full(name), "wb")
+      if not f then return false, err end
+      f:write(data)
+      f:close()
+      return true
+    end,
+    remove = function(name)
+      os.remove(full(name))
+      return true
+    end,
+  }
+end
+
+local function detectPortable()
+  if portableChecked then return portableBase end
+  portableChecked = true
+  portableBase = false
+  if not (love and love.filesystem) then return false end
+  -- Desktop only: portable mode carries the save (and, since issue #74, the
+  -- ROM cache) in the game folder next to the executable/source.  On
+  -- Android/iOS the source is a read-only package with no such folder, so
+  -- portable mode never applies there.
+  if love.system and love.system.getOS then
+    local osName = love.system.getOS()
+    if osName ~= "Windows" and osName ~= "Linux" and osName ~= "OS X" then
+      return false
+    end
+  end
+  local src = love.filesystem.getSource and love.filesystem.getSource()
+  local sbd = love.filesystem.getSourceBaseDirectory
+    and love.filesystem.getSourceBaseDirectory()
+  -- A packaged macOS build nests the game inside PokemonRed.app/Contents/
+  -- Resources, so getSource()/getSourceBaseDirectory() point INSIDE the
+  -- bundle -- not where the player drops portable.txt (next to the .app).
+  -- Recover the folder containing the .app so a packaged app finds its
+  -- marker.  On Windows/Linux the executable is not a bundle, so this is nil
+  -- and the plain source-base directory (next to the .exe/AppImage) is used.
+  local function appContainer(path)
+    local appPath = path and path:match("^(.*%.app)/Contents/")
+    return appPath and appPath:match("^(.*)/[^/]+$") or nil
+  end
+  -- Order: the .app's containing folder (packaged macOS), then the
+  -- source-base directory (next to a packaged .exe/AppImage), then the
+  -- source itself (a `love <gamedir>` run drops portable.txt in the game
+  -- folder).  First one holding the marker wins.  Built by appending so a
+  -- nil (e.g. no .app in the path) never truncates the ipairs scan.
+  local candidates = {}
+  local appDir = appContainer(src) or appContainer(sbd)
+  if appDir then candidates[#candidates + 1] = appDir end
+  if sbd then candidates[#candidates + 1] = sbd end
+  if src then candidates[#candidates + 1] = src end
+  for _, base in ipairs(candidates) do
+    if base ~= "" and pathExists(base .. SEP .. PORTABLE_MARKER) then
+      portableBase = base
+      break
+    end
+  end
+  return portableBase
+end
+
+function SaveData.isPortable()
+  return detectPortable() ~= false
+end
+
+-- the raw portable-folder path (for callers building their own nested
+-- paths, e.g. the ROM-derived asset cache), or nil when portable mode
+-- is off
+function SaveData.portableBaseDir()
+  return detectPortable() or nil
+end
+
+-- the io.* filesystem for the active portable folder, or nil when off
+function SaveData.portableFs()
+  local base = detectPortable()
+  if not base then return nil end
+  if not portableFsCache then portableFsCache = makePortableFs(base) end
+  return portableFsCache
+end
+
+-- Resolve the filesystem a persistent read/write should land on: an
+-- explicitly injected non-love fs (headless tests, the mod loader's stub)
+-- always wins; otherwise portable mode reroutes off the OS save directory.
+local function persistFs(fs)
+  if fs and love and love.filesystem and fs ~= love.filesystem then
+    return fs
+  end
+  return SaveData.portableFs() or fs or (love and love.filesystem)
+end
+
 -- Port + original Options menu defaults.  Missing keys on load are filled
 -- from this table so old options.lua files stay compatible.
 function SaveData.defaultOptions()
@@ -94,7 +221,7 @@ end
 -- love.filesystem, so the mod loader's injected filesystem can carry the
 -- options round-trip headless (no love global).
 function SaveData.saveOptions(opts, fs)
-  fs = fs or love.filesystem
+  fs = persistFs(fs)
   opts = SaveData.mergeOptions(opts)
   -- modOptions is per-mod nested state: fold the on-disk sub-tree
   -- underneath (newest value winning per key) so one caller's partial
@@ -123,7 +250,7 @@ function SaveData.saveOptions(opts, fs)
 end
 
 function SaveData.loadOptions(fs)
-  fs = fs or love.filesystem
+  fs = persistFs(fs)
   local data, err = readTable(fs, OPTIONS_FILENAME)
   if not data then
     if fs.getInfo(OPTIONS_FILENAME) then
@@ -311,7 +438,7 @@ end)
 -- afterwards either way
 SaveData.addCoreMigration(1, function(save)
   if type(save.options) == "table"
-      and not love.filesystem.getInfo(OPTIONS_FILENAME) then
+      and not persistFs(nil).getInfo(OPTIONS_FILENAME) then
     SaveData.saveOptions(save.options)
   end
 end)
@@ -342,7 +469,7 @@ function SaveData.save(data, mods)
     if k ~= "options" then gameOnly[k] = v end
   end
   local encoded = SaveSerializer.encode(gameOnly)
-  local fs = love.filesystem
+  local fs = persistFs(nil)
   if fs.getInfo(FILENAME) then
     local prev = fs.read(FILENAME)
     if prev then fs.write(BACKUP_FILENAME, prev) end
@@ -371,7 +498,7 @@ end
 -- or corrupt and a staged/backup copy was promoted; Game surfaces the
 -- recovery on the load report
 function SaveData.load()
-  local fs = love.filesystem
+  local fs = persistFs(nil)
   local data, err = readTable(fs, FILENAME)
   local recovered
   if not data then

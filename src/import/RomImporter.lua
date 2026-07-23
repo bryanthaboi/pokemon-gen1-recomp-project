@@ -2,7 +2,7 @@ local RomImporter = {}
 RomImporter.__index = RomImporter
 
 local ROM_SHA1 = "ea9bcae617fdf159b045185467ae58b2e4a48b9a"
-local CACHE_MARKER = "rom-cache-v5:" .. ROM_SHA1
+local CACHE_MARKER = "rom-cache-v7:" .. ROM_SHA1
 local MARKER_PATH = "rom-cache.complete"
 local COMMUNITY_URL = "https://bois.icu"
 local TRUST_WARNING = "if you did not get this from bryanthaboi's github " ..
@@ -24,8 +24,11 @@ local REQUIRED_FILES = {
 }
 
 local function allRequiredFilesExist()
+  -- CacheFs.exists checks the game folder directly for a portable install,
+  -- otherwise the save directory through love.filesystem.
+  local CacheFs = require("src.import.CacheFs")
   for _, path in ipairs(REQUIRED_FILES) do
-    if not love.filesystem.getInfo(path, "file") then return false end
+    if not CacheFs.exists(path) then return false end
   end
   return true
 end
@@ -38,12 +41,21 @@ local function sourceTreeHasData()
   return real == love.filesystem.getSource()
 end
 
-function RomImporter.isReady()
-  if sourceTreeHasData() then return true end
-  return love.filesystem.read(MARKER_PATH) == CACHE_MARKER
-    and allRequiredFilesExist()
-end
+-- ------- ROM cache location
+--
+-- The extracted cache (data/generated, assets/generated) plus the
+-- rom-cache.complete marker normally live in LÖVE's per-user OS save
+-- directory.  A portable install instead keeps them in the game folder next
+-- to the executable (the folder holding portable.txt), so nothing is left on
+-- the host machine.  Every cache write/read/remove goes through CacheFs,
+-- which writes that folder with io.* and makes it readable (mounting it via
+-- PhysFS for a fused build) -- there is no mirror step and no per-file
+-- os.execute (issue #74: that flashed a console window per file on Windows
+-- and froze the app).
 
+-- Remove a cache subtree from the OS save directory.  The realDirectory
+-- guard keeps this from ever deleting the game folder (portable installs
+-- read the cache from there) or a developer's checked-out source tree.
 local function removeTree(path)
   local info = love.filesystem.getInfo(path)
   if not info then return end
@@ -61,6 +73,48 @@ local function removeTree(path)
   if ok == false then
     error("could not remove stale cache: " .. tostring(err))
   end
+end
+
+-- Portable installs read the cache from the game folder.  Any copy an
+-- earlier non-portable run -- or the pre-#74 build, which always wrote the
+-- cache to the save directory and only mirrored it out -- left behind would
+-- shadow it, because physfs searches the save directory before the source.
+-- Clear it out once, and only when a remnant is actually present so a clean
+-- install pays nothing.
+local saveDirPurged = false
+local function purgeSaveDirCache()
+  if saveDirPurged then return end
+  saveDirPurged = true
+  local saveDir = love.filesystem.getSaveDirectory()
+  local function saveDirHas(rel)
+    local f = io.open(saveDir .. "/" .. rel, "rb")
+    if not f then return false end
+    f:close()
+    return true
+  end
+  if not (saveDirHas(MARKER_PATH) or saveDirHas(REQUIRED_FILES[1])) then
+    return
+  end
+  removeTree("data/generated")
+  removeTree("assets/generated")
+  love.filesystem.remove(MARKER_PATH)
+end
+
+function RomImporter.isReady()
+  local CacheFs = require("src.import.CacheFs")
+  if CacheFs.root() then
+    -- Portable: the cache lives in the game folder next to the executable
+    -- (mounted onto the read path for a fused build).  Drop any stale
+    -- save-directory copy that would otherwise shadow it at runtime -- and,
+    -- for a source run, hide the game folder from sourceTreeHasData below.
+    purgeSaveDirCache()
+  end
+  -- Generated data sitting in the physfs source -- a developer checkout, a
+  -- Python/bootstrap build, or a source-run portable import -- is always
+  -- current (as it has always been).  A fused portable install is not the
+  -- source, so it falls through to the version-marker gate.
+  if sourceTreeHasData() then return true end
+  return CacheFs.read(MARKER_PATH) == CACHE_MARKER and allRequiredFilesExist()
 end
 
 local function decodeManifest()
@@ -110,6 +164,22 @@ local function commandOutput(command)
   return result ~= "" and result or nil
 end
 
+-- LOVE 11.5 on Android has no native file picker (love.window.showFileDialog
+-- is a LOVE 12 nightly-only addition) and never fires love.filedropped, so
+-- neither desktop path below works there. conf.lua points the Android save
+-- directory at the app's external-files folder instead (readable/writable
+-- via USB or a file manager, no runtime permission needed), and this scans
+-- it directly through love.filesystem -- already mounted at the physfs
+-- root, so no io.* absolute-path handling is needed.
+local function scanForRom()
+  for _, name in ipairs(love.filesystem.getDirectoryItems("")) do
+    if name:lower():match("%.gb$") and love.filesystem.getInfo(name, "file") then
+      return name
+    end
+  end
+  return nil
+end
+
 local function chooseRom()
   local platform = love.system.getOS()
   if platform == "OS X" then
@@ -136,19 +206,52 @@ local function chooseRom()
 end
 
 function RomImporter.new(onComplete)
-  return setmetatable({
+  local previousMarker = require("src.import.CacheFs").read(MARKER_PATH)
+  local returning = previousMarker ~= nil and previousMarker ~= CACHE_MARKER
+  local android = love.system.getOS() == "Android"
+  local self = setmetatable({
     onComplete = onComplete,
     logo = love.graphics.newImage("assets/logo/logo.png"),
     bcg = love.graphics.newImage("assets/logo/bcg.png"),
     state = "waiting",
-    status = "Choose or drop a Pokemon Red ROM",
-    detail = "The ROM is verified before any files are created.",
+    returning = returning,
+    android = android,
+    status = returning and "More assets are needed from your ROM"
+      or "Choose or drop a Pokemon Red ROM",
+    detail = returning
+      and "This update pulls a few more things from your ROM. "
+        .. "Please re-import it to continue (it's quick)."
+      or "The ROM is verified before any files are created.",
     progress = 0,
     stageCurrent = 0,
     stageTotal = 1,
     pulse = 0,
     button = {},
   }, RomImporter)
+
+  if android then
+    self.status = returning and "More ROM assets needed" or "Get your Pokemon Red ROM (.gb) in"
+    self.detail = "Tap Choose ROM to pick your file"
+    local name = scanForRom()
+    if name then
+      self:startData(love.filesystem.read(name), name)
+    end
+  end
+
+  return self
+end
+
+-- The system picker runs as a separate top activity, so LOVE's own
+-- love.focus/love.visible pause while it's up (see main.lua) -- once the
+-- player returns here with a file picked, GameActivity has already copied
+-- it into the folder scanForRom checks, so a rescan on refocus picks it up
+-- without the player needing to tap the button again.
+function RomImporter:focus(f)
+  if not (f and self.android and self.state ~= "working") then return end
+  local name = scanForRom()
+  if name then
+    self:startData(love.filesystem.read(name), name)
+  end
 end
 
 function RomImporter:setError(message)
@@ -185,9 +288,15 @@ function RomImporter:startData(data, displayName)
     end
     self.status = "Preparing private game data"
     coroutine.yield()
+    -- Clear any previous cache from both possible homes: the save directory
+    -- (removeTree) and, for a portable install, the game folder (CacheFs).
+    local CacheFs = require("src.import.CacheFs")
     removeTree("data/generated")
     removeTree("assets/generated")
     love.filesystem.remove(MARKER_PATH)
+    CacheFs.removeTree("data/generated")
+    CacheFs.removeTree("assets/generated")
+    CacheFs.remove(MARKER_PATH)
 
     local manifest = decodeManifest()
     local RomExtractor = require("src.import.RomExtractor")
@@ -202,7 +311,11 @@ function RomImporter:startData(data, displayName)
     extractor:run()
     self.romData = nil
     collectgarbage("collect")
-    local ok, writeError = love.filesystem.write(MARKER_PATH, CACHE_MARKER)
+    -- Written last: the marker is what isReady() checks, so it must only
+    -- appear once every required file is in place.  CacheFs puts it beside
+    -- the cache -- the game folder for a portable install, else the save
+    -- directory.
+    local ok, writeError = CacheFs.write(MARKER_PATH, CACHE_MARKER)
     if not ok then error("could not finish the private cache: " .. tostring(writeError)) end
     self.state = "complete"
     self.status = "Ready"
@@ -234,6 +347,22 @@ end
 
 function RomImporter:choose()
   if self.state == "working" then return end
+  if self.android then
+    local name = scanForRom()
+    if name then
+      self:startData(love.filesystem.read(name), name)
+    elseif not love.system.pickFile() then
+      -- Picker unavailable (API < 19, or no document-picker app installed):
+      -- fall back to the USB folder-drop path. Not setError(): that status
+      -- text ("could not be imported") reads as a rejected file, not "none
+      -- found yet" -- and detail only renders 3 wrapped lines, so the path
+      -- again gets the line to itself.
+      self.state = "waiting"
+      self.status = "No picker available, copy your ROM into:"
+      self.detail = love.filesystem.getSaveDirectory()
+    end
+    return
+  end
   local path = chooseRom()
   if path then
     self:startPath(path)
@@ -304,7 +433,8 @@ function RomImporter:draw()
     height * 0.075,
     0, logoScale, logoScale)
   setColor255(74, 88, 72)
-  printCentered("FIRST RUN", height * 0.205, smallFont, width)
+  printCentered(self.returning and "UPDATE REQUIRED" or "FIRST RUN",
+    height * 0.205, smallFont, width)
 
   local zoneY, zoneH = height * 0.29, math.min(180, height * 0.31)
   setColor255(215, 220, 202)
@@ -347,7 +477,8 @@ function RomImporter:draw()
       buttonWidth, "center")
     setColor255(74, 88, 72)
     love.graphics.setFont(smallFont)
-    love.graphics.printf("or drop the .gb file here",
+    love.graphics.printf(
+      self.android and "or copy the .gb via USB" or "or drop the .gb file here",
       0, buttonY + buttonHeight + 12, width, "center")
   end
 

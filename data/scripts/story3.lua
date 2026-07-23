@@ -317,6 +317,33 @@ M.GAME_CORNER = {
         done()
       end))
     end,
+    -- the grunt guarding the poster (GameCornerRocketText /
+    -- GameCornerRocketBattleScript / GameCornerRocketExitScript): after
+    -- losing he warns the BOSS and leaves the floor for good, freeing
+    -- the tile in front of the hideout switch
+    TEXT_GAMECORNER_ROCKET = function(game, ow, npc, done)
+      if ow:trainerDefeated(npc) then
+        done()
+        return
+      end
+      ow:engageTrainer(npc, function()
+        if not ow:trainerDefeated(npc) then
+          done()
+          return
+        end
+        local TextBox = require("src.render.TextBox")
+        game.stack:push(TextBox.new(game,
+          game.data.text._GameCornerRocketAfterBattleText
+          or "Our hideout might\nbe discovered! I\nbetter tell BOSS!",
+          function()
+            local Commands = require("src.script.Commands")
+            Commands.hide_object({ game = game, save = game.save,
+                                   overworld = ow },
+                                 "GAME_CORNER", "GAMECORNER_ROCKET")
+            done()
+          end))
+      end)
+    end,
     TEXT_GAMECORNER_CLERK1 = function(game, ow, npc, done)
       local TextBox = require("src.render.TextBox")
       local ChoiceBox = require("src.ui.ChoiceBox")
@@ -425,18 +452,56 @@ M.GAME_CORNER_PRIZE_ROOM = {
 -- and the player steps off the dock, the ship sets sail.
 -- -------------------------------------------------------------------
 
+-- the ship's hull/deck blocks (block cols 5-8, rows 1-2) and the water
+-- that replaces them once she sails (the surrounding blocks of each row)
+local DOCK_SHIP_BLOCKS = {
+  { bx = 5, by = 1, water = 1 }, { bx = 6, by = 1, water = 1 },
+  { bx = 7, by = 1, water = 1 }, { bx = 8, by = 1, water = 1 },
+  { bx = 5, by = 2, water = 13 }, { bx = 6, by = 2, water = 13 },
+  { bx = 7, by = 2, water = 13 }, { bx = 8, by = 2, water = 13 },
+}
+
 M.VERMILION_DOCK = {
   onEnter = function(game, ow)
-    if game.save.flags.EVENT_SS_ANNE_LEFT then
+    local f = game.save.flags
+    if f.EVENT_SS_ANNE_LEFT then
+      -- the ship is long gone: erase her right away, and anyone who
+      -- still lands here is sent back out past the guard
+      for _, b in ipairs(DOCK_SHIP_BLOCKS) do
+        ow.map:setBlock(b.bx, b.by, b.water)
+      end
+      ow.map.renderer:rebuild()
       local TextBox = require("src.render.TextBox")
       game.stack:push(TextBox.new(game,
         game.data.text._VermilionCitySailor1ShipSetSailText
         or "The ship set sail.", function()
-        ow:startWarpTo("VERMILION_CITY", 19, 30, "up")
+        ow:startWarpTo("VERMILION_CITY", 18, 29, "up")
       end))
-    elseif game.save.flags.EVENT_GOT_HM01 then
-      game.save.flags.EVENT_SS_ANNE_LEFT = true
+    elseif f.EVENT_GOT_HM01 and ow.player.cellY == 2 then
+      -- VermilionDockSSAnneLeavesScript: only stepping OFF the ship
+      -- triggers the departure (wDestinationWarpID == 1 in pokered) --
+      -- the horn blows, smoke puffs drift off the funnel, the ship is
+      -- erased to open water, and the player is walked off the dock
+      -- into the city past the guard (VermilionCity's
+      -- SCRIPT_VERMILIONCITY_PLAYER_EXIT_SHIP walk)
+      f.EVENT_SS_ANNE_LEFT = true
+      require("src.core.Music").stop()
       require("src.core.Sound").play(game.data, "SS_Anne_Horn")
+      local function puff(n, cx)
+        if n <= 0 then return end
+        ow:startDustAnim(cx, 1, function() puff(n - 1, cx + 2) end)
+      end
+      puff(3, 15)
+      local rows = {}
+      rows[#rows + 1] = { "wait", 100 }
+      for _, b in ipairs(DOCK_SHIP_BLOCKS) do
+        rows[#rows + 1] = { "replace_block", b.bx, b.by, b.water }
+      end
+      rows[#rows + 1] = { "wait", 30 }
+      rows[#rows + 1] = { "move_player", "up", 2 }
+      rows[#rows + 1] = { "warp", "VERMILION_CITY", 18, 31, "up" }
+      rows[#rows + 1] = { "move_player", "up", 2 }
+      ow:queueScript(rows)
     end
   end,
 }

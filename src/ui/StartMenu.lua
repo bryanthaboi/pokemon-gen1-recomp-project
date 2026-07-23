@@ -4,6 +4,7 @@
 -- item list runs through the ui.start_menu.items hook before the menu
 -- opens, so mods insert or remove rows without patching this file.
 
+local Font = require("src.render.Font")
 local Logger = require("src.core.Logger")
 local Menu = require("src.ui.Menu")
 local Runtime = require("src.mods.Runtime")
@@ -125,6 +126,24 @@ function StartMenu.new(game)
   menu.update = function(self, dt)
     baseUpdate(self, dt)
     game.save.startMenuIndex = self.index
+  end
+
+  -- inside the Safari Zone the start menu also shows remaining steps and
+  -- SAFARI BALLs (PrintSafariZoneSteps): a 9x5 border at the top-left with
+  -- "steps/500" and "BALL xx"
+  if game.save.safari then
+    local baseDraw = menu.draw
+    menu.draw = function(self)
+      baseDraw(self)
+      local safari = game.save.safari
+      Font.drawBox(0, 0, 9, 5)
+      love.graphics.setColor(0, 0, 0, 1)
+      Font.draw(("%3d"):format(math.floor(safari.steps or 0)), 8, 8)
+      Font.draw("/500", 32, 8)
+      Font.draw("BALL", 8, 24)
+      Font.draw(("%2d"):format(math.floor(safari.balls or 0)), 48, 24)
+      love.graphics.setColor(1, 1, 1, 1)
+    end
   end
   return menu
 end

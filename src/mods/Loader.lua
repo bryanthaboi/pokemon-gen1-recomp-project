@@ -129,7 +129,9 @@ end
 -- tripwire on for tests that cannot set the environment.
 function Loader.new(opts)
   local dev = opts and opts.dev
-  if dev == nil then dev = os.getenv("POKEPORT_DEV") == "1" end
+  if dev == nil then
+    dev = os.getenv("POKEPORT_DEV") == "1" or _G.POKEPORT_DEV_MODE == true
+  end
   local self = setmetatable({
     mods = {}, loaded = {}, errors = {}, initialized = false,
     events = Events.new(), hooks = Hooks.new(), content = {}, assets = {},

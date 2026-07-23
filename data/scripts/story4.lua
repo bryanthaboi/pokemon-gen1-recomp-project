@@ -457,6 +457,25 @@ M.ROUTE_24 = {
       battleOrDone()
     end,
   },
+  -- Route24DefaultScript forces TEXT_ROUTE24_COOLTRAINER_M1 whenever the
+  -- player stands on (10,15) in front of the recruiter while
+  -- EVENT_GOT_NUGGET is unset (dbmapcoord 10,15), independent of facing
+  -- or input -- he has no trainer header, so sight never engages him.
+  onStep = function(game, ow, x, y)
+    if game.save.flags.EVENT_GOT_NUGGET then return false end
+    if not (x == 10 and y == 15) then return false end
+    if ow.runner:isRunning() or ow.engaging then return false end
+    local recruiter
+    for _, npc in ipairs(ow.npcs) do
+      if npc.def and npc.def.name == "ROUTE24_COOLTRAINER_M1" then
+        recruiter = npc
+        break
+      end
+    end
+    if not recruiter then return false end
+    ow:showMapText("TEXT_ROUTE24_COOLTRAINER_M1", recruiter)
+    return true
+  end,
 }
 
 -- -------------------------------------------------------------------
@@ -722,5 +741,7 @@ M.LANCES_ROOM = {
     return false
   end,
 }
+
+M.CELADON_CHIEF_HOUSE = require("data.scripts.celadon_chief_house")
 
 return M

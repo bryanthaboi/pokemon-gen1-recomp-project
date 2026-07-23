@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Packages the LÖVE2D Pokémon Red port into an Android APK via love-android 11.5a.
 #
-# Usage: scripts/build_android.sh [--release] [--package-only]
+# Usage: scripts/build_android.sh [--version X.Y.Z] [--package-only]
 #
-#   (default)       assembleEmbedNoRecordDebug  (debug keystore)
-#   --release       assembleEmbedNoRecordRelease (requires out-of-band signing)
-#   --package-only  zip game.love + apply branding; skip gradle
+#   --version X.Y.Z  set app.version_name / app.version_code (else left as-is)
+#   --package-only   zip game.love + apply branding; skip gradle
 #
 # Prerequisites:
 #   - mobile/android vendored love-android tree at tag 11.5a (in-repo; see mobile/ANDROID.md)
@@ -13,9 +12,8 @@
 #   - JDK 17
 #
 # Output (after gradle):
-#   dist/android/{debug,release}/*.apk (convenience copy)
+#   dist/android/debug/*.apk (convenience copy)
 #   mobile/android/app/build/outputs/apk/embedNoRecord/debug/*.apk
-#   mobile/android/app/build/outputs/apk/embedNoRecord/release/*.apk
 
 set -euo pipefail
 
@@ -29,7 +27,7 @@ APPLICATION_ID="com.theboisclub.pokemonred"
 LOVE_ANDROID_VERSION="11.5a"
 NDK_VERSION="25.2.9519653"
 
-RELEASE=false
+VERSION=""
 PACKAGE_ONLY=false
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
@@ -38,16 +36,28 @@ fail() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --release) RELEASE=true ;;
+    --version) VERSION="$2"; shift ;;
     --package-only) PACKAGE_ONLY=true ;;
     -h|--help)
       sed -n '2,20p' "$0"
       exit 0
       ;;
-    *) fail "unknown argument: $1 (try --release or --package-only)" ;;
+    *) fail "unknown argument: $1 (try --version X.Y.Z or --package-only)" ;;
   esac
   shift
 done
+
+VERSION_CODE=""
+if [ -n "$VERSION" ]; then
+  if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    fail "invalid --version '$VERSION' (expected X.Y.Z)"
+  fi
+  major="${VERSION%%.*}"
+  rest="${VERSION#*.}"
+  minor="${rest%%.*}"
+  patch="${rest##*.}"
+  VERSION_CODE=$((major * 10000 + minor * 100 + patch))
+fi
 
 # --------------------------------------------------------------- preconditions
 if [ ! -f "$ANDROID_DIR/settings.gradle" ] || [ ! -f "$ANDROID_DIR/gradlew" ]; then
@@ -74,10 +84,10 @@ apply_android_branding() {
 
   say "applying Android branding (gradle.properties + permission trim)"
 
-  python3 - "$props" "$APPLICATION_ID" "$APP_NAME" <<'PY'
+  python3 - "$props" "$APPLICATION_ID" "$APP_NAME" "$VERSION" "$VERSION_CODE" <<'PY'
 import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
-app_id, name = sys.argv[2], sys.argv[3]
+app_id, name, version, version_code = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 text = path.read_text()
 
 def set_prop(text, key, value):
@@ -91,7 +101,10 @@ def set_prop(text, key, value):
 text = re.sub(r"(?m)^app\.name_byte_array=.*\n?", "", text)
 text = set_prop(text, "app.name", name)
 text = set_prop(text, "app.application_id", app_id)
-text = set_prop(text, "app.orientation", "portrait")
+text = set_prop(text, "app.orientation", "fullUser")
+if version:
+    text = set_prop(text, "app.version_name", version)
+    text = set_prop(text, "app.version_code", version_code)
 path.write_text(text)
 PY
 
@@ -178,16 +191,8 @@ require_android_sdk() {
 
 # --------------------------------------------------------------- gradle
 run_gradle() {
-  local task
-  if $RELEASE; then
-    task="assembleEmbedNoRecordRelease"
-    say "building release APK ($task)"
-    warn "release signing is out-of-band,  see mobile/ANDROID.md (Signing)."
-    warn "without a signingConfig, assembleRelease may produce an unsigned APK or fail."
-  else
-    task="assembleEmbedNoRecordDebug"
-    say "building debug APK ($task),  uses the default Android debug keystore"
-  fi
+  local task="assembleEmbedNoRecordDebug"
+  say "building APK ($task)"
 
   if ! (
     cd "$ANDROID_DIR"
@@ -199,19 +204,12 @@ run_gradle() {
   You can still iterate on the .love payload with: scripts/build_android.sh --package-only"
   fi
 
-  local out_dir
-  if $RELEASE; then
-    out_dir="$ANDROID_DIR/app/build/outputs/apk/embedNoRecord/release"
-  else
-    out_dir="$ANDROID_DIR/app/build/outputs/apk/embedNoRecord/debug"
-  fi
+  local out_dir="$ANDROID_DIR/app/build/outputs/apk/embedNoRecord/debug"
   if [ -d "$out_dir" ]; then
     say "APK output:"
     find "$out_dir" -name '*.apk' -exec ls -lh {} \;
 
-    local flavor="debug"
-    $RELEASE && flavor="release"
-    local dist_dir="$DIST/$flavor"
+    local dist_dir="$DIST/debug"
     rm -rf "$dist_dir"
     mkdir -p "$dist_dir"
     find "$out_dir" -name '*.apk' -exec cp {} "$dist_dir/" \;

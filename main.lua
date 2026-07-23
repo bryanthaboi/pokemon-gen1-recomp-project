@@ -48,6 +48,8 @@ function love.load(args)
   for i, a in ipairs(args or {}) do
     if a == "--editor" then
       editorMode = true
+    elseif a == "--developer" then
+      _G.POKEPORT_DEV_MODE = true
     elseif a == "--save" and args[i + 1] and args[i + 1] ~= "" then
       savePath = args[i + 1]
     elseif a == "--speed" and tonumber(args[i + 1]) then
@@ -169,6 +171,31 @@ function love.gamepadaxis(joystick, axis, value)
   if editorMode then return end
   if Importer then return end
   Game:gamepadaxis(joystick, axis, value)
+end
+
+function love.joystickremoved(joystick)
+  if editorMode then return end
+  if Importer then return end
+  Game:joystickremoved(joystick)
+end
+
+-- f is true on focus gained, false on focus lost (e.g. alt-tab). A held
+-- direction's key-up can be delivered to the OS instead of the game while
+-- unfocused, so reset input on either transition rather than trust it.
+function love.focus(f)
+  if editorMode then return end
+  if Importer then
+    if Importer.focus then Importer:focus(f) end
+    return
+  end
+  Game:focus(f)
+end
+
+-- v is true when the window becomes visible again, false on minimize.
+function love.visible(v)
+  if editorMode then return end
+  if Importer then return end
+  Game:visible(v)
 end
 
 function love.touchpressed(id, x, y, dx, dy, pressure)

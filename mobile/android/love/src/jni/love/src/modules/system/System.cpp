@@ -180,6 +180,15 @@ void System::vibrate(double seconds) const
 #endif
 }
 
+bool System::pickFile() const
+{
+#ifdef LOVE_ANDROID
+	return love::android::showFilePicker();
+#else
+	return false;
+#endif
+}
+
 bool System::hasBackgroundMusic() const
 {
 #if defined(LOVE_ANDROID)

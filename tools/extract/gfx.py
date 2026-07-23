@@ -642,6 +642,22 @@ def extract_overworld_fx(pokered, assets_dir):
             "path": f"assets/generated/fx/{base}.png",
             "width": size[0], "height": size[1], "source": rel,
         }
+
+    # The cuttable tree's own OAM sprite: InitCutAnimOAM copies
+    # Overworld_GFX tiles $2d-$2e (top half) and $3d-$3e (bottom half)
+    # into the sprite tiles the Cut animation slides apart, so the crop
+    # comes straight out of the overworld tileset sheet (16 tiles/row:
+    # $2d sits at column 13, row 2).
+    tree_src = Image.open(os.path.join(pokered, "gfx/tilesets/overworld.png"))
+    tree = _convert_image(tree_src.crop((104, 16, 120, 32)),
+                          transparent_color0=True)
+    _save_png(tree, os.path.join(assets_dir, "fx", "cut_tree.png"))
+    out["cutTree"] = {
+        "path": "assets/generated/fx/cut_tree.png",
+        "width": 16, "height": 16,
+        "source": "gfx/tilesets/overworld.png tiles $2d-$2e/$3d-$3e "
+                  "(engine/overworld/cut.asm InitCutAnimOAM)",
+    }
     return out
 
 

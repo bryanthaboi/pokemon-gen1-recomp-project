@@ -183,6 +183,18 @@ void vibrate(double seconds)
 	env->DeleteLocalRef(activity);
 }
 
+bool showFilePicker()
+{
+	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	jclass activity = env->FindClass("org/love2d/android/GameActivity");
+
+	jmethodID method = env->GetStaticMethodID(activity, "showRomFilePicker", "()Z");
+	jboolean result = env->CallStaticBooleanMethod(activity, method);
+
+	env->DeleteLocalRef(activity);
+	return result;
+}
+
 /*
  * Helper functions for the filesystem module
  */

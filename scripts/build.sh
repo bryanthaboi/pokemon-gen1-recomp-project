@@ -4,12 +4,12 @@
 #
 # Usage: scripts/build.sh [mac|win|linux|android|ios|all] [--version X.Y.Z] [--identity "Developer ID Application: ..."]
 #                          [--notary-profile NAME] [--no-notarize]
-#                          [--release]   # android/ios: release config instead of debug
+#                          [--release]   # ios only: release config instead of debug
 #
 # Output: dist/mac/PokemonRed-macos.zip
 #         dist/win/PokemonRed-win64.zip
 #         dist/linux/PokemonRed-linux-x86_64.zip
-#         dist/android/{debug,release}/*.apk (full gradle output stays under
+#         dist/android/debug/*.apk (full gradle output stays under
 #           mobile/android/app/build/outputs/apk/embedNoRecord/)
 #         dist/ios/<Config>-<sdk>/PokemonRed.app (full xcodebuild output stays
 #           under mobile/ios/build/Build/Products/)
@@ -27,12 +27,12 @@ APP_NAME="PokemonRed"
 BUNDLE_ID="com.theboisclub.pokemonred"
 LOVE_VERSION="11.5"
 VERSION="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
+VERSION_EXPLICIT=false
 IDENTITY=""
 TARGET="all"
 NOTARY_PROFILE="notary-profile"
 
 NOTARIZE=true
-ANDROID_RELEASE=false
 IOS_RELEASE=false
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
@@ -42,11 +42,11 @@ fail() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
   case "$1" in
     mac|win|linux|android|ios|all) TARGET="$1" ;;
-    --version) VERSION="$2"; shift ;;
+    --version) VERSION="$2"; VERSION_EXPLICIT=true; shift ;;
     --identity) IDENTITY="$2"; shift ;;
     --notary-profile) NOTARY_PROFILE="$2"; shift ;;
     --no-notarize) NOTARIZE=false ;;
-    --release) ANDROID_RELEASE=true; IOS_RELEASE=true ;;
+    --release) IOS_RELEASE=true ;;
     *) fail "unknown argument: $1" ;;
   esac
   shift
@@ -144,11 +144,20 @@ build_win() {
   say "building Windows (win64) app"
   local zip_name="love-$LOVE_VERSION-win64.zip"
   local love_zip="$CACHE/$zip_name"
+  # A cache hit only checks existence, not validity -- a prior run truncated
+  # by a network drop mid-download (curl still leaves the partial file if
+  # the exit code slips through) would otherwise be reused forever.
+  if [ -f "$love_zip" ] && ! unzip -tqq "$love_zip" >/dev/null 2>&1; then
+    warn "cached $zip_name is not a valid zip,  removing and re-downloading"
+    rm -f "$love_zip"
+  fi
   if [ ! -f "$love_zip" ]; then
     say "downloading LÖVE $LOVE_VERSION win64 binaries"
     curl -fL --progress-bar \
       "https://github.com/love2d/love/releases/download/$LOVE_VERSION/$zip_name" \
       -o "$love_zip" || fail "download failed,  check LOVE_VERSION or your network"
+    unzip -tqq "$love_zip" >/dev/null 2>&1 \
+      || fail "downloaded $zip_name is not a valid zip (truncated download?)"
   fi
 
   local extract_dir="$WORK/love-win64"
@@ -176,8 +185,8 @@ build_win() {
 build_android() {
   say "building Android (delegating to scripts/build_android.sh)"
   local args=()
-  if [ "$ANDROID_RELEASE" = true ]; then
-    args+=(--release)
+  if [ "$VERSION_EXPLICIT" = true ]; then
+    args+=(--version "$VERSION")
   fi
   "$ROOT/scripts/build_android.sh" ${args[@]+"${args[@]}"}
 }
@@ -195,9 +204,9 @@ build_ios() {
 case "$TARGET" in
   mac) build_mac ;;
   win) build_win ;;
+  linux) build_linux ;;
   android) build_android ;;
   ios) build_ios ;;
-  linux) build_linux ;;
   all)
     # macOS tooling only exists on Darwin; the other desktop artifacts are
     # assembled from official prebuilt runtimes on either supported host.

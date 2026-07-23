@@ -114,6 +114,7 @@ local SPECIAL = {
   oakRoute = "Music_Routes2",
   bike = "Music_BikeRiding",
   surf = "Music_Surfing",
+  evolution = "Music_SafariZone",
 }
 
 -- the label a scene role resolves to; call sites keep their own presence

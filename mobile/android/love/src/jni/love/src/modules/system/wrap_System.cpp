@@ -95,6 +95,12 @@ int w_vibrate(lua_State *L)
 	return 0;
 }
 
+int w_pickFile(lua_State *L)
+{
+	luax_pushboolean(L, instance()->pickFile());
+	return 1;
+}
+
 int w_hasBackgroundMusic(lua_State *L)
 {
 	lua_pushboolean(L, instance()->hasBackgroundMusic());
@@ -110,6 +116,7 @@ static const luaL_Reg functions[] =
 	{ "getPowerInfo", w_getPowerInfo },
 	{ "openURL", w_openURL },
 	{ "vibrate", w_vibrate },
+	{ "pickFile", w_pickFile },
 	{ "hasBackgroundMusic", w_hasBackgroundMusic },
 	{ 0, 0 }
 };

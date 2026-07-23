@@ -9,6 +9,7 @@
 -- "trade" | "manual" | <mod>, item = id?, ... }), wrapped by the
 -- evolution.check hook so a mod can cancel or force any evolution.
 
+local Music = require("src.core.Music")
 local Runtime = require("src.mods.Runtime")
 local Screens = require("src.ui.Screens")
 local Stats = require("src.pokemon.Stats")
@@ -112,11 +113,15 @@ function Evolution.evolve(game, mon, newSpecies, onDone, via)
     Screens.push(game, "EvolutionState", mon, newSpecies, onDone)
     return
   end
+  Music.play(game.data, Music.special(game.data, "evolution"))
   local oldName = mon.nickname or game.data.pokemon[mon.species].name
   Evolution.apply(game, mon, newSpecies, via)
   local msg = ("What?\n%s is\nevolving!\fCongratulations!\nYour %s\nevolved into\n%s!")
               :format(oldName, oldName, game.data.pokemon[newSpecies].name)
-  game.stack:push(TextBox.new(game, msg, onDone))
+  game.stack:push(TextBox.new(game, msg, function()
+    Music.restoreMap(game.data)
+    if onDone then onDone() end
+  end))
 end
 
 -- Entry point for mods whose methods fire outside the vanilla moments

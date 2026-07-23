@@ -11,6 +11,10 @@ local function isBadge(id)
   return id:find("BADGE", 1, true) ~= nil
 end
 
+-- exported so item lists that share save.inventory (e.g. the PC deposit
+-- menu) can exclude badges the same way the bag does
+Bag.isBadge = isBadge
+
 function Bag.slots(save)
   local n = 0
   for id in pairs(save.inventory) do

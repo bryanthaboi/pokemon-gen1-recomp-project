@@ -186,6 +186,18 @@ bool Filesystem::setIdentity(const char *ident, bool appendToPath)
 
 	save_path_full = storage_path + std::string("/save/") + save_identity;
 
+	// love::android::mkdir is a single mkdir(), not mkdir -p: on a genuinely
+	// first-ever launch (nothing has touched this app's external-files dir
+	// before) save_directory doesn't exist yet either, so creating
+	// save_path_full in one step fails with ENOENT and PHYSFS_mount below
+	// silently never mounts anything for the rest of this process -- not
+	// just the save dir, but everything routed through it (save.lua/
+	// options.lua, the ROM-derived asset cache, RomImporter's Android
+	// folder scan). Ensure each level exists in order instead.
+	if (!love::android::directoryExists(save_directory.c_str()) &&
+			!love::android::mkdir(save_directory.c_str()))
+		SDL_Log("Error: Could not create save directory %s!", save_directory.c_str());
+
 	if (!love::android::directoryExists(save_path_full.c_str()) &&
 			!love::android::mkdir(save_path_full.c_str()))
 		SDL_Log("Error: Could not create save directory %s!", save_path_full.c_str());
@@ -338,6 +350,26 @@ bool Filesystem::setupWriteDirectory()
 	std::string temp_writedir = getDriveRoot(save_path_full);
 	std::string temp_createdir = skipDriveRoot(save_path_full);
 
+#ifdef LOVE_ANDROID
+	// getUserDirectory() falls back to $HOME/getpwuid() (physfs_platform_posix.c),
+	// which is meaningless on Android and unrelated to save_path_full (an
+	// SDL_AndroidGet*StoragePath() subdirectory -- see setIdentity above), so
+	// the generic check below never matches and falls through to setting the
+	// write dir to the drive root ("/"), which no Android app can write to.
+	// Anchor to the real Android storage root instead.
+	std::string androidStorageRoot = isAndroidSaveExternal()
+		? SDL_AndroidGetExternalStoragePath() : SDL_AndroidGetInternalStoragePath();
+	if (save_path_full.find(androidStorageRoot) == 0)
+	{
+		temp_writedir = androidStorageRoot;
+		temp_createdir = save_path_full.substr(androidStorageRoot.length());
+
+		size_t startpos = temp_createdir.find_first_not_of('/');
+		if (startpos != std::string::npos)
+			temp_createdir = temp_createdir.substr(startpos);
+	}
+	else
+#endif
 	// On some sandboxed platforms, physfs will break when its write directory
 	// is the root of the drive and it tries to create a folder (even if the
 	// folder's path is in a writable location.) If the user's home folder is
