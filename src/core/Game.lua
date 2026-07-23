@@ -445,6 +445,9 @@ function Game:applyOptions(opts)
   require("src.render.Tilt").applyOptions(opts)
   require("src.render.GBCFX").applyOptions(opts)
   require("src.core.VideoMode").applyOptions(opts)
+  -- normalizes a nil/garbage cap to the 60 default, so old saves with no
+  -- fpsCap key pace at the standard rate (issue #88)
+  require("src.core.FrameCap").applyOptions(opts)
   Input:applyBindings(opts.bindings)
 end
 

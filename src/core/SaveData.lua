@@ -192,6 +192,8 @@ function SaveData.defaultOptions()
     gbcfx = 0,
     -- windowed | borderless (desktop fullscreen); ignored on mobile
     videoMode = "windowed",
+    -- hard render frame-rate cap; render-only pacing (issue #88, FrameCap.lua)
+    fpsCap = 60,
     -- Native mod enablement is an installation option, not save-slot data.
     -- Missing entries mean enabled so newly installed mods work by default.
     mods = {},

@@ -13,6 +13,7 @@ local Tilt = require("src.render.Tilt")
 local GBCFX = require("src.render.GBCFX")
 local GameSpeed = require("src.core.GameSpeed")
 local VideoMode = require("src.core.VideoMode")
+local FrameCap = require("src.core.FrameCap")
 local Logger = require("src.core.Logger")
 local Runtime = require("src.mods.Runtime")
 local OptionRows = require("src.ui.OptionRows")
@@ -200,6 +201,19 @@ local function buildRows(game)
         local o = g.save.options
         o.videoMode = VideoMode.cycle(o.videoMode, dir)
         VideoMode.apply(o.videoMode)
+        return true
+      end },
+    -- hard render cap (issue #88): bounds the present rate so a
+    -- driver-forced vsync-off run cannot spin at thousands of FPS.  Logic
+    -- is fixed-step off dt, so this touches presentation only.
+    { id = "fpsCap", label = "MAX FPS",
+      value = function(g)
+        return FrameCap.label(g.save.options.fpsCap)
+      end,
+      step = function(g, dir)
+        local o = g.save.options
+        o.fpsCap = FrameCap.cycle(o.fpsCap, dir)
+        FrameCap.apply(o.fpsCap)
         return true
       end },
     -- fast-forward the logic clock only; music and sfx keep their tempo

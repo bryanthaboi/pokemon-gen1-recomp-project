@@ -299,3 +299,78 @@ function love.filedropped(file)
   end
   if Importer then Importer:filedropped(file) end
 end
+
+local function pacingEnabled()
+  if os.getenv("POKEPORT_AUTOPILOT") then return false end
+  if os.getenv("POKEPORT_DRIVER") then return false end
+  if os.getenv("POKEPORT_IMPORT_ONLY") == "1" then return false end
+  return true
+end
+
+function love.run()
+  if love.load then love.load(love.arg.parseGameArguments(arg), arg) end
+
+  -- don't let love.load's cost land in the first frame's dt
+  if love.timer then love.timer.step() end
+
+  local FrameCap = require("src.core.FrameCap")
+  local paced = pacingEnabled()
+  -- The deadline the next present() should not beat.  Carried forward one
+  -- budget per frame so pacing stays even instead of drifting with the
+  -- per-frame sleep-granularity jitter.
+  local nextFrame = love.timer and love.timer.getTime() or 0
+  local dt = 0
+
+  return function()
+    -- process events
+    if love.event then
+      love.event.pump()
+      for name, a, b, c, d, e, f in love.event.poll() do
+        if name == "quit" then
+          if not love.quit or not love.quit() then
+            return a or 0
+          end
+        end
+        love.handlers[name](a, b, c, d, e, f)
+      end
+    end
+
+    -- update dt
+    if love.timer then dt = love.timer.step() end
+
+    -- call update and draw
+    if love.update then love.update(dt) end
+
+    if love.graphics and love.graphics.isActive() then
+      love.graphics.origin()
+      love.graphics.clear(love.graphics.getBackgroundColor())
+      if love.draw then love.draw() end
+      love.graphics.present()
+    end
+
+    if love.timer then
+      if paced then
+        -- Sleep out the remainder of the frame budget, measured from the
+        -- carried deadline, in small chunks so the OS timer stays
+        -- responsive.  vsync is untouched: when it already paces slower
+        -- than the cap the remainder is <= 0 and this rounds to a no-op.
+        local budget = 1 / FrameCap.current
+        nextFrame = nextFrame + budget
+        local now = love.timer.getTime()
+        -- A stall (alt-tab, a GC pause, a blocked import) can leave the
+        -- deadline more than a full budget in the past; re-anchor to now so
+        -- we pace the next frame rather than burst uncapped to catch up.
+        if now - nextFrame > budget then
+          nextFrame = now
+        end
+        while true do
+          local remaining = nextFrame - love.timer.getTime()
+          if remaining <= 0 then break end
+          love.timer.sleep(remaining < 0.001 and remaining or 0.001)
+        end
+      else
+        love.timer.sleep(0.001)
+      end
+    end
+  end
+end
