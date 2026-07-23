@@ -351,6 +351,18 @@ function RomImporter:setError(message, version)
   self.romData = nil
 end
 
+-- draw() may leave the system hand cursor set while hovering a Play /
+-- Choose control.  Once the importer is torn down that draw path stops
+-- running, so restore the arrow before handing off to boot (issue #114).
+local function resetPointerCursor(self)
+  if self.android then return end
+  if not (love.mouse.isCursorSupported and love.mouse.isCursorSupported()) then
+    return
+  end
+  self.arrowCursor = self.arrowCursor or love.mouse.getSystemCursor("arrow")
+  love.mouse.setCursor(self.arrowCursor)
+end
+
 -- Verify + extract a ROM.  The version is decided by the ROM's own SHA-1, so
 -- dropping a Red or Blue cart into either column always lands in the right one.
 function RomImporter:startData(data, displayName)
@@ -428,6 +440,7 @@ function RomImporter:startData(data, displayName)
       -- Stay on the launcher; the player presses Play to boot the new game.
       return
     end
+    resetPointerCursor(self)
     if self.onComplete then self.onComplete(version) end
   end)
 end
@@ -507,6 +520,7 @@ end
 function RomImporter:play(version)
   if self.workState == "working" then return end
   if not self.ready[version] then return end
+  resetPointerCursor(self)
   if self.onComplete then self.onComplete(version) end
 end
 
@@ -1045,8 +1059,7 @@ function RomImporter:draw()
       self.handCursor = self.handCursor or love.mouse.getSystemCursor("hand")
       love.mouse.setCursor(self.handCursor)
     else
-      self.arrowCursor = self.arrowCursor or love.mouse.getSystemCursor("arrow")
-      love.mouse.setCursor(self.arrowCursor)
+      resetPointerCursor(self)
     end
   end
 end

@@ -360,16 +360,13 @@ local function chipAwaitingFirstBuffer()
      and require("src.core.ChipAudio").awaitingFirstBuffer()
 end
 
--- is a playOnce jingle still sounding?  (AnimateHealingMachine's
--- .waitLoop2 holds the healing machine until MUSIC_PKMN_HEALED ends)
+-- is a playOnce jingle still in flight?  (AnimateHealingMachine's
+-- .waitLoop2 / Mom heal / captain rub hold until MUSIC_PKMN_HEALED ends.)
+-- pendingRestore stays set from playOnce until Music.update restores the
+-- map theme, covering the threaded chip "empty QueueableSource" window
+-- where Source:isPlaying is briefly false before the first buffer lands.
 function Music.oneShotPlaying()
-  if not state.pendingRestore then return false end
-  -- threaded chip songs start silent for ~1 frame; that gap is not "over"
-  if chipAwaitingFirstBuffer() then return true end
-  local src = state.source
-  if not src then return false end
-  local ok, playing = pcall(src.isPlaying, src)
-  return ok and playing or false
+  return state.pendingRestore == true
 end
 
 function Music.restoreMap(data)

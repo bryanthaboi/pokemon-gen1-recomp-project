@@ -201,6 +201,49 @@ local function elevatorWalkOut(ow, floor)
   end)
 end
 
+local function elevatorFloors(elevatorMapId, game)
+  local floors = {}
+  for mapId, def in pairs(game.data.maps) do
+    for i, w in ipairs(def.warps) do
+      if w.destMap == elevatorMapId then
+        -- short floor token pokered actually prints, e.g.
+        -- SILPH_CO_10F -> "10F", ROCKET_HIDEOUT_B2F -> "B2F"
+        local token = mapId:match("_([^_]+)$") or mapId
+        -- warpIdx: this floor's warp back into the elevator IS the
+        -- warp the car's rewritten exit lands on (the reciprocal
+        -- pair), matching wElevatorWarpMaps' (warp id, map id)
+        table.insert(floors,
+          { map = mapId, x = w.x, y = w.y, token = token, warpIdx = i })
+        break
+      end
+    end
+  end
+  -- numeric floor order (SilphCoElevatorFloors' FLOOR_1F..FLOOR_11F),
+  -- not lexicographic -- otherwise 10F/11F sort before 2F..9F
+  table.sort(floors, function(a, b)
+    return (tonumber(a.token:match("%d+")) or 0) <
+           (tonumber(b.token:match("%d+")) or 0)
+  end)
+  return floors
+end
+
+local function elevatorSeedExit(ow, floors, fromMapId)
+  -- Seed a walk-out destination before the menu (or key-gate text):
+  -- entry floor when known, else the first listed floor (1F).  Choosing
+  -- a floor still rewrites via elevatorWalkOut; B-cancel / no-key leave
+  -- keeps this seed so walking out of the car cannot hit a missing ROM
+  -- placeholder (#123) or the car's static default floor (#90: Rocket
+  -- Hideout defaults to B1F even when entered from B2F/B4F).
+  local exitFloor = floors[1]
+  if fromMapId then
+    for _, f in ipairs(floors) do
+      if f.map == fromMapId then exitFloor = f break end
+    end
+  end
+  elevatorSetExit(ow, exitFloor)
+  return exitFloor
+end
+
 local function elevator(elevatorMapId, keyGate, preFrames)
   return {
     -- fromMapId: the floor the player just left (setMap passes it), so a
@@ -208,45 +251,18 @@ local function elevator(elevatorMapId, keyGate, preFrames)
     -- default to UNUSED_MAP_ED, which is not in Data.maps -- Warp.resolve
     -- asserted and hard-crashed (#123).
     onEnter = function(game, ow, fromMapId)
+      local floors = elevatorFloors(elevatorMapId, game)
+      elevatorSeedExit(ow, floors, fromMapId)
+      -- Rocket Hideout: without LIFT_KEY the panel only prints the need-
+      -- a-key line (scripts/RocketHideoutElevator.asm).  Exit warps are
+      -- still seeded above so walking out returns to the entry floor
+      -- instead of the car's ROM default (B1F) — #90 / #105.
       if keyGate and not game.save.inventory[keyGate.item] then
         local TextBox = require("src.render.TextBox")
         game.stack:push(TextBox.new(game,
           game.data.text[keyGate.text] or "It appears to\nneed a key."))
         return
       end
-      local floors = {}
-      for mapId, def in pairs(game.data.maps) do
-        for i, w in ipairs(def.warps) do
-          if w.destMap == elevatorMapId then
-            -- short floor token pokered actually prints, e.g.
-            -- SILPH_CO_10F -> "10F", ROCKET_HIDEOUT_B2F -> "B2F"
-            local token = mapId:match("_([^_]+)$") or mapId
-            -- warpIdx: this floor's warp back into the elevator IS the
-            -- warp the car's rewritten exit lands on (the reciprocal
-            -- pair), matching wElevatorWarpMaps' (warp id, map id)
-            table.insert(floors,
-              { map = mapId, x = w.x, y = w.y, token = token, warpIdx = i })
-            break
-          end
-        end
-      end
-      -- numeric floor order (SilphCoElevatorFloors' FLOOR_1F..FLOOR_11F),
-      -- not lexicographic -- otherwise 10F/11F sort before 2F..9F
-      table.sort(floors, function(a, b)
-        return (tonumber(a.token:match("%d+")) or 0) <
-               (tonumber(b.token:match("%d+")) or 0)
-      end)
-      -- Seed a walk-out destination before the menu: entry floor when
-      -- known, else the first listed floor (1F).  Choosing a floor still
-      -- rewrites via elevatorWalkOut; B-cancel keeps this seed so leaving
-      -- the car cannot hit a missing ROM placeholder map.
-      local exitFloor = floors[1]
-      if fromMapId then
-        for _, f in ipairs(floors) do
-          if f.map == fromMapId then exitFloor = f break end
-        end
-      end
-      elevatorSetExit(ow, exitFloor)
       local items = {}
       for _, f in ipairs(floors) do
         table.insert(items, { label = f.token, value = f })
@@ -291,6 +307,98 @@ M.SILPH_CO_ELEVATOR = elevator("SILPH_CO_ELEVATOR")
 M.CELADON_MART_ELEVATOR = elevator("CELADON_MART_ELEVATOR", nil, 9)
 M.ROCKET_HIDEOUT_ELEVATOR = elevator("ROCKET_HIDEOUT_ELEVATOR",
   { item = "LIFT_KEY", text = "_RocketHideoutElevatorAppearsToNeedKeyText" })
+
+-- -------------------------------------------------------------------
+-- Rocket Hideout B4F (scripts/RocketHideoutB4F.asm):
+--   Rocket3's after-battle text_asm drops the LIFT KEY item ball
+--   (CheckAndSetEvent EVENT_ROCKET_DROPPED_LIFT_KEY / ShowObject
+--   TOGGLE_ROCKET_HIDEOUT_B4F_ITEM_5).  Both start hidden in the map
+--   objects; without this talk side-effect the key never appears (#90,
+--   #105).
+--   Giovanni's post-battle script likewise ShowObject's the Silph Scope
+--   after the hope-we-meet-again line (TOGGLE_ROCKET_HIDEOUT_B4F_ITEM_4).
+-- -------------------------------------------------------------------
+
+M.ROCKET_HIDEOUT_B4F = {
+  talk = {
+    TEXT_ROCKETHIDEOUTB4F_ROCKET3 = function(game, ow, npc, done)
+      if not ow:trainerDefeated(npc) then
+        ow:engageTrainer(npc, done)
+        return
+      end
+      local TextBox = require("src.render.TextBox")
+      local t = game.data.text
+      game.stack:push(TextBox.new(game,
+        t._RocketHideoutB4FRocket3AfterBattleText
+        or "Oh no! I dropped\nthe LIFT KEY!",
+        function()
+          -- CheckAndSetEvent EVENT_ROCKET_DROPPED_LIFT_KEY: first talk
+          -- after the win reveals the ball; later talks only reprint.
+          if not game.save.flags.EVENT_ROCKET_DROPPED_LIFT_KEY then
+            game.save.flags.EVENT_ROCKET_DROPPED_LIFT_KEY = true
+            local Commands = require("src.script.Commands")
+            Commands.show_object(
+              { game = game, save = game.save, overworld = ow },
+              "ROCKET_HIDEOUT_B4F", "ROCKETHIDEOUTB4F_LIFT_KEY")
+          end
+          done()
+        end))
+    end,
+
+    TEXT_ROCKETHIDEOUTB4F_GIOVANNI = function(game, ow, npc, done)
+      -- Giovanni has no trainer-header row (def_trainers 2); his text_asm
+      -- owns both the engage and the BeatGiovanniScript aftermath.
+      if ow:trainerDefeated(npc)
+         or game.save.flags.EVENT_BEAT_ROCKET_HIDEOUT_GIOVANNI then
+        local TextBox = require("src.render.TextBox")
+        game.stack:push(TextBox.new(game,
+          game.data.text._RocketHideoutB4FGiovanniHopeWeMeetAgainText
+          or "I hope we meet\nagain...", done))
+        return
+      end
+      local TextBox = require("src.render.TextBox")
+      local BattleState = require("src.battle.BattleState")
+      local t = game.data.text
+      local impressed = t._RocketHideoutB4FGiovanniImpressedYouGotHereText
+                        or "So! I must say, I\nam impressed you\ngot here!"
+      local cannotBe = t._RocketHideoutB4FGiovanniWhatCannotBeText
+                       or "WHAT!\nThis cannot be!"
+      local hope = t._RocketHideoutB4FGiovanniHopeWeMeetAgainText
+                   or "I hope we meet\nagain..."
+      game.stack:push(TextBox.new(game, impressed, function()
+        local battle = BattleState.newTrainer(game, "OPP_GIOVANNI", 1)
+        battle.onFinish = function(result)
+          if result ~= "win" then
+            ow:afterBattle(result, battle)
+            done()
+            return
+          end
+          game.save.defeatedTrainers[npc.id] = true
+          game.save.flags.EVENT_BEAT_ROCKET_HIDEOUT_GIOVANNI = true
+          -- End-battle "WHAT!" then BeatGiovanniScript's hope text,
+          -- fade, HideObject Giovanni, ShowObject Silph Scope.
+          game.stack:push(TextBox.new(game, cannotBe, function()
+            game.stack:push(TextBox.new(game, hope, function()
+              local Transition = require("src.render.Transition")
+              game.stack:push(Transition.new(game, function()
+                local Commands = require("src.script.Commands")
+                local ctx = { game = game, save = game.save, overworld = ow }
+                Commands.hide_object(ctx, "ROCKET_HIDEOUT_B4F",
+                  "ROCKETHIDEOUTB4F_GIOVANNI")
+                Commands.show_object(ctx, "ROCKET_HIDEOUT_B4F",
+                  "ROCKETHIDEOUTB4F_SILPH_SCOPE")
+              end, function()
+                ow:afterBattle(result, battle)
+                done()
+              end))
+            end))
+          end))
+        end
+        ow:pushBattle(battle)
+      end))
+    end,
+  },
+}
 
 -- -------------------------------------------------------------------
 -- Game Corner coins, prizes, and the rocket-poster switch that reveals

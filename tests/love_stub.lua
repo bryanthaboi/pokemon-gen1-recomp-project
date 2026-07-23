@@ -127,7 +127,12 @@ stub.sound = {
 
 stub.keyboard = { isDown = function() return false end }
 
-stub.mouse = { getPosition = function() return 0, 0 end }
+stub.mouse = {
+  getPosition = function() return 0, 0 end,
+  isCursorSupported = function() return false end,
+  getSystemCursor = function(name) return name end,
+  setCursor = function() end,
+}
 
 stub.timer = { getTime = function() return 0 end }
 

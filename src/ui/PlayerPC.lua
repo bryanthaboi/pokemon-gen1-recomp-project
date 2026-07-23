@@ -1,6 +1,7 @@
 -- The player's item-storage PC (engine/menus/players_pc.asm):
 -- WITHDRAW ITEM / DEPOSIT ITEM / TOSS ITEM / LOG OFF over
--- game.save.pcItems ({ ITEM_ID = count }, created lazily).  Withdraw and
+-- game.save.pcItems ({ ITEM_ID = count }; New Game seeds { POTION = 1 },
+-- older saves may still be empty until first deposit).  Withdraw and
 -- deposit ask "How many?" via the quantity selector (key items always
 -- move one); toss discards after a YES/NO confirm.  Follows the
 -- BoxMenu/BagMenu list idioms.

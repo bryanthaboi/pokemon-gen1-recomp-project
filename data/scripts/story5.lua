@@ -262,38 +262,180 @@ M.CINNABAR_ISLAND = {
 -- Pewter's youngster stops you leaving east before Brock is beaten and
 -- escorts you to the gym (scripts/PewterCity.asm
 -- PewterCityCheckPlayerLeavingEastScript /
--- PewterCityYoungsterShowsPlayerGymScript, engine/events/pewter_guys.asm
--- PewterGymGuyCoords): the "follow me" lines, then the player is walked
--- west along the road to the front of the PEWTER_GYM door at (16,17).
+-- PewterCityYoungsterShowsPlayerGymScript, engine/overworld/auto_movement.asm
+-- PewterGymGuyMovementScriptPointerTable, engine/events/pewter_guys.asm
+-- PewterGymGuyCoords).  Same lockstep style as Oak's lab escort: the
+-- youngster walks RLEList_PewterGymGuy while the player plays the
+-- reverse of RLEList_PewterGymPlayer with a PewterGuys positioning
+-- preamble.  Ends at (11,18) / (12,18) by the gym, not phasing through
+-- the building.
+local pewterEscort = {}
+
+-- RLEList_PewterGymGuy (NPC directions play forward)
+pewterEscort.guySteps = {
+  "down", "down",
+  "left", "left", "left", "left", "left", "left", "left", "left",
+  "left", "left", "left", "left", "left", "left", "left",
+  "up", "up", "up", "up", "up",
+  "left", "left", "left", "left", "left", "left", "left", "left",
+  "left", "left", "left",
+  "down", "down", "down", "down", "down",
+  "right", "right", "right",
+}
+
+-- Walk home: reverse of guySteps with opposite facings (gym → spawn).
+do
+  local opp = { up = "down", down = "up", left = "right", right = "left" }
+  local ret = {}
+  for i = #pewterEscort.guySteps, 1, -1 do
+    ret[#ret + 1] = opp[pewterEscort.guySteps[i]]
+  end
+  pewterEscort.guyReturnSteps = ret
+end
+
+-- RLEList_PewterGymPlayer before reverse / PewterGuys (NO_INPUT, RIGHT×2,
+-- DOWN×5, LEFT×11, UP×5, LEFT×15)
+pewterEscort.playerRle = {
+  "NO",
+  "right", "right",
+  "down", "down", "down", "down", "down",
+  "left", "left", "left", "left", "left", "left", "left", "left",
+  "left", "left", "left",
+  "up", "up", "up", "up", "up",
+  "left", "left", "left", "left", "left", "left", "left", "left",
+  "left", "left", "left", "left", "left", "left", "left",
+}
+
+-- PewterGymGuyCoords: (x, y) -> positioning moves written after the RLE
+-- (played in reverse; $00 pauses are one overworld frame ≈ 1/8 tile for
+-- the NPC, so eight of them ≈ one guy head-start step)
+pewterEscort.preambles = {
+  ["34,16"] = { "left", "down", "down", "right" },
+  ["35,17"] = { "left", "down", "right", "left" },
+  ["37,18"] = { "left", "left", "left",
+                "NO", "NO", "NO", "NO", "NO", "NO", "NO", "NO" },
+  ["37,19"] = { "left", "left", "up", "left" },
+  ["36,17"] = { "left", "down", "left",
+                "NO", "NO", "NO", "NO", "NO", "NO", "NO", "NO" },
+}
+
+-- Realized player path for a trigger tile: PewterGuys overwrites the
+-- last RLE byte and appends the preamble, then simulated joypad plays
+-- high→low (reverse).  Leading NO×8 collapses to guyHeadStart=1; the
+-- trailing end-of-list NO is dropped (one-frame pause).
+function pewterEscort.playerPlan(x, y)
+  local pre = pewterEscort.preambles[x .. "," .. y]
+  if not pre then return nil end
+  local buf = {}
+  for i, d in ipairs(pewterEscort.playerRle) do buf[i] = d end
+  buf[#buf] = pre[1]
+  for i = 2, #pre do buf[#buf + 1] = pre[i] end
+  local path = {}
+  for i = #buf, 1, -1 do path[#path + 1] = buf[i] end
+  local head = 0
+  while path[head + 1] == "NO" do head = head + 1 end
+  local tail = #path
+  while tail > head and path[tail] == "NO" do tail = tail - 1 end
+  local steps = {}
+  for i = head + 1, tail do steps[#steps + 1] = path[i] end
+  return { steps = steps, guyHeadStart = math.floor(head / 8) }
+end
+
+local function pewterGymEscort(game, ow)
+  if ow.runner:isRunning() or #ow.scriptMoves > 0 then return end
+  local x, y = ow.player.cellX, ow.player.cellY
+  local plan = pewterEscort.playerPlan(x, y)
+  local Music = require("src.core.Music")
+  local t = text(game)
+  local follow = t._PewterCityYoungsterYoureATrainerFollowMeText
+    or "You're a trainer\nright? BROCK's\nlooking for new\nchallengers!\nFollow me!"
+  -- PewterGuys only has entries for five tiles; an unmatched talk tile
+  -- (e.g. (36,16) east of him) just gets the follow-me line, same as a
+  -- failed coords lookup would refuse to arm the walk.
+  if not plan then
+    push(game, follow)
+    return
+  end
+  local guy = ow:npcByIndex(5) -- PEWTERCITY_YOUNGSTER
+  local guySteps = pewterEscort.guySteps
+  local head = plan.guyHeadStart
+
+  -- After the walk: face the player, restore map music, "Go take on
+  -- BROCK", then retrace RLEList_PewterGymGuy back to his spawn (35,16).
+  -- (pokered teleports him via MovementData_PewterGymGuyExit; we walk
+  -- the same route home instead.  Brock victory still HideObject's him.)
+  local function walkHome()
+    if not guy then return end
+    local ret = pewterEscort.guyReturnSteps
+    local i = 0
+    local function tick()
+      i = i + 1
+      if not ret[i] then
+        guy.facing = "down"
+        return
+      end
+      ow:scriptMove(guy, ret[i], 1, tick)
+    end
+    tick()
+  end
+
+  local function afterWalk()
+    if guy then guy.facing = "left" end
+    Music.playMap(game.data, "PEWTER_CITY")
+    push(game, t._PewterCityYoungsterGoTakeOnBrockText
+      or "Go take on BROCK\nat the GYM first!", walkHome)
+  end
+
+  local function lockstep()
+    local i = 0
+    local function tick()
+      i = i + 1
+      local ps = plan.steps[i]
+      if not ps then
+        afterWalk()
+        return
+      end
+      local gs = guySteps[head + i]
+      if guy and gs then ow:scriptMove(guy, gs, 1) end
+      ow:scriptMove(ow.player, ps, 1, tick)
+    end
+    tick()
+  end
+
+  local function beginWalk()
+    Music.play(game.data, "Music_MuseumGuy")
+    if guy and head > 0 then
+      local h = 0
+      local function headTick()
+        h = h + 1
+        if h > head then lockstep(); return end
+        ow:scriptMove(guy, guySteps[h], 1, headTick)
+      end
+      headTick()
+    else
+      lockstep()
+    end
+  end
+
+  push(game, follow, beginWalk)
+end
+
 M.PEWTER_CITY = {
+  escort = pewterEscort,
+  -- PewterCityYoungsterText: talking also arms the gym escort script
+  talk = {
+    TEXT_PEWTERCITY_YOUNGSTER = function(game, ow, npc, done)
+      pewterGymEscort(game, ow)
+      if done then done() end
+    end,
+  },
   onStep = function(game, ow, x, y)
     if game.save.flags.EVENT_BEAT_BROCK then return false end
     if ow.runner:isRunning() or #ow.scriptMoves > 0 then return false end
     if not inCoords({ { 35, 17 }, { 36, 17 }, { 37, 18 }, { 37, 19 } }, x, y) then
       return false
     end
-    local t = text(game)
-    -- walk up onto the road row (y=17), west to one tile east of the gym
-    -- door, then drop below the door and turn to face it
-    local steps = {}
-    for _ = 1, y - 17 do steps[#steps + 1] = "up" end
-    for _ = 1, x - 17 do steps[#steps + 1] = "left" end
-    steps[#steps + 1] = "down"
-    steps[#steps + 1] = "left"
-    local function walk(i)
-      if not steps[i] then
-        ow.player.facing = "up"
-        return
-      end
-      ow:scriptMove(ow.player, steps[i], 1, function() walk(i + 1) end)
-    end
-    push(game, t._PewterCityYoungsterYoureATrainerFollowMeText
-      or "Hey! You're a\ntrainer, right?", function()
-      push(game, t._PewterCityYoungsterGoTakeOnBrockText
-        or "Go take on BROCK\nat the GYM first!", function()
-        walk(1)
-      end)
-    end)
+    pewterGymEscort(game, ow)
     return true
   end,
 }

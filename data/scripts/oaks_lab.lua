@@ -24,8 +24,11 @@ local function starterBall(askText, species, choseFlag, ownBall,
     { "check_flag", "EVENT_FOLLOWED_OAK_INTO_LAB" }, -- 3
     { "jump_if_false", 20 },                      -- 4
     -- the Pokédex "new species" entry shows before the ask (predef
-    -- StarterDex ahead of OaksLabYouWant...Text)
-    { "push_screen", "DexEntryMenu", species },   -- 5
+    -- StarterDex ahead of OaksLabYouWant...Text).  StarterDex temporarily
+    -- sets the owned bits so ShowPokedexData prints height/weight/text;
+    -- forceOwned is that bypass without mutating save.pokedex.owned.
+    { "push_screen", "DexEntryMenu",
+      { species = species, forceOwned = true } }, -- 5
     { "ask", askText },                           -- 6
     { "jump_if_false", 21 },                      -- 7
     { "give_pokemon", species, 5 },               -- 8
@@ -61,40 +64,44 @@ return {
     TEXT_OAKSLAB_OAK1 = {
       { "face_player" },                                          -- 1
       { "check_flag", "EVENT_GOT_OAKS_PARCEL" },                  -- 2
-      { "jump_if_false", 14 },                                    -- 3
+      { "jump_if_false", 16 },                                    -- 3
       { "check_flag", "EVENT_OAK_GOT_PARCEL" },                   -- 4
-      { "jump_if_true", 14 },                                     -- 5
+      { "jump_if_true", 16 },                                     -- 5
       { "show_text", "_OaksLabOak1DeliverParcelText" },           -- 6
       { "take_item", "OAKS_PARCEL", 1 },                          -- 7
       { "set_flag", "EVENT_OAK_GOT_PARCEL" },                     -- 8
       { "show_text", "_OaksLabOak1PokemonAroundTheWorldText" },   -- 9
       { "set_flag", "EVENT_GOT_POKEDEX" },                        -- 10
+      -- OaksLab.asm OakGivesPokedex: HideObject TOGGLE_POKEDEX_1/2
+      -- so the table sprites leave with the gift (#106).
+      { "hide_object", "OAKS_LAB", "OAKSLAB_POKEDEX1" },          -- 11
+      { "hide_object", "OAKS_LAB", "OAKSLAB_POKEDEX2" },          -- 12
       -- the Pokédex swaps Viridian's two old men (OaksLab.asm:602-606:
       -- HideObject TOGGLE_LYING_OLD_MAN / ShowObject TOGGLE_OLD_MAN).
       -- Until this ran, the walking man at (17,5) -- who owns the coffee
       -- ask and the catch tutorial -- stayed OFF for the whole game
       -- (toggleable_objects.asm seeds him OFF, the sleeper ON).
-      { "hide_object", "VIRIDIAN_CITY", "VIRIDIANCITY_OLD_MAN_SLEEPY" }, -- 11
-      { "show_object", "VIRIDIAN_CITY", "VIRIDIANCITY_OLD_MAN" },  -- 12
-      { "jump", 32 },                                             -- 13
-      { "check_flag", "EVENT_GOT_STARTER" },                      -- 14
-      { "jump_if_false", 29 },                                    -- 15
-      { "check_item", "POKE_BALL" },                              -- 16
-      { "jump_if_true", 27 },                                     -- 17
-      { "check_flag", "EVENT_BEAT_ROUTE22_RIVAL_1ST_BATTLE" },    -- 18
-      { "jump_if_false", 31 },                                    -- 19
-      { "check_flag", "EVENT_GOT_POKEBALLS_FROM_OAK" },           -- 20
-      { "jump_if_true", 27 },                                     -- 21
-      { "set_flag", "EVENT_GOT_POKEBALLS_FROM_OAK" },             -- 22
-      { "give_item", "POKE_BALL", 5, false },                     -- 23
-      { "show_text", "_OaksLabOak1ReceivedPokeballsText" },       -- 24
-      { "show_text", "_OaksLabGivePokeballsExplanationText" },    -- 25
-      { "jump", 32 },                                             -- 26
-      { "show_text", "_OaksLabOak1ComeSeeMeSometimesText" },      -- 27
-      { "jump", 32 },                                             -- 28
-      { "show_text", "_OaksLabOak1WhichPokemonDoYouWantText" },   -- 29
-      { "jump", 32 },                                             -- 30
-      { "show_text", "_OaksLabOak1RaiseYourYoungPokemonText" },   -- 31 (32 = end)
+      { "hide_object", "VIRIDIAN_CITY", "VIRIDIANCITY_OLD_MAN_SLEEPY" }, -- 13
+      { "show_object", "VIRIDIAN_CITY", "VIRIDIANCITY_OLD_MAN" },  -- 14
+      { "jump", "end" },                                          -- 15
+      { "check_flag", "EVENT_GOT_STARTER" },                      -- 16
+      { "jump_if_false", 31 },                                    -- 17
+      { "check_item", "POKE_BALL" },                              -- 18
+      { "jump_if_true", 29 },                                     -- 19
+      { "check_flag", "EVENT_BEAT_ROUTE22_RIVAL_1ST_BATTLE" },    -- 20
+      { "jump_if_false", 33 },                                    -- 21
+      { "check_flag", "EVENT_GOT_POKEBALLS_FROM_OAK" },           -- 22
+      { "jump_if_true", 29 },                                     -- 23
+      { "set_flag", "EVENT_GOT_POKEBALLS_FROM_OAK" },             -- 24
+      { "give_item", "POKE_BALL", 5, false },                     -- 25
+      { "show_text", "_OaksLabOak1ReceivedPokeballsText" },       -- 26
+      { "show_text", "_OaksLabGivePokeballsExplanationText" },    -- 27
+      { "jump", "end" },                                          -- 28
+      { "show_text", "_OaksLabOak1ComeSeeMeSometimesText" },      -- 29
+      { "jump", "end" },                                          -- 30
+      { "show_text", "_OaksLabOak1WhichPokemonDoYouWantText" },   -- 31
+      { "jump", "end" },                                          -- 32
+      { "show_text", "_OaksLabOak1RaiseYourYoungPokemonText" },   -- 33
     },
 
     TEXT_OAKSLAB_CHARMANDER_POKE_BALL =
@@ -139,6 +146,19 @@ return {
       { "hide_object", "OAKS_LAB", "OAKSLAB_RIVAL" },             -- 26
     },
   },
+
+  -- Saves that got the Pokédex before #106 never wrote objectToggles for
+  -- the table sprites; re-entering the lab applies the same HideObject
+  -- the gift script now does (OaksLab.asm OakGivesPokedex).
+  onEnter = function(game, ow)
+    if not (game.save.flags and game.save.flags.EVENT_GOT_POKEDEX) then
+      return
+    end
+    local Commands = require("src.script.Commands")
+    local ctx = { save = game.save, game = game, overworld = ow }
+    Commands.hide_object(ctx, "OAKS_LAB", "OAKSLAB_POKEDEX1")
+    Commands.hide_object(ctx, "OAKS_LAB", "OAKSLAB_POKEDEX2")
+  end,
 
   -- Oak stops you leaving without a starter; the rival stops you on
   -- the way out for the first battle (scripts/OaksLab.asm

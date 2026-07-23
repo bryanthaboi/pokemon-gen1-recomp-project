@@ -88,8 +88,12 @@ local SaveData = require("src.core.SaveData")
 local stack2 = newStack()
 local game2 = { data = Data, input = fakeInput, stack = stack2,
                 save = SaveData.newGame() }
-game2.save.party = { { species = "PIKACHU", level = 81 } }
+-- battered party: record_hall_of_fame must heal before the autosave (#103)
+game2.save.party = { { species = "PIKACHU", level = 81, hp = 1,
+                       stats = { hp = 100 }, status = "PAR",
+                       moves = { { id = "THUNDERBOLT", pp = 0 } } } }
 game2.save.player.map = "HALL_OF_FAME"
+game2.save.lastOutdoor = { id = "INDIGO_PLATEAU", x = 9, y = 5 }
 local wrote = false
 function game2:writeSave() wrote = true; SaveData.save(self.save) end
 
@@ -129,9 +133,39 @@ local saved = savedRaw and SaveData.decode(savedRaw) or nil
 check(saved ~= nil, "save.lua written and decodable")
 eq(saved and saved.lastHeal and saved.lastHeal.map, "PALLET_TOWN",
    "wLastBlackoutMap := PALLET_TOWN before the save")
-eq(saved and saved.player and saved.player.map, "HALL_OF_FAME",
-   "save keeps the player in the HALL_OF_FAME room")
+eq(saved and saved.player and saved.player.map, "REDS_HOUSE_2F",
+   "CONTINUE lands in the bedroom (post-game home, #103)")
+eq(saved and saved.player and saved.player.x, 3, "bedroom spawn x")
+eq(saved and saved.player and saved.player.y, 6, "bedroom spawn y")
+eq(saved and saved.lastOutdoor and saved.lastOutdoor.id, "PALLET_TOWN",
+   "LAST_MAP exits aim at Pallet Town, not Indigo")
+check(saved and saved.postGameHomeOk, "postGameHomeOk marks the relocate done")
 eq(saved and #(saved.hallOfFame or {}), 1, "hall of fame team persisted")
+local healed = saved and saved.party and saved.party[1]
+local thunderPp = Data.moves and Data.moves.THUNDERBOLT and Data.moves.THUNDERBOLT.pp
+check(healed and healed.hp == healed.stats.hp and healed.status == nil
+        and healed.moves[1].pp == thunderPp,
+      "party is fully healed in the post-credits save")
+
+-- house exit mats resolve to Pallet's door, not Indigo
+local Warp = require("src.world.Warp")
+local houseExit = { destMap = "LAST_MAP", destWarp = 1, x = 2, y = 7 }
+local destMap, dx, dy = Warp.destination(Data, houseExit, saved.lastOutdoor)
+eq(destMap, "PALLET_TOWN", "Red's house LAST_MAP -> PALLET_TOWN")
+eq(dx, 5, "Pallet door x")
+eq(dy, 5, "Pallet door y")
+
+-- stuck-save rescue: HoF + hallOfFame + no postGameHomeOk -> bedroom
+local stuck = SaveData.newGame()
+stuck.player.map = "HALL_OF_FAME"
+stuck.player.x, stuck.player.y = 4, 2
+stuck.lastOutdoor = { id = "INDIGO_PLATEAU", x = 9, y = 5 }
+stuck.hallOfFame = { { { species = "PIKACHU", level = 81 } } }
+check(SaveData.needsPostGameRescue(stuck), "pre-fix softlock save needs rescue")
+SaveData.applyPostGameHome(stuck, Data.field.boot)
+check(not SaveData.needsPostGameRescue(stuck), "rescue is one-shot")
+eq(stuck.player.map, "REDS_HOUSE_2F", "rescue warps home")
+eq(stuck.lastOutdoor.id, "PALLET_TOWN", "rescue retargets LAST_MAP")
 
 -- `jp Init`: everything popped, boot sequence pushed (intro -> title)
 eq(#stack2.states, 1, "soft reset leaves exactly the boot state")

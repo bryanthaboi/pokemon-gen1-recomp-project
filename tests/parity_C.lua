@@ -281,11 +281,21 @@ end
 -- the digit only), plus the LIFT_KEY gate.
 -- ===================================================================
 do
-  -- without the key: text-only, no floor menu
-  local gated = openElevator("ROCKET_HIDEOUT_ELEVATOR", {})
+  local hideoutSnap = snapshotWarps("ROCKET_HIDEOUT_ELEVATOR")
+  -- ROM car defaults to B1F; entering from another floor without the key
+  -- must still seed a walk-out back to that floor (#90 / #105).
+  eq(hideoutSnap[1].destMap, "ROCKET_HIDEOUT_B1F",
+     "Rocket Hideout ROM car warps still default to B1F")
+
+  -- without the key: text-only, no floor menu, but exit is seeded
+  local gated, _, _, gatedOw =
+    openElevator("ROCKET_HIDEOUT_ELEVATOR", {}, "ROCKET_HIDEOUT_B2F")
   check(gated ~= nil, "Rocket Hideout without LIFT_KEY still pushes something")
   check(gated ~= nil and getmetatable(gated) ~= ListMenu,
         "Rocket Hideout without LIFT_KEY does not open the floor menu")
+  eq(gatedOw.map.def.warps[1].destMap, "ROCKET_HIDEOUT_B2F",
+     "Rocket Hideout without LIFT_KEY seeds exit warps to the entry floor")
+  restoreWarps("ROCKET_HIDEOUT_ELEVATOR", hideoutSnap)
 
   -- with the key: full B1F/B2F/B4F menu, same as the other elevators
   local menu, warpCalls, stack, ow = openElevator("ROCKET_HIDEOUT_ELEVATOR", { LIFT_KEY = 1 })
@@ -324,6 +334,7 @@ do
       eq(warpCalls[1].y, chosen.value.y, "Rocket Hideout walk-out lands on the chosen floor y")
     end
   end
+  restoreWarps("ROCKET_HIDEOUT_ELEVATOR", hideoutSnap)
 end
 
 Sound.play = origSoundPlay
