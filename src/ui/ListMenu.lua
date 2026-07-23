@@ -117,7 +117,7 @@ function ListMenu:draw()
       love.graphics.setColor(0, 0, 0, 1)
     end
     if item.right then
-      Font.draw(item.right, 160 - 8 - #item.right * 8, y)
+      Font.draw(item.right, 160 - 8 - Font.width(item.right), y)
     end
     if i == self.index then
       -- hollowIndex: a chosen row keeps the hollow '▷' left behind by
@@ -136,7 +136,7 @@ function ListMenu:draw()
     Font.drawBox(11, 0, 9, 3)
     love.graphics.setColor(0, 0, 0, 1)
     local money = ("¥%d"):format(self.money and self.money() or 0)
-    Font.draw(money, 152 - #money * 8, 8)
+    Font.draw(money, 152 - Font.width(money), 8)
     -- the clerk's line in the standard bottom text box; long prompts
     -- wrap and keep their last two lines, like the GB's scrolled box
     Font.drawBox(0, 12, 20, 6)
@@ -153,7 +153,17 @@ function ListMenu:draw()
       end
     end
   elseif self.footer then
-    Font.draw(self.footer, 8, 136)
+    -- PC deposit/withdraw footers use "\n"; draw the last two lines so
+    -- long item names are not clipped at the screen edge (#115).
+    local flat = {}
+    for _, page in ipairs(require("src.render.TextBox").paginate(self.footer)) do
+      for _, line in ipairs(page) do flat[#flat + 1] = line end
+    end
+    local y = (#flat >= 2) and 120 or 136
+    for i = math.max(1, #flat - 1), #flat do
+      Font.draw(flat[i], 8, y)
+      y = y + 16
+    end
   end
   love.graphics.setColor(1, 1, 1, 1)
 end

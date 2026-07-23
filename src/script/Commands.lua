@@ -438,6 +438,12 @@ function Commands.play_sound(ctx, soundId)
   require("src.core.Sound").play(ctx.game.data, soundId)
 end
 
+-- play_once <songId>: one-shot jingle (Music_PkmnHealed, etc.); the map
+-- theme resumes when it ends (Music.playOnce / pendingRestore)
+function Commands.play_once(ctx, songId)
+  require("src.core.Music").playOnce(ctx.game.data, songId)
+end
+
 -- play_cry <species>: PlayCry (home/audio.asm).  The text_asm bodies that
 -- use it run text_far (a no-button-wait "...@" string) -> PlayCry ->
 -- WaitForSoundToFinish, all within the same text ID -- the cry only starts

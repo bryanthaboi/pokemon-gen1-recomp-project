@@ -148,6 +148,17 @@ function Font.advanceOf(code)
   return page and page.advance or GLYPH
 end
 
+-- Pixel width of a string (glyph advances, not UTF-8 byte length).
+-- Multi-byte charmap entries like "¥" are one glyph; callers that
+-- right-align with `#text * 8` mis-place them.
+function Font.width(text)
+  local w = 0
+  for _, code in ipairs(Font.encode(text)) do
+    w = w + Font.advanceOf(code)
+  end
+  return w
+end
+
 -- Draw a plain single-line string at pixel (x, y).  Returns the width
 -- drawn, which is #codes * 8 for every fixed-width page.
 function Font.draw(text, x, y)

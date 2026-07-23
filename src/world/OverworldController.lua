@@ -338,10 +338,13 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
           or (fromMapId and "warp" or "boot"),
   })
 
-  -- map-enter hooks (hand-ported map scripts, e.g. Victory Road barriers)
+  -- map-enter hooks (hand-ported map scripts, e.g. Victory Road barriers).
+  -- fromMapId lets elevators seed a valid walk-out floor when the ROM
+  -- car warps still point at a missing map (Silph's UNUSED_MAP_ED) and
+  -- the player B-cancels the floor menu without .UpdateWarp.
   local hooks = mapScripts.get(mapId)
   if hooks and hooks.onEnter then
-    hooks.onEnter(Game, self)
+    hooks.onEnter(Game, self, fromMapId)
   end
 
   self:rebuildNeighbors()
@@ -1000,20 +1003,19 @@ function OverworldState:checkEdgeExit(dir)
   return false
 end
 
--- Map connections: the connected map's strip offset is in blocks; arriving
--- coordinates follow destX = curX - offset*2 (see docs/extraction-notes.md).
--- The crossing scrolls continuously: the map data swaps while the player
--- is placed one cell before the entry point (their old world position,
--- which the neighbor strips render identically) and walks the seam step.
-function OverworldState:crossConnection(dir, conn)
+-- Landing cell on the connected map for a step off this map's edge in
+-- `dir` (same math as crossConnection).  Returns destDef, tilesetDef, x, y
+-- or nil when there is no usable connection.
+function OverworldState:connectionLanding(dir)
+  local conn = self.map:connection(COMPASS[dir])
+  if not conn then return nil end
   local dest = Game.data.maps[conn.map]
-  if not dest then
-    Logger.warn("connection to unknown map %s", tostring(conn.map))
-    return false
-  end
+  if not dest then return nil end
+  local ts = Game.data.tilesets[dest.tileset]
+  if not ts then return nil end
   local p = self.player
-  local x, y = p.cellX, p.cellY
   local destW, destH = dest.width * 2, dest.height * 2
+  local x, y
   if dir == "up" then
     x, y = p.cellX - conn.offset * 2, destH - 1
   elseif dir == "down" then
@@ -1025,13 +1027,27 @@ function OverworldState:crossConnection(dir, conn)
   end
   x = math.max(0, math.min(destW - 1, x))
   y = math.max(0, math.min(destH - 1, y))
+  return dest, ts, x, y, conn
+end
+
+-- Map connections: the connected map's strip offset is in blocks; arriving
+-- coordinates follow destX = curX - offset*2 (see docs/extraction-notes.md).
+-- The crossing scrolls continuously: the map data swaps while the player
+-- is placed one cell before the entry point (their old world position,
+-- which the neighbor strips render identically) and walks the seam step.
+function OverworldState:crossConnection(dir, conn)
+  local dest, ts, x, y = self:connectionLanding(dir)
+  if not dest then
+    Logger.warn("connection to unknown map %s", tostring(conn and conn.map))
+    return false
+  end
+  local p = self.player
   -- pokered's collision check reads the NEIGHBOR strip's tile bytes, so
   -- stepping off the edge onto a solid tile of the connected map bumps
   -- exactly like an in-map wall. Without this read, Pallet's south
   -- shore (land at x2-3) walked straight onto ROUTE_21 (3,0) -- a
   -- collision tile -- stranding the player on a cell no walk can leave.
-  if not Map.defPassable(dest, Game.data.tilesets[dest.tileset], x, y,
-                         p.surfing) then
+  if not Map.defPassable(dest, ts, x, y, p.surfing) then
     return false
   end
   self:setMap(conn.map, x, y, p.facing, { seamless = true })
@@ -1052,6 +1068,53 @@ function OverworldState:crossConnection(dir, conn)
     and (FieldDefaults.world(Game.data, "bikeStepFrames") or 8)
     or (FieldDefaults.world(Game.data, "stepFrames") or 16)
   return true
+end
+
+-- ItemUseSurfboard's simulated pad press: step onto the facing cell, or
+-- cross a map connection when that cell is off this map's edge (Cinnabar
+-- east coast -> Route 20 water, and the reverse dismount ashore).
+function OverworldState:stepForwardOrCrossEdge(dir)
+  dir = dir or self.player.facing
+  local fx, fy = Collision.target(self.player.cellX, self.player.cellY, dir)
+  if not self.map:inBounds(fx, fy) then
+    return self:checkEdgeExit(dir)
+  end
+  self:scriptMove(self.player, dir, 1)
+  return true
+end
+
+-- IsNextTileShoreOrWater across a connection strip: pokered loads the
+-- neighbor's tiles into the border, so wTileInFrontOfPlayer is the
+-- connected map's tile even when the facing cell is off this map.
+-- Shore/water classification still uses THIS map's tileset rules
+-- (SHIP_PORT's $32 dock exception), matching the asm.
+function OverworldState:facingIsShoreOrWater()
+  if not self:tilesetHasWater() then return false end
+  local fx, fy = self.player:facingCell()
+  if self.map:inBounds(fx, fy) then
+    return self.map:isWaterCell(fx, fy)
+  end
+  local dest, ts, x, y = self:connectionLanding(self.player.facing)
+  if not dest then return false end
+  local tile = Map.defCellTile(dest, ts, x, y)
+  if tile == nil then return false end
+  return self.map.waterTiles[tile] or false
+end
+
+-- tryToStopSurfing land check, including a land landing across a map
+-- connection (surf off Cinnabar's east coast water back onto the coast).
+function OverworldState:facingIsLandDismount()
+  local p = self.player
+  local fx, fy = p:facingCell()
+  if self.map:inBounds(fx, fy) then
+    return self.map:isWalkableCell(fx, fy)
+       and Collision.canMove(self.map, self.entities, p, p.facing)
+  end
+  local dest, ts, x, y = self:connectionLanding(p.facing)
+  if not dest then return false end
+  if not Map.defIsWalkableCell(dest, ts, x, y) then return false end
+  -- IsSpriteInFrontOfPlayer2: no current-map sprite can sit past the edge
+  return not Collision.occupied(self.entities, fx, fy, p)
 end
 
 -- -------------------------------------------------------------------------
@@ -1571,16 +1634,21 @@ function OverworldState:trashCanSwitch(canIndex)
 end
 
 -- Bill's House PC (engine/events/hidden_events/bills_house_pc.asm
--- BillsHousePC): once Bill-the-Pokémon has climbed into the machine
--- (EVENT_BILL_SAID_USE_CELL_SEPARATOR), running the PC plays the cell
--- separator's SFX sequence, sets EVENT_USED_CELL_SEPARATOR_ON_BILL and
--- Bill steps back out of the machine human again
--- (BillsHouseBillExitsMachineScript / CleanupScript set EVENT_MET_BILL).
+-- BillsHousePC).  Check order matches pokered:
+--   1) EVENT_LEFT_BILLS_HOUSE_AFTER_HELPING -> Eevee collection list
+--   2) EVENT_USED_CELL_SEPARATOR_ON_BILL   -> teleporter monitor text
+--   3) EVENT_BILL_SAID_USE_CELL_SEPARATOR  -> cell-separator cutscene
+--   4) else                               -> teleporter monitor text
+-- Leaving after the SS Ticket (Route25ToggleBillsScript) arms (1).
 function OverworldState:billsHousePC()
   local t = Game.data.text
   local flags = Game.save.flags
-  if not (flags.EVENT_BILL_SAID_USE_CELL_SEPARATOR
-          and not flags.EVENT_USED_CELL_SEPARATOR_ON_BILL) then
+  if flags.EVENT_LEFT_BILLS_HOUSE_AFTER_HELPING then
+    self:billsHousePokemonList()
+    return
+  end
+  if flags.EVENT_USED_CELL_SEPARATOR_ON_BILL
+     or not flags.EVENT_BILL_SAID_USE_CELL_SEPARATOR then
     Game.stack:push(TextBox.new(Game, t._BillsHouseMonitorText
       or "TELEPORTER is\ndisplayed on the\nPC monitor."))
     return
@@ -1604,9 +1672,40 @@ function OverworldState:billsHousePC()
   end))
 end
 
+-- BillsHousePokemonList: EEVEE / FLAREON / JOLTEON / VAPOREON + CANCEL;
+-- picking one runs DisplayPokedex (DexEntryMenu) and returns to the list.
+function OverworldState:billsHousePokemonList()
+  local t = Game.data.text
+  local Menu = require("src.ui.Menu")
+  local function openList()
+    local species = { "EEVEE", "FLAREON", "JOLTEON", "VAPOREON" }
+    local items = {}
+    for _, id in ipairs(species) do
+      local def = Game.data.pokemon[id]
+      table.insert(items, {
+        label = (def and def.name) or id,
+        keepOpen = true,
+        onSelect = function()
+          local dex = Game.save.pokedex
+          if dex then dex.seen[id] = true end
+          Screens.push(Game, "DexEntryMenu", id)
+        end,
+      })
+    end
+    table.insert(items, { label = "CANCEL" })
+    -- TextBoxBorder b=10,c=9 at (0,0) -> total tw=11, th=12
+    Game.stack:push(Menu.new(Game, items,
+      { tx = 0, ty = 0, tw = 11, th = 12 }))
+  end
+  Game.stack:push(TextBox.new(Game, t._BillsHousePokemonListText1
+    or "BILL's favorite\nPOKéMON list!", openList))
+end
+
 -- BillsHouseBillExitsMachineScript: human Bill appears inside the machine
 -- at (1,2) and walks out to his spot at (4,4); the map music resumes and
--- EVENT_MET_BILL / EVENT_MET_BILL_2 arm the SS-Ticket dialogue.
+-- EVENT_MET_BILL / EVENT_MET_BILL_2 arm the SS-Ticket dialogue.  The Eevee
+-- PC list arms later, on the first Route 25 load after the ticket
+-- (EVENT_LEFT_BILLS_HOUSE_AFTER_HELPING).
 function OverworldState:billsHouseBillExits()
   local Commands = require("src.script.Commands")
   local ctx = { game = Game, save = Game.save, overworld = self }
@@ -1698,14 +1797,15 @@ function OverworldState:trySurf(fx, fy)
   Game.stack:push(TextBox.new(Game, text, function()
     -- start_sub_menus.asm .surf: UseItem returns (mount + text done),
     -- then GBPalWhiteOutWithDelay3 blinks before the simulated forward
-    -- press steps onto the water
+    -- press steps onto the water (or across a connection strip, like
+    -- Cinnabar's east coast onto Route 20)
     local Transition = require("src.render.Transition")
     if Transition.whiteFlash then
       Game.stack:push(Transition.whiteFlash(Game, nil, function()
-        self:scriptMove(p, p.facing, 1)
+        self:stepForwardOrCrossEdge(p.facing)
       end))
     else
-      self:scriptMove(p, p.facing, 1)
+      self:stepForwardOrCrossEdge(p.facing)
     end
   end))
 end
@@ -1805,20 +1905,20 @@ function OverworldState:useSurfFieldMove()
   -- until both EVENT_SEAFOAM4_BOULDER*_DOWN_HOLE events are set.
   if Game.save.forcedBike then return "forced_bike" end
   if self:surfBlockedHere() then return "current" end
-  local fx, fy = p:facingCell()
   if p.surfing then
     -- ItemUseSurfboard .tryToStopSurfing: blocked by a sprite in front
     -- (IsSpriteInFrontOfPlayer2), a water tile-pair collision, or a
     -- facing tile that isn't in the tileset's land-passable list;
-    -- otherwise the player walks forward off the water.
-    if self.map:inBounds(fx, fy) and self.map:isWalkableCell(fx, fy)
-       and Collision.canMove(self.map, self.entities, p, p.facing) then
+    -- otherwise the player walks forward off the water.  Facing a land
+    -- cell across a map connection (Cinnabar east coast) counts too --
+    -- pokered reads that landing from the connection strip.
+    if self:facingIsLandDismount() then
       return "dismount"
     end
     return "no_place"
   end
-  if not self.map:inBounds(fx, fy)
-     or not self.map:isWaterCell(fx, fy) or not self:tilesetHasWater() then
+  -- IsNextTileShoreOrWater, including connection-strip water (issue #125)
+  if not self:facingIsShoreOrWater() then
     return "no_water"
   end
   return "ok"

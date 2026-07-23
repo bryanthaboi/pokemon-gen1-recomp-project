@@ -145,6 +145,10 @@ end
 
 function BoxMenu.new(game)
   Boxes.ensure(game.save)
+  -- bills_pc.asm BillsPCMenu: TextBoxBorder at (0,0) with interior
+  -- 12x10 → total 14x12.  "CHANGE BOX" is 10 tiles and needs the
+  -- full interior (cursor col + label); the old tw=12 right-side box
+  -- drew the final glyph on the border.
   return Menu.new(game, {
     { label = "WITHDRAW", onSelect = function() withdraw(game) end },
     { label = "DEPOSIT", onSelect = function() deposit(game) end },
@@ -153,7 +157,7 @@ function BoxMenu.new(game)
     { label = "SEE YA!" },
     -- Bill's PC runs silent end to end (BIT_NO_MENU_BUTTON_SOUND,
     -- engine/menus/pokemon_pc.asm)
-  }, { tx = 8, ty = 0, tw = 12, th = 12, noSound = true })
+  }, { tx = 0, ty = 0, tw = 14, th = 12, noSound = true })
 end
 
 return BoxMenu

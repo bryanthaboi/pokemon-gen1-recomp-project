@@ -182,12 +182,13 @@ function PartyMenu:update(dt)
           -- and music return first (PlayDefaultMusic +
           -- LoadWalkingPlayerSpriteGraphics), the menu closes with the
           -- GBPalWhiteOutWithDelay3 blink, and the simulated pad press
-          -- steps the player forward onto land
+          -- steps the player forward onto land (or across a connection
+          -- strip when the shore is the next map's edge)
           self.game.stack:pop()
           ow.player.surfing = false
           require("src.core.Music").setSurfing(self.game.data, false)
           self.game.stack:push(Transition.whiteFlash(self.game, nil, function()
-            ow:scriptMove(ow.player, ow.player.facing, 1)
+            ow:stepForwardOrCrossEdge(ow.player.facing)
           end))
           return
         end

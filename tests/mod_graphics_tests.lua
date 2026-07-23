@@ -647,6 +647,68 @@ check(Transition.new({ data = retimed }).frames == 30,
 check(Transition.new({ data = { transitions = {} } }).frames == 12,
       "an unregistered id falls back to the built-in 12 frames")
 
+-- issue #121: with the survey-zoom world pass active, the warp fade must
+-- darken the full window composite (via Renderer.worldFadeAlpha), not just
+-- paint a 160x144 rect on the UI letterbox.
+do
+  local rects = {}
+  local color = { 1, 1, 1, 1 }
+  local savedRect, savedColor = love.graphics.rectangle, love.graphics.setColor
+  love.graphics.rectangle = function(mode, x, y, w, h)
+    rects[#rects + 1] = {
+      mode = mode, x = x, y = y, w = w, h = h,
+      a = color[4], r = color[1],
+    }
+  end
+  love.graphics.setColor = function(r, g, b, a)
+    color[1], color[2], color[3], color[4] = r, g, b, a or 1
+  end
+
+  Renderer:init()
+  local fade = Transition.new({ renderer = Renderer, stack = { pop = noop } })
+  fade.t = 6 -- mid fade-out (12 frames)
+  fade.phase = "out"
+
+  Renderer:beginFrame(true)
+  Renderer:beginWorldPass()
+  Renderer:endWorldPass()
+  check(Renderer.worldActive == true, "world pass stays marked active until endFrame")
+  fade:draw()
+  check(Renderer.worldFadeAlpha == 0.5,
+        "warp fade hands mid-out alpha to the world composite overlay")
+  check(#rects == 0,
+        "warp fade does not paint the 160x144 UI letterbox while the world pass is up")
+
+  resetLog()
+  rects = {}
+  Renderer:endFrame(nil, fullWorldZones())
+  local fadeRect
+  for _, r in ipairs(rects) do
+    -- endFrame's letterbox clear is also a full-window black fill (a == 1);
+    -- the warp overlay is the half-alpha one Transition requested
+    if r.mode == "fill" and r.x == 0 and r.y == 0
+       and r.w == 640 and r.h == 576 and r.r == 0 and r.a == 0.5 then
+      fadeRect = r
+    end
+  end
+  check(fadeRect ~= nil,
+        "endFrame paints the warp fade over the full window at the fade alpha")
+  check(Renderer.worldActive == false, "endFrame clears worldActive")
+
+  -- without a world pass (opaque UI states), keep the classic UI rect
+  Renderer:beginFrame(false)
+  fade.t = 6
+  fade.phase = "out"
+  rects = {}
+  fade:draw()
+  check(Renderer.worldFadeAlpha == nil,
+        "no world pass: warp fade does not set a world overlay")
+  check(#rects == 1 and rects[1].w == 160 and rects[1].h == 144,
+        "no world pass: warp fade still fills the 160x144 UI canvas")
+
+  love.graphics.rectangle, love.graphics.setColor = savedRect, savedColor
+end
+
 -- ------- the transition.style hook
 
 local stack = { pop = function() end }

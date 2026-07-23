@@ -57,6 +57,16 @@ end
 function Transition:draw()
   local alpha = self.t / self.frames
   if self.phase == "in" then alpha = 1 - alpha end
+  -- Survey zoom draws the overworld into a window-filling world canvas
+  -- while the UI pass stays the classic 160x144 letterbox.  A rect on the
+  -- UI canvas only darkens that center box (issue #121); when the world
+  -- pass ran this frame, hand the alpha to Renderer:endFrame so it paints
+  -- a screen-space overlay over the full composite instead.
+  local r = self.game and self.game.renderer
+  if r and r.worldActive then
+    r.worldFadeAlpha = alpha
+    return
+  end
   love.graphics.setColor(0, 0, 0, alpha)
   love.graphics.rectangle("fill", 0, 0, 160, 144)
   love.graphics.setColor(1, 1, 1, 1)

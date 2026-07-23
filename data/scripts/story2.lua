@@ -719,73 +719,170 @@ M.CINNABAR_LAB_FOSSIL_ROOM = {
 -- -------------------------------------------------------------------
 -- Day-care (scripts/Daycare.asm): the boarded Pokémon earns 1 exp per
 -- step; the fee is ¥100 plus ¥100 per level gained.
+--
+-- #118: do not raise mon.level until a paid retrieve (pokered reverts
+-- wDayCareMonBoxLevel on .leaveMonInDayCare). Fold pending steps into
+-- mon.exp once and clear them so a second talk cannot re-apply the same
+-- walk. Fill {RAM:wNameBuffer}/{RAM:wDayCareMonName}/{NUM:...} here —
+-- TextBox.TOKENS.RAM only knows wStringBuffer.
 -- -------------------------------------------------------------------
+
+local function fillDaycareText(s, subs)
+  s = s:gsub("{PLAYER}", subs.player or "")
+  s = s:gsub("{RAM:([^}]*)}", function(name) return subs[name] or "" end)
+  -- extractor NUM spans may include flags after a comma; keep the name
+  s = s:gsub("{NUM:([%w_]+)[^}]*}", function(name)
+    return tostring(subs[name] or "0")
+  end)
+  return s
+end
 
 M.DAYCARE = {
   talk = {
     TEXT_DAYCARE_GENTLEMAN = function(game, ow, npc, done)
       local TextBox = require("src.render.TextBox")
-      local ChoiceBox = require("src.ui.ChoiceBox")
       local t = game.data.text
       local dc = game.save.daycare
+      local playerName = game.save.player and game.save.player.name or "RED"
+
+      local function monName(mon)
+        local def = game.data.pokemon[mon.species]
+        return mon.nickname or (def and def.name) or mon.species
+      end
 
       if dc and dc.mon then
         local Growth = require("src.pokemon.Growth")
         local Stats = require("src.pokemon.Stats")
+        local Party = require("src.pokemon.Party")
         local mon = dc.mon
         local def = game.data.pokemon[mon.species]
-        mon.exp = mon.exp + (dc.steps or 0)
-        local newLevel = math.min(100, Growth.levelForExp(def.growthRate, mon.exp))
-        local fee = 100 + (newLevel - mon.level) * 100
-        local grew = newLevel > mon.level
-        mon.level = newLevel
-        mon.stats = Stats.calc(def, mon.level, mon.dvs, mon.statExp)
-        mon.hp = mon.stats.hp
-        local msg = grew and (t._DaycareGentlemanMonHasGrownText or "It's grown a lot!")
-                    or "Back already?"
-        game.stack:push(TextBox.new(game,
-          msg .. ("\fThe fee is ¥%d.\nGet it back?"):format(fee), function()
-          game.stack:push(ChoiceBox.new(game, function(yes)
-            if yes and game.save.money >= fee then
+        -- Apply deferred step-exp once (OverworldController only bumps
+        -- daycare.steps). Clearing prevents double-count on re-talk.
+        mon.exp = (mon.exp or 0) + (dc.steps or 0)
+        dc.steps = 0
+        -- depositLevel mirrors wDayCareMonBoxLevel: fee baseline that
+        -- must survive a declined retrieve. Fall back to mon.level for
+        -- older saves that predate the field.
+        if dc.depositLevel == nil then dc.depositLevel = mon.level end
+        local startLevel = dc.depositLevel
+        local newLevel = Growth.levelForExp(def and def.growthRate, mon.exp)
+        if newLevel >= 100 then
+          newLevel = 100
+          if def then
+            mon.exp = Growth.expForLevel(def.growthRate, 100)
+          end
+        end
+        local levelsGrown = math.max(0, newLevel - startLevel)
+        local fee = 100 + levelsGrown * 100
+        local name = monName(mon)
+        local subs = {
+          player = playerName,
+          wNameBuffer = name,
+          wDayCareMonName = name,
+          wDayCareNumLevelsGrown = levelsGrown,
+          wDayCareTotalCost = fee,
+        }
+        local statusText = levelsGrown > 0
+          and (t._DaycareGentlemanMonHasGrownText
+            or "Your {RAM:wNameBuffer}\nhas grown a lot!\fBy level, it's\ngrown by {NUM:wDayCareNumLevelsGrown, 1, 3}!\fAren't I great?")
+          or (t._DaycareGentlemanMonNeedsMoreTimeText
+            or "Back already?\nYour {RAM:wNameBuffer}\nneeds some more\ntime with me.")
+
+        game.stack:push(TextBox.new(game, fillDaycareText(statusText, subs), function()
+          if #game.save.party >= Party.MAX then
+            game.stack:push(TextBox.new(game,
+              t._DaycareGentlemanNoRoomForMonText
+                or "You have no room\nfor this POKéMON!", done))
+            return
+          end
+          game.stack:push(TextBox.new(game,
+            fillDaycareText(
+              t._DaycareGentlemanOweMoneyText
+                or "You owe me ¥{NUM:wDayCareTotalCost, 2 | LEADING_ZEROES | LEFT_ALIGN}\nfor the return\nof this POKéMON.",
+              subs),
+            nil, { choice = function(yes)
+              if not yes then
+                -- .leaveMonInDayCare: revert any transient level bump
+                mon.level = startLevel
+                game.stack:push(TextBox.new(game,
+                  (t._DaycareGentlemanAllRightThenText or "All right then,\n")
+                    .. (t._DaycareGentlemanComeAgainText or "come again."),
+                  done))
+                return
+              end
+              if (game.save.money or 0) < fee then
+                mon.level = startLevel
+                game.stack:push(TextBox.new(game,
+                  t._DaycareGentlemanNotEnoughMoneyText
+                    or "Hey, you don't\nhave enough ¥!", done))
+                return
+              end
               game.save.money = game.save.money - fee
+              mon.level = newLevel
+              if def then
+                mon.stats = Stats.calc(def, mon.level, mon.dvs, mon.statExp)
+                mon.hp = mon.stats.hp
+              end
               table.insert(game.save.party, mon)
               game.save.daycare = nil
               game.stack:push(TextBox.new(game,
-                t._DaycareGentlemanGotMonBackText or "Here you go!", done))
-            else
-              game.stack:push(TextBox.new(game,
-                yes and (t._DaycareGentlemanOweMoneyText or "You owe me money!")
-                    or "Come again!", done))
-            end
-          end))
+                t._DaycareGentlemanHeresYourMonText
+                  or "Thank you! Here's\nyour POKéMON!", function()
+                game.stack:push(TextBox.new(game,
+                  fillDaycareText(
+                    t._DaycareGentlemanGotMonBackText
+                      or "{PLAYER} got\n{RAM:wDayCareMonName} back!",
+                    subs), done))
+              end))
+            end }))
         end))
         return
       end
 
-      if #game.save.party < 2 then
-        game.stack:push(TextBox.new(game,
-          "You only have one\nPOKéMON with you!", done))
-        return
-      end
       game.stack:push(TextBox.new(game,
-        t._DaycareGentlemanIntroText or "I can raise a\nPOKéMON for you.", function()
-        game.stack:push(ChoiceBox.new(game, function(yes)
-          if not yes then done() return end
-          local PartyMenu = require("src.ui.PartyMenu")
-          game.stack:push(PartyMenu.new(game, {
-            pickOnly = true,
-            onSwitch = function(mon)
-              for i, m in ipairs(game.save.party) do
-                if m == mon then table.remove(game.save.party, i) break end
-              end
-              game.save.daycare = { mon = mon, steps = 0 }
-              game.stack:push(TextBox.new(game,
-                t._DaycareGentlemanWillLookAfterMonText or
-                "Fine, I'll look\nafter it a while!", done))
-            end,
-          }))
-        end))
-      end))
+        t._DaycareGentlemanIntroText
+          or "I run a DAYCARE.\nWould you like me\nto raise one of\nyour POKéMON?",
+        nil, { choice = function(yes)
+          if not yes then
+            game.stack:push(TextBox.new(game,
+              t._DaycareGentlemanComeAgainText or "come again.", done))
+            return
+          end
+          if #game.save.party < 2 then
+            game.stack:push(TextBox.new(game,
+              t._DaycareGentlemanOnlyHaveOneMonText
+                or "You only have one\nPOKéMON with you.", done))
+            return
+          end
+          game.stack:push(TextBox.new(game,
+            t._DaycareGentlemanWhichMonText or "Which POKéMON\nshould I raise?",
+            function()
+              local PartyMenu = require("src.ui.PartyMenu")
+              game.stack:push(PartyMenu.new(game, {
+                pickOnly = true,
+                onSwitch = function(mon)
+                  for i, m in ipairs(game.save.party) do
+                    if m == mon then table.remove(game.save.party, i) break end
+                  end
+                  local name = monName(mon)
+                  -- depositLevel = wDayCareMonBoxLevel at deposit time
+                  game.save.daycare = {
+                    mon = mon, steps = 0, depositLevel = mon.level,
+                  }
+                  game.stack:push(TextBox.new(game,
+                    fillDaycareText(
+                      t._DaycareGentlemanWillLookAfterMonText
+                        or "Fine, I'll look\nafter {RAM:wNameBuffer}\nfor a while.",
+                      { player = playerName, wNameBuffer = name }),
+                    function()
+                      game.stack:push(TextBox.new(game,
+                        t._DaycareGentlemanComeSeeMeInAWhileText
+                          or "Come see me in\na while.", done))
+                    end))
+                end,
+              }))
+            end))
+        end }))
     end,
   },
 }

@@ -1895,6 +1895,87 @@ do
   eq(#StateStack.states, depth0, "mart menu unwound cleanly")
 end
 
+-- ---------------------------------------------------------------- UI text layout (#115/#116/#119)
+-- Nested function so LuaJIT's 200-local main-chunk limit is not hit.
+;(function()
+  local BoxMenu = require("src.ui.BoxMenu")
+  local box = BoxMenu.new(Game)
+  check(box.tw >= 14, "Bill's PC menu is wide enough for CHANGE BOX")
+  local labelTiles = 2 + #"CHANGE BOX" -- cursor gap + label
+  check(box.tx + labelTiles <= box.tx + box.tw - 1,
+        "CHANGE BOX fits inside the Bill's PC border")
+
+  -- ¥ is one glyph (charmap 0xF0) but two UTF-8 bytes; right-align must
+  -- use Font.width, not #string.
+  eq(Font.width("¥300"), 4 * 8, "Font.width counts yen as one glyph")
+  check(Font.width("¥300") < #"¥300" * 8,
+        "byte-length right-align would shift yen prices left")
+
+  -- Sell list: name + quantity column only (no ¥ price on the row).
+  Game.save.inventory = { GREAT_BALL = 5, HYPER_POTION = 99 }
+  local sellShop = require("src.ui.ShopMenu").new(Game, { "POTION" }, function() end)
+  StateStack:push(sellShop)
+  Input.pressed = { down = true }; StateStack:update(1 / 60); Input.pressed = {}
+  Input.pressed = { a = true }; StateStack:update(1 / 60); Input.pressed = {}
+  local sellList = StateStack:top()
+  local foundHyper
+  for _, it in ipairs(sellList.items or {}) do
+    if it.value == "HYPER_POTION" then
+      foundHyper = it
+      local nameEnd = 16 + Font.width(it.label)
+      local rightX = 160 - 8 - Font.width(it.right)
+      check(nameEnd <= rightX,
+            "sell HYPER POTION name does not overlap quantity")
+      check(not tostring(it.right):find("¥", 1, true),
+            "sell list keeps prices out of the right column")
+      check(tostring(it.label):find("x", 1, true) == nil,
+            "sell list does not glue quantity into the name")
+    end
+  end
+  check(foundHyper, "sell list includes HYPER POTION")
+  StateStack:pop() -- sell list
+  StateStack:pop() -- shop
+  Game.save.inventory = {}
+
+  -- Status screen page 2: next-level line stays left of the line-box edge.
+  local Pokemon = require("src.pokemon.Pokemon")
+  local mon = Pokemon.new(Data, "RAICHU", 27)
+  local SummaryMenu = require("src.ui.SummaryMenu")
+  local HudTiles = require("src.render.HudTiles")
+  local drawn = {}
+  local savedDraw, savedTile = Font.draw, HudTiles.tile
+  Font.draw = function(text, x, y)
+    drawn[#drawn + 1] = { text = tostring(text), x = x, y = y }
+    return Font.width(text)
+  end
+  HudTiles.tile = function(code, x, y)
+    drawn[#drawn + 1] = { tile = code, x = x, y = y }
+  end
+  local summary = SummaryMenu.new(Game, mon)
+  summary.page = 2
+  summary:draw()
+  Font.draw = savedDraw
+  HudTiles.tile = savedTile
+  local nextExp, lvTile, lvNum
+  for _, d in ipairs(drawn) do
+    if d.text == "LEVEL UP" then
+      eq(d.y, 40, "LEVEL UP sits on tile row 5")
+    elseif type(d.text) == "string" and d.text:match("^%s*%d+$") and d.y == 48 and d.x == 56 then
+      nextExp = d
+    elseif d.tile == 0x6E and d.y == 48 then
+      lvTile = d
+    elseif d.text == "28" and d.y == 48 then
+      lvNum = d
+    end
+  end
+  check(nextExp, "next-exp prints at (7,6)")
+  check(lvTile and lvTile.x == 128, "next level uses the <LV> tile at col 16")
+  check(lvNum and lvNum.x == 136, "next level digits follow <LV>")
+  local edge = 19 * 8 -- DrawLineBox vertical at col 19
+  check(lvNum.x + Font.width(lvNum.text) <= edge,
+        "next level digits stay left of the status line-box")
+end)()
+
 
 
 -- ================= BUGS.md batch: battle-victory-music =================
