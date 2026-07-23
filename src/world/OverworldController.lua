@@ -2351,6 +2351,8 @@ end
 -- Badges/items awarded after specific battles (data/scripts/victories.lua).
 -- `deactivate` retires unfought gym/dojo trainers the way the originals'
 -- SetEvent / SetEventRange do after the leader victory.
+-- `hide` is { { mapId, objName }, ... } — HideObject on those toggles
+-- (e.g. Brock victory clears PEWTERCITY_YOUNGSTER / ROUTE22_RIVAL1).
 function OverworldState:checkVictoryRewards(trainerClass, partyIndex)
   local victories = require("data.scripts.victories")
   local reward = victories[trainerClass .. "#" .. tostring(partyIndex or 1)]
@@ -2362,6 +2364,13 @@ function OverworldState:checkVictoryRewards(trainerClass, partyIndex)
   if reward.deactivate then
     for _, flag in ipairs(reward.deactivate) do
       Game.save.flags[flag] = true
+    end
+  end
+  if reward.hide then
+    local Commands = require("src.script.Commands")
+    local ctx = { game = Game, save = Game.save, overworld = self }
+    for _, entry in ipairs(reward.hide) do
+      Commands.hide_object(ctx, entry[1], entry[2])
     end
   end
   local lines = {}

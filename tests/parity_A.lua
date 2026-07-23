@@ -338,6 +338,15 @@ do
   end
   check(pewterNpc and ow:trainerDefeated(pewterNpc),
         "unfought Pewter gym trainer is defeated after badge")
+  -- PewterGym.asm .gymVictory HideObject TOGGLE_GYM_GUY /
+  -- TOGGLE_ROUTE_22_RIVAL_1 (persists via objectToggles)
+  check(Game.save.objectToggles
+        and Game.save.objectToggles.PEWTER_CITY
+        and Game.save.objectToggles.PEWTER_CITY.PEWTERCITY_YOUNGSTER == false,
+        "Brock victory hides PEWTERCITY_YOUNGSTER")
+  check(Game.save.objectToggles.ROUTE_22
+        and Game.save.objectToggles.ROUTE_22.ROUTE22_RIVAL1 == false,
+        "Brock victory hides ROUTE22_RIVAL1")
 
   while Game.stack:top() do Game.stack:pop() end
   Game.save = SaveData.newGame()

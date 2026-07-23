@@ -22,9 +22,16 @@ local function range(prefix, first, last)
 end
 
 return {
+  -- PewterGym.asm .gymVictory also HideObject TOGGLE_GYM_GUY
+  -- (PEWTERCITY_YOUNGSTER) and TOGGLE_ROUTE_22_RIVAL_1 so the east-exit
+  -- escort NPC and the first Route 22 rival stay gone after the badge.
   ["OPP_BROCK#1"] = { badge = "BOULDERBADGE", flag = "EVENT_BEAT_BROCK",
                       item = "TM_BIDE",
-                      deactivate = { "EVENT_BEAT_PEWTER_GYM_TRAINER_0" } },
+                      deactivate = { "EVENT_BEAT_PEWTER_GYM_TRAINER_0" },
+                      hide = {
+                        { "PEWTER_CITY", "PEWTERCITY_YOUNGSTER" },
+                        { "ROUTE_22", "ROUTE22_RIVAL1" },
+                      } },
   ["OPP_MISTY#1"] = { badge = "CASCADEBADGE", flag = "EVENT_BEAT_MISTY",
                       item = "TM_BUBBLEBEAM",
                       deactivate = range("EVENT_BEAT_CERULEAN_GYM_TRAINER_", 0, 1) },

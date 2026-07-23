@@ -1,15 +1,11 @@
 -- Pewter City flavor dialogue (pokered/scripts/PewterCity.asm).
 -- PewterCity_TextPointers text_asm bodies for the SUPER_NERD1 museum
--- guide, SUPER_NERD2 garden nerd, and the leaving-east YOUNGSTER.
+-- guide and SUPER_NERD2 garden nerd.
 --
--- The escort choreography (SUPER_NERD1 walking the player to the
--- museum, YOUNGSTER walking the player to the gym) is scripted NPC
--- movement + a wPewterCityCurScript state machine that steers the
--- player off-map; the YOUNGSTER's escort to the gym is handled on this
--- map by story5.lua's onStep gate at the east exit (before
--- EVENT_BEAT_BROCK), while the SUPER_NERD1 museum escort is not ported.
--- Here we only port the real YES/NO-branched flavor text these NPCs
--- speak when talked to.
+-- The YOUNGSTER's gym escort (talk + east-exit onStep) lives in
+-- story5.lua so the lockstep RLE walk is not overwritten by this
+-- flavor merge.  SUPER_NERD1's museum escort is not ported; only the
+-- YES/NO-branched flavor text is here.
 
 local M = {}
 
@@ -61,15 +57,6 @@ M.PEWTER_CITY = {
       end)
     end,
 
-    -- PewterCityYoungsterText (scripts/PewterCity.asm): the "follow
-    -- me" line the youngster says when the player is stopped from
-    -- leaving Pewter east before beating Brock; the actual gate/step
-    -- block is handled by story5.lua's onStep for this map.
-    TEXT_PEWTERCITY_YOUNGSTER = function(game, ow, npc, done)
-      local t = text(game)
-      push(game, t._PewterCityYoungsterYoureATrainerFollowMeText
-        or "You're a trainer\nright? BROCK's\nlooking for new\nchallengers!\nFollow me!", done)
-    end,
   },
 }
 
