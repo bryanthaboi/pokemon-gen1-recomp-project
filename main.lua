@@ -300,17 +300,6 @@ function love.filedropped(file)
   if Importer then Importer:filedropped(file) end
 end
 
--- Frame pacing (issue #88): on a machine whose driver control panel forces
--- vsync off, the 160x144 game is so cheap that love.run presents thousands
--- of frames a second, which over hours degrades the graphics driver until a
--- restart (and burns power with the window merely open in the background).
--- A hard render cap bounds it.  Render-only: the logic clock is fixed-step
--- off dt (src/core/FixedStep.lua), so capping present() leaves timing,
--- audio, and determinism untouched, and vsync (conf.lua) is left alone.
---
--- Scripted / headless runs must keep full speed so CI screenshot and bot
--- tooling is not throttled, so they opt out entirely -- same env vars
--- love.load already reads for the scripted-boot path.
 local function pacingEnabled()
   if os.getenv("POKEPORT_AUTOPILOT") then return false end
   if os.getenv("POKEPORT_DRIVER") then return false end
@@ -318,9 +307,6 @@ local function pacingEnabled()
   return true
 end
 
--- LÖVE 11.5's default run loop, copied faithfully, with a frame-pacing sleep
--- swapped in for the stock trailing love.timer.sleep(0.001).  Kept resilient:
--- with no love.timer (headless) nothing sleeps, exactly as today.
 function love.run()
   if love.load then love.load(love.arg.parseGameArguments(arg), arg) end
 

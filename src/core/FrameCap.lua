@@ -1,4 +1,4 @@
--- Render frame-rate cap (issue #88).  With a driver control panel forcing
+-- Render frame-rate cap.  With a driver control panel forcing
 -- vsync off, the 160x144 game is trivially cheap and love.run will present
 -- thousands of frames a second; over hours that cooks the graphics driver
 -- until a restart, and it wastes power whenever the window is left open in
