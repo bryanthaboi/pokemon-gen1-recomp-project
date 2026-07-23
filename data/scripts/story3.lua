@@ -150,18 +150,20 @@ local WALK_DIRVEC = { up = { 0, -1 }, down = { 0, 1 }, left = { -1, 0 }, right =
 local WALK_OPP = { up = "down", down = "up", left = "right", right = "left" }
 local WALK_ORDER = { "up", "down", "left", "right" }
 
-local function elevatorWalkOut(ow, floor)
-  local m, p = ow.map, ow.player
-  -- .UpdateWarp is run twice, so BOTH car warp entries get the same
-  -- (warp id, map id): point every exit warp at the picked floor's
-  -- elevator-door warp (the reciprocal warp found while building the
-  -- menu).  The car map's def is shared generated data, but its own
-  -- warps are only ever read from inside the car, and this rewrite runs
-  -- on every ride before the walk-out fires, so it is self-correcting.
-  for _, w in ipairs(m.def.warps) do
+-- .UpdateWarp: point EVERY car exit warp at the same floor's elevator
+-- door (warp id, map id).  Shared generated map data, but the car's
+-- warps are only read from inside the car; rides rewrite them again.
+local function elevatorSetExit(ow, floor)
+  if not floor then return end
+  for _, w in ipairs(ow.map.def.warps) do
     w.destMap = floor.map
     w.destWarp = floor.warpIdx
   end
+end
+
+local function elevatorWalkOut(ow, floor)
+  local m, p = ow.map, ow.player
+  elevatorSetExit(ow, floor)
   -- leave by the exit tile under the player (they warped in onto one),
   -- else the nearest
   local door
@@ -201,7 +203,11 @@ end
 
 local function elevator(elevatorMapId, keyGate, preFrames)
   return {
-    onEnter = function(game, ow)
+    -- fromMapId: the floor the player just left (setMap passes it), so a
+    -- B-cancel can still walk out onto a real map.  Silph's ROM car warps
+    -- default to UNUSED_MAP_ED, which is not in Data.maps -- Warp.resolve
+    -- asserted and hard-crashed (#123).
+    onEnter = function(game, ow, fromMapId)
       if keyGate and not game.save.inventory[keyGate.item] then
         local TextBox = require("src.render.TextBox")
         game.stack:push(TextBox.new(game,
@@ -230,6 +236,17 @@ local function elevator(elevatorMapId, keyGate, preFrames)
         return (tonumber(a.token:match("%d+")) or 0) <
                (tonumber(b.token:match("%d+")) or 0)
       end)
+      -- Seed a walk-out destination before the menu: entry floor when
+      -- known, else the first listed floor (1F).  Choosing a floor still
+      -- rewrites via elevatorWalkOut; B-cancel keeps this seed so leaving
+      -- the car cannot hit a missing ROM placeholder map.
+      local exitFloor = floors[1]
+      if fromMapId then
+        for _, f in ipairs(floors) do
+          if f.map == fromMapId then exitFloor = f break end
+        end
+      end
+      elevatorSetExit(ow, exitFloor)
       local items = {}
       for _, f in ipairs(floors) do
         table.insert(items, { label = f.token, value = f })
@@ -262,7 +279,8 @@ local function elevator(elevatorMapId, keyGate, preFrames)
         end,
         onCancel = function()
           -- DisplayElevatorFloorMenu: `ret c` on B -- no warp, nothing
-          -- happens, the player just stays in the car
+          -- happens, the player just stays in the car (exit warps were
+          -- already seeded to the entry floor above)
         end,
       }))
     end,
@@ -481,8 +499,9 @@ local DOCK_SHIP_BLOCKS = {
 
 M.VERMILION_DOCK = {
   onEnter = function(game, ow)
+    local Flags = require("src.script.Flags")
     local f = game.save.flags
-    if f.EVENT_SS_ANNE_LEFT then
+    if Flags.get(game.save, "EVENT_SS_ANNE_LEFT") then
       -- the ship is long gone: erase her right away, and anyone who
       -- still lands here is sent back out past the guard
       for _, b in ipairs(DOCK_SHIP_BLOCKS) do
@@ -498,13 +517,15 @@ M.VERMILION_DOCK = {
     elseif f.EVENT_GOT_HM01 and ow.player.cellY == 2 then
       -- VermilionDockSSAnneLeavesScript: only stepping OFF the ship
       -- triggers the departure (wDestinationWarpID == 1 in pokered) --
-      -- the horn blows, smoke puffs drift off the funnel, the ship is
-      -- erased to open water, and the player is walked off the dock
-      -- into the city past the guard (VermilionCity's
+      -- Music_Surfing plays for the sail-away cutscene, smoke puffs
+      -- drift off the funnel, the horn blows, the ship is erased to
+      -- open water, and the player is walked off the dock into the
+      -- city past the guard (VermilionCity's
       -- SCRIPT_VERMILIONCITY_PLAYER_EXIT_SHIP walk)
-      f.EVENT_SS_ANNE_LEFT = true
-      require("src.core.Music").stop()
-      require("src.core.Sound").play(game.data, "SS_Anne_Horn")
+      Flags.set(game.save, "EVENT_SS_ANNE_LEFT")
+      local Music = require("src.core.Music")
+      Music.stop()
+      Music.play(game.data, "Music_Surfing")
       local function puff(n, cx)
         if n <= 0 then return end
         ow:startDustAnim(cx, 1, function() puff(n - 1, cx + 2) end)
@@ -512,11 +533,15 @@ M.VERMILION_DOCK = {
       puff(3, 15)
       local rows = {}
       rows[#rows + 1] = { "wait", 100 }
+      rows[#rows + 1] = { "play_sound", "SS_Anne_Horn" }
       for _, b in ipairs(DOCK_SHIP_BLOCKS) do
         rows[#rows + 1] = { "replace_block", b.bx, b.by, b.water }
       end
       rows[#rows + 1] = { "wait", 30 }
       rows[#rows + 1] = { "move_player", "up", 2 }
+      -- keep Music_Surfing across the city warp (pokered stays on it
+      -- through the exit-ship walk)
+      rows[#rows + 1] = { "play_music", "Music_Surfing", { keep = true } }
       rows[#rows + 1] = { "warp", "VERMILION_CITY", 18, 31, "up" }
       rows[#rows + 1] = { "move_player", "up", 2 }
       ow:queueScript(rows)

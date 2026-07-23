@@ -84,13 +84,17 @@ local function buy(game, stock)
 end
 
 local function sell(game)
+  -- Sell list is ITEMLISTMENU with wPrintItemPrices cleared
+  -- (pokemart.asm .sellMenuLoop): name + quantity only.  Price shows
+  -- in the quantity chooser.  Stuffing "xN" into the label next to a
+  -- right-aligned ¥ price made long names overlap (issue #116).
   local items = {}
   for _, id in ipairs(Bag.order(game.save)) do
     local def = game.data.items[id]
     table.insert(items, {
       value = id,
-      label = (def and def.name or id) .. " x" .. game.save.inventory[id],
-      right = ("¥%d"):format(def and math.floor(def.price / 2) or 0),
+      label = def and def.name or id,
+      right = "x" .. game.save.inventory[id],
     })
   end
   local greet = txt(game, "_PokemartBuyingGreetingText", "Take your time.")
@@ -128,7 +132,7 @@ local function sell(game)
             Bag.remove(game.save, item.value, qty)
             local left = game.save.inventory[item.value]
             if left then
-              item.label = def.name .. " x" .. left
+              item.right = "x" .. left
             else
               list:removeCurrent()
             end

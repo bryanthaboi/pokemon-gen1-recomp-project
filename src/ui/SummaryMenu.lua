@@ -115,12 +115,16 @@ function SummaryMenu:draw()
     drawLineBox(19, 1, 6, 10)
     Font.draw("EXP POINTS", 72, 24)
     Font.draw(("%d"):format(mon.exp), 96, 32)
-    Font.draw("LEVEL UP", 72, 44)
+    -- StatusScreen2: "LEVEL UP" at (9,5); next-exp PrintNumber 7 cols
+    -- at (7,6); space at (14,6); PrintLevel at (16,6).  The old
+    -- "%d to L%d" string at x=88 overflowed the DrawLineBox edge.
+    Font.draw("LEVEL UP", 72, 40)
     local Growth = require("src.pokemon.Growth")
     local nextExp = mon.level < 100
       and (Growth.expForLevel(def.growthRate, mon.level + 1) - mon.exp) or 0
-    Font.draw(("%d to L%d"):format(math.max(0, nextExp),
-                                   math.min(100, mon.level + 1)), 88, 52)
+    Font.draw(("%7d"):format(math.max(0, nextExp)), 56, 48)
+    HudTiles.tile(0x6E, 128, 48) -- <LV>
+    Font.draw(tostring(math.min(100, mon.level + 1)), 136, 48)
     Font.drawBox(0, 8, 20, 10)
     for i = 1, 4 do
       local mv = mon.moves[i]

@@ -62,6 +62,9 @@ end
 function Renderer:beginFrame(transparent)
   self.worldActive = false
   self.uprightActive = false
+  -- warp-fade overlay from Transition (issue #121); cleared each frame so
+  -- a popped transition cannot leave a sticky black veil
+  self.worldFadeAlpha = nil
   -- last frame's trueColor rects and sprite redraws go before anything
   -- draws this one
   PaletteFX.clearTrueColor()
@@ -413,6 +416,16 @@ function Renderer:endFrame(zones, worldZones)
       love.graphics.setScissor(0, 0, ww, wh)
       love.graphics.draw(self.uprightCanvas, wox - M * s, woy - M * s, 0, s, s)
       love.graphics.setScissor()
+    end
+    -- Screen-space warp fade (Transition) over the full world composite so
+    -- survey zoom / tilt edges darken with the center, not only the 160x144
+    -- UI letterbox.  Drawn before the UI blit so menus above a fade still
+    -- composite normally if one is ever stacked that way.
+    local fade = self.worldFadeAlpha
+    if fade and fade > 0 then
+      love.graphics.setColor(0, 0, 0, fade)
+      love.graphics.rectangle("fill", 0, 0, ww, wh)
+      love.graphics.setColor(1, 1, 1, 1)
     end
   end
   -- UI stays in the classic centered GB letterbox

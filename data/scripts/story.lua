@@ -222,17 +222,55 @@ M.BILLS_HOUSE = {
   -- repair saves that already got the ticket under the old collapsed
   -- script (the monster never hidden, human Bill never shown)
   onEnter = function(game, ow)
-    if game.save.flags.EVENT_GOT_SS_TICKET
-       and not game.save.flags.EVENT_USED_CELL_SEPARATOR_ON_BILL then
+    local flags = game.save.flags
+    if flags.EVENT_GOT_SS_TICKET
+       and not flags.EVENT_USED_CELL_SEPARATOR_ON_BILL then
       local Commands = require("src.script.Commands")
       local ctx = { game = game, save = game.save, overworld = ow }
       Commands.hide_object(ctx, "BILLS_HOUSE", "BILLSHOUSE_BILL_POKEMON")
       Commands.show_object(ctx, "BILLS_HOUSE", "BILLSHOUSE_BILL1")
-      game.save.flags.EVENT_BILL_SAID_USE_CELL_SEPARATOR = true
-      game.save.flags.EVENT_USED_CELL_SEPARATOR_ON_BILL = true
-      game.save.flags.EVENT_MET_BILL = true
-      game.save.flags.EVENT_MET_BILL_2 = true
+      flags.EVENT_BILL_SAID_USE_CELL_SEPARATOR = true
+      flags.EVENT_USED_CELL_SEPARATOR_ON_BILL = true
+      flags.EVENT_MET_BILL = true
+      flags.EVENT_MET_BILL_2 = true
     end
+    -- After Route25ToggleBillsScript, BILL2 is the visible human Bill
+    -- ("check out my rare POKéMON").  Re-apply on enter so a mid-house
+    -- load still matches the toggles if the pool was rebuilt.
+    if flags.EVENT_LEFT_BILLS_HOUSE_AFTER_HELPING then
+      local Commands = require("src.script.Commands")
+      local ctx = { game = game, save = game.save, overworld = ow }
+      Commands.hide_object(ctx, "BILLS_HOUSE", "BILLSHOUSE_BILL_POKEMON")
+      Commands.hide_object(ctx, "BILLS_HOUSE", "BILLSHOUSE_BILL1")
+      Commands.show_object(ctx, "BILLS_HOUSE", "BILLSHOUSE_BILL2")
+    end
+  end,
+}
+
+-- -------------------------------------------------------------------
+-- Route 25 outside Bill's house (scripts/Route25.asm
+-- Route25ToggleBillsScript): leaving after the SS Ticket arms the
+-- Eevee PC list and swaps human Bill to his post-help dialogue NPC.
+-- Leaving mid-quest (Bill still in the machine) puts the monster back.
+-- -------------------------------------------------------------------
+
+M.ROUTE_25 = {
+  onEnter = function(game, ow)
+    local flags = game.save.flags
+    if flags.EVENT_LEFT_BILLS_HOUSE_AFTER_HELPING then return end
+    local Commands = require("src.script.Commands")
+    local ctx = { game = game, save = game.save, overworld = ow }
+    if not flags.EVENT_MET_BILL_2 then
+      flags.EVENT_BILL_SAID_USE_CELL_SEPARATOR = nil
+      Commands.show_object(ctx, "BILLS_HOUSE", "BILLSHOUSE_BILL_POKEMON")
+      return
+    end
+    if not flags.EVENT_GOT_SS_TICKET then return end
+    flags.EVENT_LEFT_BILLS_HOUSE_AFTER_HELPING = true
+    -- TOGGLE_NUGGET_BRIDGE_GUY (ROUTE24_COOLTRAINER_M1)
+    Commands.hide_object(ctx, "ROUTE_24", "ROUTE24_COOLTRAINER_M1")
+    Commands.hide_object(ctx, "BILLS_HOUSE", "BILLSHOUSE_BILL1")
+    Commands.show_object(ctx, "BILLS_HOUSE", "BILLSHOUSE_BILL2")
   end,
 }
 
@@ -256,25 +294,40 @@ M.VERMILION_CITY = {
   end,
   -- VermilionCityDefaultScript's per-frame SSAnneTicketCheckCoords check:
   -- the unguarded cell (18,30) just west of the sailor leads straight
-  -- onto the dock warp, so stepping onto it heading for the dock gets
-  -- ticket-checked (and turned back once the ship has sailed) without
-  -- the player ever pressing A.  The sailor himself never disappears.
+  -- onto the dock warp.  Stepping onto it facing down always runs the
+  -- sailor dialog (DisplayTextID TEXT_VERMILIONCITY_SAILOR1); only a
+  -- ticket while the ship is still docked lets the player continue --
+  -- otherwise they are walked back up.  The sailor himself never hides.
   onStep = function(game, ow, x, y)
     if x ~= 18 or y ~= 30 then return false end
     if ow.player.facing ~= "down" then return false end
-    local f = game.save.flags
+    local Flags = require("src.script.Flags")
     local t = game.data.text
     local TextBox = require("src.render.TextBox")
-    if f.EVENT_SS_ANNE_LEFT then
+    local shipLeft = Flags.get(game.save, "EVENT_SS_ANNE_LEFT")
+    local hasTicket = (game.save.inventory.S_S_TICKET or 0) > 0
+    if shipLeft then
       game.stack:push(TextBox.new(game,
         t._VermilionCitySailor1ShipSetSailText or "The ship set sail.",
         function() ow:scriptMove(ow.player, "up", 1) end))
       return true
     end
-    if (game.save.inventory.S_S_TICKET or 0) > 0 then return false end
+    -- Walk-past is never facing-right / inFrontOfOrBehindGuardCoords, so
+    -- VermilionCitySailor1Text always takes .greet_player_and_check_ticket:
+    -- DoYouHaveATicket, then FlashedTicket (allow through) or YouNeedATicket
+    -- (walk back).  Returning true while the box is up also blocks the
+    -- dock warp on this step.
+    local ask = t._VermilionCitySailor1DoYouHaveATicketText
+      or "Welcome to S.S.\nANNE!\fExcuse me, do you\nhave a ticket?"
+    if hasTicket then
+      game.stack:push(TextBox.new(game,
+        ask .. "\f"
+        .. (t._VermilionCitySailor1FlashedTicketText
+            or "{PLAYER} flashed\nthe S.S.TICKET!")))
+      return true
+    end
     game.stack:push(TextBox.new(game,
-      (t._VermilionCitySailor1WelcomeToSSAnneText or "Welcome to S.S.\nANNE!")
-      .. "\f"
+      ask .. "\f"
       .. (t._VermilionCitySailor1YouNeedATicketText
           or "You need a ticket\nto get aboard."),
       function() ow:scriptMove(ow.player, "up", 1) end))
@@ -288,7 +341,7 @@ M.VERMILION_CITY = {
       { "face_player" },                                             -- 1
       { "check_flag", "EVENT_SS_ANNE_LEFT" },                        -- 2
       { "jump_if_true", 11 },                                        -- 3
-      { "show_text", "_VermilionCitySailor1WelcomeToSSAnneText" },   -- 4
+      { "show_text", "_VermilionCitySailor1DoYouHaveATicketText" },  -- 4
       { "check_item", "S_S_TICKET" },                                -- 5
       { "jump_if_false", 9 },                                        -- 6
       { "show_text", "_VermilionCitySailor1FlashedTicketText" },     -- 7
@@ -318,18 +371,21 @@ M.SS_ANNE_2F = {
 
 M.SS_ANNE_CAPTAINS_ROOM = {
   talk = {
+    -- SSAnneCaptainsRoomCaptainText: after the rub line's text_asm tail,
+    -- pokered plays MUSIC_PKMN_HEALED (scripts/SSAnneCaptainsRoom.asm).
     TEXT_SSANNECAPTAINSROOM_CAPTAIN = {
       { "check_flag", "EVENT_GOT_HM01" },                                 -- 1
-      { "jump_if_true", 9 },                                              -- 2
+      { "jump_if_true", 10 },                                             -- 2
       { "show_text", "_SSAnneCaptainsRoomRubCaptainsBackText" },          -- 3
-      { "show_text", "_SSAnneCaptainsRoomCaptainIFeelMuchBetterText" },   -- 4
+      { "play_once", "Music_PkmnHealed" },                                -- 4
+      { "show_text", "_SSAnneCaptainsRoomCaptainIFeelMuchBetterText" },   -- 5
       -- give-then-print like scripts/SSAnneCaptainsRoom.asm (GiveItem
       -- fills wStringBuffer; the received text reads it)
-      { "give_item", "HM_CUT", 1, false },                                -- 5
-      { "show_text", "_SSAnneCaptainsRoomCaptainReceivedHM01Text" },      -- 6
-      { "set_flag", "EVENT_GOT_HM01" },                                   -- 7
-      { "jump", 10 },                                                     -- 8
-      { "show_text", "_SSAnneCaptainsRoomCaptainNotSickAnymoreText" },    -- 9
+      { "give_item", "HM_CUT", 1, false },                                -- 6
+      { "show_text", "_SSAnneCaptainsRoomCaptainReceivedHM01Text" },      -- 7
+      { "set_flag", "EVENT_GOT_HM01" },                                   -- 8
+      { "jump", 11 },                                                     -- 9
+      { "show_text", "_SSAnneCaptainsRoomCaptainNotSickAnymoreText" },    -- 10
     },
   },
 }

@@ -55,9 +55,27 @@ local function newStack()
   return stack, items
 end
 
+-- snapshot / restore car warps so tests that seed or ride do not leak
+-- across cases (Silph's ROM default is UNUSED_MAP_ED)
+local function snapshotWarps(mapId)
+  local snap = {}
+  for i, w in ipairs(Data.maps[mapId].warps) do
+    snap[i] = { destMap = w.destMap, destWarp = w.destWarp }
+  end
+  return snap
+end
+
+local function restoreWarps(mapId, snap)
+  for i, w in ipairs(Data.maps[mapId].warps) do
+    w.destMap, w.destWarp = snap[i].destMap, snap[i].destWarp
+  end
+end
+
 -- drives one elevator map's onEnter and returns the pushed state (either a
--- ListMenu or, for the keyGated Rocket Hideout without the key, a TextBox)
-local function openElevator(mapId, inventory)
+-- ListMenu or, for the keyGated Rocket Hideout without the key, a TextBox).
+-- fromMapId is the floor the player entered from (OverworldState:setMap
+-- passes it), used to seed a cancel-safe walk-out destination.
+local function openElevator(mapId, inventory, fromMapId)
   local script = mapScripts.get(mapId)
   check(script ~= nil, mapId .. " script registered")
   check(script and script.onEnter ~= nil, mapId .. " has onEnter")
@@ -98,7 +116,7 @@ local function openElevator(mapId, inventory)
     stack = stack,
   }
   sfxCalls = {}
-  script.onEnter(game, ow)
+  script.onEnter(game, ow, fromMapId)
   return items[#items], warpCalls, stack, ow
 end
 
@@ -130,7 +148,14 @@ end
 -- Silph Co elevator: 11 floors, the double-digit sort/label regression
 -- ===================================================================
 do
-  local menu, warpCalls, stack, ow = openElevator("SILPH_CO_ELEVATOR")
+  local silphSnap = snapshotWarps("SILPH_CO_ELEVATOR")
+  -- ROM default (UNUSED_MAP_ED) must still be what we start from so the
+  -- cancel-then-exit regression below is real
+  eq(silphSnap[1].destMap, "UNUSED_MAP_ED",
+     "Silph Co ROM car warps still default to UNUSED_MAP_ED")
+
+  local menu, warpCalls, stack, ow =
+    openElevator("SILPH_CO_ELEVATOR", nil, "SILPH_CO_5F")
   check(menu ~= nil and getmetatable(menu) == ListMenu, "SILPH_CO_ELEVATOR opens a ListMenu")
   if menu then
     eq(#menu.items, 11, "Silph Co elevator lists all 11 floors")
@@ -143,11 +168,31 @@ do
     check(menu.items[1].label ~= "SILPH CO 1F" and not menu.items[1].label:find("SILPH"),
           "Silph Co floor label is the short token, not the full map id")
 
+    -- onEnter seeds the car's exit to the floor we came from so a B-cancel
+    -- cannot leave UNUSED_MAP_ED in place (#123 hard crash on walk-out)
+    eq(ow.map.def.warps[1].destMap, "SILPH_CO_5F",
+       "Silph onEnter seeds exit warps to the entry floor")
+    check(Data.maps[ow.map.def.warps[1].destMap] ~= nil,
+          "seeded Silph exit map exists in Data.maps")
+
     -- Cancel: pokered's DisplayElevatorFloorMenu does `ret c` on B --
     -- no warp at all.
     clear(warpCalls)
     menu.onCancel()
     eq(#warpCalls, 0, "Cancel does not warp (bare ret c, no floors[1] fallback)")
+
+    -- #123: after B-cancel, walking out of the car must resolve without
+    -- asserting on the ROM placeholder UNUSED_MAP_ED
+    clear(warpCalls)
+    local okExit, errExit = pcall(function()
+      ow:takeWarp(ow.map.def.warps[1])
+    end)
+    check(okExit, "cancel then exit does not crash: " .. tostring(errExit))
+    eq(#warpCalls, 1, "cancel then exit takes the seeded entry-floor warp")
+    if warpCalls[1] then
+      eq(warpCalls[1].map, "SILPH_CO_5F",
+         "cancel then exit returns to the floor the player entered from")
+    end
 
     -- Choose a mid-list floor (5F): pokered never warps on the spot --
     -- DisplayElevatorFloorMenu sets BIT_CUR_MAP_USED_ELEVATOR and the
@@ -157,6 +202,7 @@ do
     -- cycle, then SFX_SAFARI_ZONE_PA, and only then the floor warp.
     clear(warpCalls)
     sfxCalls = {}
+    ow.walkSteps = {}
     local chosen = menu.items[5] -- "5F"
     menu.onChoose(chosen, menu)
     eq(#warpCalls, 0, "choosing a floor does not warp on the spot (the shake runs first)")
@@ -184,6 +230,7 @@ do
       eq(warpCalls[1].y, chosen.value.y, "walk-out lands on the chosen floor's y")
     end
   end
+  restoreWarps("SILPH_CO_ELEVATOR", silphSnap)
 end
 
 -- ===================================================================
