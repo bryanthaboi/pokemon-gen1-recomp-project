@@ -813,6 +813,36 @@ function SaveData.defaultHeal(boot)
   return { map = map, x = boot.startX or 3, y = boot.startY or 6 }
 end
 
+-- Post-credits home (issue #103).  pokered left the player in HALL_OF_FAME
+-- after jp Init; this port places CONTINUE at the NewGameWarp bedroom and
+-- retargets LAST_MAP exits (Red's house mats) at the heal-point town so
+-- leaving the house does not dump the player back at Indigo Plateau.
+-- Marks postGameHomeOk so a later intentional HoF save is not relocated.
+function SaveData.applyPostGameHome(save, boot)
+  boot = type(boot) == "table" and boot or {}
+  local heal = SaveData.defaultHeal(boot)
+  save.lastHeal = { map = heal.map, x = heal.x, y = heal.y }
+  save.lastOutdoor = { id = heal.map, x = heal.x, y = heal.y }
+  save.player = save.player or {}
+  save.player.map = boot.startMap or "REDS_HOUSE_2F"
+  save.player.x = boot.startX or 3
+  save.player.y = boot.startY or 6
+  save.player.facing = boot.startFacing or "down"
+  save.postGameHomeOk = true
+  return heal
+end
+
+-- Softlocked 0.1.11 saves: still standing in HALL_OF_FAME after credits,
+-- with lastOutdoor on Indigo.  One-shot rescue on CONTINUE.
+function SaveData.needsPostGameRescue(save)
+  if not (save and save.player and save.player.map == "HALL_OF_FAME") then
+    return false
+  end
+  if save.postGameHomeOk then return false end
+  local hof = save.hallOfFame
+  return type(hof) == "table" and #hof > 0
+end
+
 function SaveData.newGame(boot)
   boot = type(boot) == "table" and boot or {}
   local map = boot.startMap or "REDS_HOUSE_2F"
@@ -836,6 +866,10 @@ function SaveData.newGame(boot)
     },
     flags = {},
     inventory = {},
+    -- Vanilla Gen1 seeds one Potion in the player's item PC
+    -- (wBoxItems / players_pc.asm); existing saves keep whatever they
+    -- already have — this only applies to New Game.
+    pcItems = { POTION = 1 },
     party = {},
     box = {},
     money = boot.startMoney or 3000,

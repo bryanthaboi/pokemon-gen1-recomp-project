@@ -872,11 +872,15 @@ R.palettes = {
 }
 
 -- keyed by species id, unlike the vanilla byDex array: a species past the
--- end of the dex gets an icon without punching a hole in the list
+-- end of the dex gets an icon without punching a hole in the list. The party
+-- menu (src/ui/PartyMenu.lua) reads this per-species entry before the vanilla
+-- dex-indexed default. The value is a built-in icon NAME -- one of BALL, BIRD,
+-- BUG, FAIRY, GRASS, HELIX, MON, QUADRUPED, SNAKE, WATER (uppercase) -- or a
+-- { image = <bundled file path>, frames? } table of your own art.
 R.icons = {
   semantics = "record", target = "icons.bySpecies",
   value = f.union{ f.str, f.rec{ image = f.path, frames = f.opt(f.int(1)) } },
-  example = 'mod.content.icons:register("MISSINGNO", { image = "glitch.png" })',
+  example = 'mod.content.icons:register("MODMON", "QUADRUPED")  -- a built-in name, or { image = mod.assets:path("icon.png"), frames = 2 }',
 }
 
 -- glyph codes are not bytes: the vanilla pages sit at $60/$80 but a

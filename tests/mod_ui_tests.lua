@@ -475,6 +475,38 @@ check(title.version and title.version.path
   == "assets/generated/title/red_version.png",
   "the shipped version ribbon loads")
 
+-- issue #128: title SGB zones must resolve Blue's LOGO1 (blue ribbon),
+-- not Red's, when the ROM pack carries Blue SuperPalettes
+do
+  local GameVersion = require("src.core.GameVersion")
+  local PaletteFX = require("src.render.PaletteFX")
+  local prevVer, prevMode = GameVersion.get(), PaletteFX.mode
+  local blueLogo1 = {
+    { 255, 239, 255 }, { 247, 247, 140 }, { 173, 0, 33 }, { 115, 156, 239 },
+  }
+  local mewmon = {
+    { 255, 239, 255 }, { 247, 181, 140 }, { 132, 115, 156 }, { 25, 16, 16 },
+  }
+  local logo2 = {
+    { 255, 239, 255 }, { 247, 247, 140 }, { 148, 148, 197 }, { 58, 58, 132 },
+  }
+  local game = { data = { palettes = { palettes = {
+    LOGO1 = blueLogo1, LOGO2 = logo2, MEWMON = mewmon,
+  } } } }
+  PaletteFX.setMode("redpp")
+  GameVersion.set("blue")
+  local zones = TitleState.sgbPalettes(title, game)
+  check(zones and zones[2] and zones[2].colors == blueLogo1,
+        "Blue title ribbon zone uses ROM LOGO1 under RED++")
+  GameVersion.set("red")
+  zones = TitleState.sgbPalettes(title, game)
+  local gbcLogo1 = PaletteFX.gbcPack().palettes.LOGO1
+  check(zones and zones[2] and zones[2].colors == gbcLogo1,
+        "Red title under RED++ keeps gbc-pack LOGO1 even if ROM has Blue's")
+  GameVersion.set(prevVer)
+  PaletteFX.setMode(prevMode)
+end
+
 local OakSpeech = require("src.ui.OakSpeech")
 local ogame = { data = {
   field = { oakSpeech = { music = "X_Song", demoSpecies = "PIKACHU" } },

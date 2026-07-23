@@ -1122,7 +1122,9 @@ end
 -- -------------------------------------------------------------------------
 
 -- HM field moves are gated by badges like the original
--- (constants.hmBadges; distinct from constants.hmMoves, the forget gate)
+-- (constants.hmBadges; distinct from constants.hmMoves, the forget gate).
+-- Gen 1 allows field use from fainted party members (party menu + name
+-- lookup for Cut/Surf messages); do not require mon.hp > 0 here.
 function OverworldState:partyKnows(moveId)
   local gate = (FieldDefaults.constant(Game.data, "hmBadges") or {})[moveId]
   local badge = gate and gate.badge
@@ -1130,10 +1132,8 @@ function OverworldState:partyKnows(moveId)
     return nil
   end
   for _, mon in ipairs(Game.save.party) do
-    if mon.hp > 0 then
-      for _, mv in ipairs(mon.moves) do
-        if mv.id == moveId then return mon end
-      end
+    for _, mv in ipairs(mon.moves) do
+      if mv.id == moveId then return mon end
     end
   end
   return nil
@@ -1887,7 +1887,7 @@ end
 -- to SurfingAttemptFailed (_NoSurfingHereText) if it isn't water.  This is
 -- a side-effect-free check that reports which text/flow the caller should
 -- use; the actual mount happens in trySurf on "ok".  Returns:
---   "no_badge"    -> SOULBADGE missing / no live SURF mon (_NewBadgeRequiredText)
+--   "no_badge"    -> SOULBADGE missing / no SURF mon (_NewBadgeRequiredText)
 --   "forced_bike" -> on the Cycling Road (_CyclingIsFunText)
 --   "current"     -> Seafoam B4F stairs before the boulders (_CurrentTooFastText)
 --   "dismount"    -> already surfing, facing dry land; caller steps forward
@@ -1930,7 +1930,7 @@ end
 -- (and .loop back to the submenu) if it isn't cuttable.  Side-effect-free
 -- check mirroring useSurfFieldMove; tryCut does the actual cut on "ok".
 -- Returns:
---   "no_badge" -> CASCADEBADGE missing / no live CUT mon (_NewBadgeRequiredText)
+--   "no_badge" -> CASCADEBADGE missing / no CUT mon (_NewBadgeRequiredText)
 --   "nothing"  -> not facing a cuttable tree (_NothingToCutText)
 --   "ok"       -> facing a cuttable tree; caller may call tryCut(fx, fy)
 function OverworldState:useCutFieldMove()

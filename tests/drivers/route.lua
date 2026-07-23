@@ -4165,21 +4165,8 @@ function ops.fieldMove(s, where)
     say(("fieldMove %s: nobody in the party knows it"):format(move))
     return false
   end
-  -- The knower must also be CONSCIOUS: the party submenu hides field
-  -- moves on a fainted mon (vanilla -- partyKnows requires hp > 0), so
-  -- the menu walk below finds only STATS/SWITCH and fails. Route 23's
-  -- mandatory surf strip is where this bit: WARTORTLE arrived dead from
-  -- the Viridian Gym attrition, "no SURF entry" x3, the water was never
-  -- crossed, and the whole league skip-cascaded with all eight badges
-  -- in the bag. Heal, fail this attempt loudly, and let the caller's
-  -- retry run the step again with a live user.
-  local knower = (G.save.party or {})[slot]
-  if knower and (knower.hp or 0) <= 0 then
-    say(("fieldMove %s: its only user has fainted -- visiting a centre "
-         .. "before retrying"):format(move))
-    visitPokeCenter(where)
-    return false
-  end
+  -- Field moves work from fainted users in Gen 1 (PartyMenu + partyKnows
+  -- no longer gate on hp > 0). No Poké Center detour needed here.
   -- CUT acts on the tile the player is FACING (OverworldState:tryCut), and
   -- a `goto` leaves us facing whatever direction we last stepped. Without
   -- turning to the tree first the move fires into empty ground, the game

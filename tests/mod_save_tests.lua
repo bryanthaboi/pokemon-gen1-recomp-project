@@ -536,6 +536,32 @@ do
     "newGame starts an empty modData")
   check(plain.meta.format == Version.saveFormat and #plain.meta.mods == 0,
     "newGame stamps a vanilla meta")
+  check(plain.pcItems and plain.pcItems.POTION == 1,
+    "unhooked newGame seeds 1 Potion in pcItems (issue #109)")
+end
+
+-- issue #109: loading a pre-fix save that never had pcItems must not
+-- invent a free Potion (player may already have withdrawn/tossed it, or
+-- the empty PC is intentional).  Seeding is New Game only.
+do
+  local files = {}
+  love.filesystem = memfs(files)
+  local legacy = {
+    meta = { format = Version.saveFormat, mods = {} },
+    player = { map = "PALLET_TOWN", x = 5, y = 6, facing = "down",
+               name = "RED", rival = "BLUE", id = 1 },
+    flags = {}, inventory = {}, party = {}, box = {}, money = 3000,
+    defeatedTrainers = {}, pokedex = { seen = {}, owned = {} },
+    lastHeal = { map = "PALLET_TOWN", x = 5, y = 6 },
+    options = SaveData.defaultOptions(),
+  }
+  check(legacy.pcItems == nil, "fixture omits pcItems on purpose")
+  check(SaveData.save(legacy), "legacy save without pcItems writes")
+  local loaded = SaveData.load()
+  check(loaded ~= nil, "legacy save loads")
+  check(loaded.pcItems == nil or loaded.pcItems.POTION == nil,
+    "load does not invent a PC Potion for existing saves")
+  love.filesystem = realFS
 end
 
 -- a throwing mod migration is skipped, never fatal: an uncaught error here

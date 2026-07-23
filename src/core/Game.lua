@@ -460,6 +460,13 @@ function Game:restoreSave(loaded, recovered)
   -- SaveData.load and skip on the format guard
   local activeMods = self.modStatus and self.modStatus.loaded
   SaveData.runMigrations(loaded, self.mods and self.mods.migrations, activeMods)
+  -- Issue #103: 0.1.11 softlocks left CONTINUE in HALL_OF_FAME with
+  -- lastOutdoor on Indigo.  One-shot relocate + heal before validate.
+  if SaveData.needsPostGameRescue(loaded) then
+    SaveData.applyPostGameHome(loaded, self:bootConfig())
+    local Pokemon = require("src.pokemon.Pokemon")
+    for _, mon in ipairs(loaded.party or {}) do Pokemon.heal(mon) end
+  end
   local modsDiff = SaveData.modsDiff(loaded, activeMods)
   local report = SaveData.validate(loaded, self.data)
   report.recovered = recovered

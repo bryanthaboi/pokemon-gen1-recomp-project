@@ -438,10 +438,18 @@ function Commands.play_sound(ctx, soundId)
   require("src.core.Sound").play(ctx.game.data, soundId)
 end
 
--- play_once <songId>: one-shot jingle (Music_PkmnHealed, etc.); the map
--- theme resumes when it ends (Music.playOnce / pendingRestore)
+-- play_once <songId>: one-shot jingle (Music_PkmnHealed, etc.); blocks
+-- until it finishes so heal-rest scripts (Mom, captain text_asm) match
+-- Gen1's wait-on-channel loop.  The map theme resumes when it ends
+-- (Music.playOnce / pendingRestore).
 function Commands.play_once(ctx, songId)
-  require("src.core.Music").playOnce(ctx.game.data, songId)
+  local Music = require("src.core.Music")
+  if not Music.playOnce(ctx.game.data, songId) then return end
+  local runner = ctx.runner
+  runner.waitingCheck = function()
+    return not Music.oneShotPlaying()
+  end
+  runner:yield()
 end
 
 -- play_cry <species>: PlayCry (home/audio.asm).  The text_asm bodies that
@@ -515,12 +523,29 @@ function Commands.give_money(ctx, amount)
   ctx.save.money = math.max(0, ctx.save.money + amount)
 end
 
+-- Point LAST_MAP exits at an outdoor door (pokered wLastMap).  Keeps the
+-- live overworld memory in sync so a scripted home warp from the HoF PC
+-- does not leave Red's house mats aimed at Indigo Plateau (#103).
+function Commands.remember_outdoor(ctx, mapId, x, y)
+  local outdoor = { id = mapId, x = x, y = y }
+  ctx.save.lastOutdoor = outdoor
+  if ctx.overworld and ctx.overworld.rememberOutdoor then
+    ctx.overworld:rememberOutdoor(mapId, x, y)
+  elseif ctx.overworld then
+    ctx.overworld.lastOutdoor = outdoor
+  end
+end
+
 -- Hall of Fame: snapshot the winning party (SaveHallOfFameTeams inside
 -- AnimateHallOfFame), run the induction showcase and the end credits,
 -- autosave while THE END is up, then soft-reset to the title -- the whole
 -- predef HallOfFamePC + tail of HallOfFameResetEventsAndSaveScript
 -- (engine/movie/hall_of_fame.asm, engine/movie/credits.asm,
 -- scripts/HallOfFame.asm).
+--
+-- Departure from pokered: CONTINUE lands in the NewGameWarp bedroom with
+-- a healed party and lastOutdoor on Pallet Town, instead of remaining
+-- softlocked in HALL_OF_FAME with LAST_MAP still aimed at Indigo (#103).
 function Commands.record_hall_of_fame(ctx)
   ctx.save.hallOfFame = ctx.save.hallOfFame or {}
   local entry = {}
@@ -536,17 +561,25 @@ function Commands.record_hall_of_fame(ctx)
     Screens.push(game, "Credits", function()
       runner:resume()
     end, function()
-      -- THE END is on screen: HallOfFameResetEventsAndSaveScript sets
-      -- wLastBlackoutMap := PALLET_TOWN and runs SaveGameData, so the
-      -- save keeps the player standing in the HALL_OF_FAME room.  (The
-      -- E4 room-script/event resets that precede the save in pokered are
-      -- the Indigo lobby's re-entry reset here, data/scripts/story6.lua.)
-      -- pokered writes PALLET_TOWN here as a literal, not as "the spawn" --
-      -- the vanilla spawn is REDS_HOUSE_2F. SaveData.defaultHeal carries
-      -- that split (and lets a total conversion redirect it).
+      -- THE END is on screen: heal, place the player at post-game home,
+      -- retarget LAST_MAP, then SaveGameData.  (E4 room-script/event
+      -- resets that precede the save in pokered are the Indigo lobby's
+      -- re-entry reset here, data/scripts/story6.lua.)
+      local SaveData = require("src.core.SaveData")
+      local Pokemon = require("src.pokemon.Pokemon")
       local boot = game.data.field and game.data.field.boot or {}
-      ctx.save.lastHeal = require("src.core.SaveData").defaultHeal(boot)
+      for _, mon in ipairs(ctx.save.party or {}) do
+        Pokemon.heal(mon)
+      end
+      SaveData.applyPostGameHome(ctx.save, boot)
+      if game.overworld then
+        game.overworld.lastOutdoor = ctx.save.lastOutdoor
+      end
       if game.writeSave then game:writeSave() end
+      -- writeSave's captureSave re-stamps the live HALL_OF_FAME coords;
+      -- re-apply home and persist so CONTINUE resumes in the bedroom.
+      SaveData.applyPostGameHome(ctx.save, boot)
+      SaveData.save(ctx.save)
     end)
   end)
   runner:yield()
@@ -861,15 +894,21 @@ function Commands.push_screen(ctx, screenId, args)
   runner:yield()
 end
 
--- fade "out"|"in" [frames]: screen fade without warping (the Transition
--- ramp startWarpTo uses, split in two).  "out" pushes a black overlay
--- that stays up; the held state keeps ticking the runner's frame-waits
--- so a script can wait/replace_block under it.  "in" ramps it away.
+-- fade "out"|"in" [frames|"white"|"black"] [frames|"white"|"black"]:
+-- screen fade without warping (the Transition ramp startWarpTo uses,
+-- split in two).  "out" pushes an overlay that stays up; the held state
+-- keeps ticking the runner's frame-waits so a script can wait /
+-- heal_party / play_once under it.  "in" ramps it away.
+-- Color defaults to black (warp-style); "white" matches GBFadeOutToWhite
+-- / GBFadeInFromWhite (Mom heal, Silph Co. nurse).  White defaults to
+-- 24 frames (3 palettes x 8); black defaults to 12 (Transition).
 local FadeOverlay = {}
 FadeOverlay.__index = FadeOverlay
 
-function FadeOverlay.new(game, ow)
-  return setmetatable({ game = game, ow = ow, alpha = 0 }, FadeOverlay)
+function FadeOverlay.new(game, ow, color)
+  return setmetatable({
+    game = game, ow = ow, alpha = 0, color = color or "black",
+  }, FadeOverlay)
 end
 
 function FadeOverlay:update()
@@ -895,28 +934,51 @@ function FadeOverlay:update()
 end
 
 function FadeOverlay:draw()
-  love.graphics.setColor(0, 0, 0, self.alpha)
+  if self.color == "white" then
+    love.graphics.setColor(1, 1, 1, self.alpha)
+  else
+    love.graphics.setColor(0, 0, 0, self.alpha)
+  end
   love.graphics.rectangle("fill", 0, 0, 160, 144)
   love.graphics.setColor(1, 1, 1, 1)
 end
 
-function Commands.fade(ctx, dir, frames)
+local function parseFadeArgs(a, b)
+  local frames, color
+  if type(a) == "string" then
+    color = a
+    if type(b) == "number" then frames = b end
+  elseif type(a) == "number" then
+    frames = a
+    if type(b) == "string" then color = b end
+  end
+  color = color or "black"
+  if not frames then
+    frames = (color == "white") and 24 or 12
+  end
+  return frames, color
+end
+
+function Commands.fade(ctx, dir, framesOrColor, colorOrFrames)
   local ow = ctx.overworld
   if not ow then return end
   local runner = ctx.runner
-  frames = frames or 12 -- Transition's ramp length
+  local frames, color = parseFadeArgs(framesOrColor, colorOrFrames)
   local overlay = ow.fadeOverlay
   if dir == "out" then
     if not overlay then
-      overlay = FadeOverlay.new(ctx.game, ow)
+      overlay = FadeOverlay.new(ctx.game, ow, color)
       ow.fadeOverlay = overlay
       ctx.game.stack:push(overlay)
+    else
+      overlay.color = color
     end
     overlay.ramp = { from = overlay.alpha, to = 1, frames = frames, t = 0,
                      onDone = function() runner:resume() end }
     runner:yield()
   elseif dir == "in" then
     if not overlay then return end
+    overlay.color = color or overlay.color
     overlay.ramp = { from = overlay.alpha, to = 0, frames = frames, t = 0,
                      onDone = function() runner:resume() end }
     runner:yield()
@@ -1006,7 +1068,7 @@ for _, verb in ipairs({ "show_text", "ask", "choice", "start_battle", "warp",
     "open_mart", "trade", "push_screen", "record_hall_of_fame",
     "old_man_demo", "static_battle", "rival_battle", "give_item", "wait",
     "wait_flag", "move_player", "move_npc", "move_npc_to", "walk_npc",
-    "emote", "fade", "pan_camera" }) do
+    "emote", "fade", "pan_camera", "play_once" }) do
   local meta = Commands.meta[verb] or {}
   Commands.meta[verb] = meta
   meta.blocking = true

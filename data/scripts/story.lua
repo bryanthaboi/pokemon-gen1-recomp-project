@@ -809,10 +809,14 @@ M.HALL_OF_FAME = {
     -- that teleports back to the new-game bedroom spawn (special_warps.asm
     -- NewGameWarp: REDS_HOUSE_2F, 3, 6, facing down).  Fabricated
     -- convenience -- there is no such prompt in the original ROM.
+    -- Heal + remember_outdoor so house LAST_MAP mats land in Pallet, not
+    -- Indigo Plateau (issue #103 escape path for already-stuck saves).
     TEXT_HALLOFFAME_PC = {
       { "ask", "Return to\nPALLET TOWN?" },             -- 1  YES/NO -> lastCheck
       { "jump_if_false", "end" },                       -- 2  NO: back away
-      { "warp", "REDS_HOUSE_2F", 3, 6, "down" },        -- 3  YES: home to your room
+      { "heal_party" },                                 -- 3
+      { "remember_outdoor", "PALLET_TOWN", 5, 6 },       -- 4  LAST_MAP -> Pallet door
+      { "warp", "REDS_HOUSE_2F", 3, 6, "down" },        -- 5  YES: home to your room
     },
   },
 }
@@ -839,21 +843,51 @@ M.CERULEAN_CITY = {
   },
 }
 
+-- PokemonTower2F.asm: after the battle, PokemonTower2FDefeatedRivalScript
+-- walks him out (RightThenDown vs DownThenRight from EVENT_POKEMON_TOWER_
+-- RIVAL_ON_LEFT) then HideObject TOGGLE_POKEMON_TOWER_2F_RIVAL.  Player
+-- at (15,5) is the ON_LEFT case.
+local TOWER_RIVAL_EXIT_RIGHT_THEN_DOWN =
+  { "right", "down", "down", "right", "down", "down", "right", "right" }
+local TOWER_RIVAL_EXIT_DOWN_THEN_RIGHT =
+  { "down", "down", "right", "right", "right", "right", "down", "down" }
+
+local function pokemonTower2FRivalScript(playerX)
+  local exitDirs = (playerX == 15)
+    and TOWER_RIVAL_EXIT_DOWN_THEN_RIGHT
+    or TOWER_RIVAL_EXIT_RIGHT_THEN_DOWN
+  return {
+    { "face_player" },                                            -- 1
+    { "check_flag", "EVENT_BEAT_POKEMON_TOWER_RIVAL" },           -- 2
+    { "jump_if_true", 12 },                                       -- 3
+    { "show_text", "_PokemonTower2FRivalWhatBringsYouHereText" }, -- 4
+    { "rival_battle", "OPP_RIVAL2", 4 },                          -- 5
+    { "jump_if_false", "end" },                                   -- 6 loss: stay
+    { "set_flag", "EVENT_BEAT_POKEMON_TOWER_RIVAL" },             -- 7
+    { "show_text", "_PokemonTower2FRivalDefeatedText" },          -- 8
+    { "walk_npc", 1, exitDirs },                                  -- 9
+    { "hide_object", "POKEMON_TOWER_2F", "POKEMONTOWER2F_RIVAL" }, -- 10
+    { "jump", "end" },                                            -- 11
+    { "show_text", "_PokemonTower2FRivalHowsYourDexText" },       -- 12
+  }
+end
+
 M.POKEMON_TOWER_2F = {
+  rivalScript = pokemonTower2FRivalScript,
   talk = {
-    TEXT_POKEMONTOWER2F_RIVAL = {
-      { "face_player" },                                            -- 1
-      { "check_flag", "EVENT_BEAT_POKEMON_TOWER_RIVAL" },           -- 2
-      { "jump_if_true", 10 },                                       -- 3
-      { "show_text", "_PokemonTower2FRivalWhatBringsYouHereText" }, -- 4
-      { "rival_battle", "OPP_RIVAL2", 4 },                          -- 5
-      { "jump_if_false", 11 },                                      -- 6
-      { "set_flag", "EVENT_BEAT_POKEMON_TOWER_RIVAL" },             -- 7
-      { "show_text", "_PokemonTower2FRivalDefeatedText" },          -- 8
-      { "jump", 11 },                                               -- 9
-      { "show_text", "_PokemonTower2FRivalHowsYourDexText" },       -- 10
-    },
+    TEXT_POKEMONTOWER2F_RIVAL = function(game, ow, npc, done)
+      ow.runner:run(pokemonTower2FRivalScript(ow.player.cellX),
+                    { npc = npc, onDone = done })
+    end,
   },
+  -- Saves that beat him before the exit walk was ported still have the
+  -- flag but a visible rival; hide on enter like BillsHouse repairs.
+  onEnter = function(game, ow)
+    if not game.save.flags.EVENT_BEAT_POKEMON_TOWER_RIVAL then return end
+    local Commands = require("src.script.Commands")
+    Commands.hide_object({ game = game, save = game.save, overworld = ow },
+                         "POKEMON_TOWER_2F", "POKEMONTOWER2F_RIVAL")
+  end,
   -- PokemonTower2FDefaultScript: walking past the rival's tile forces
   -- the encounter (ArePlayerCoordsInArray on (15,5)/(14,6)) -- he never
   -- waits to be talked to
@@ -865,8 +899,7 @@ M.POKEMON_TOWER_2F = {
     if not rival then return false end
     ow.player.facing = (x == 15) and "left" or "up"
     require("src.core.Music").play(game.data, "Music_MeetRival")
-    ow.runner:run(M.POKEMON_TOWER_2F.talk.TEXT_POKEMONTOWER2F_RIVAL,
-                  { npc = rival })
+    ow.runner:run(pokemonTower2FRivalScript(x), { npc = rival })
     return true
   end,
 }

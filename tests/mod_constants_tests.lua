@@ -320,6 +320,9 @@ check(vanillaSave.player.map == "REDS_HOUSE_2F" and vanillaSave.player.x == 3
   "the seeded boot config reproduces the NewGameWarp bedroom spawn")
 check(vanillaSave.player.name == "RED" and vanillaSave.player.rival == "BLUE"
   and vanillaSave.money == 3000, "the seeded boot config reproduces the Red start")
+-- issue #109: vanilla New Game puts 1 Potion in the player's item PC
+check(vanillaSave.pcItems and vanillaSave.pcItems.POTION == 1,
+  "new game seeds 1 Potion in the player's PC")
 -- the heal point is deliberately NOT the spawn: wLastBlackoutMap is
 -- zero-filled at new game and PALLET_TOWN is map 0
 check(vanillaSave.lastHeal.map == "PALLET_TOWN" and vanillaSave.lastHeal.x == 5
@@ -329,6 +332,8 @@ local bareSave = SaveData.newGame()
 check(bareSave.player.map == "REDS_HOUSE_2F" and bareSave.money == 3000
   and bareSave.lastHeal.map == "PALLET_TOWN",
   "newGame without a boot config is unchanged")
+check(bareSave.pcItems and bareSave.pcItems.POTION == 1,
+  "newGame without a boot config still seeds the PC Potion")
 
 local bootData, bootLoader = withMod("total_conversion", [[
 return function(mod)

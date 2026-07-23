@@ -217,7 +217,8 @@ function Credits:update(dt)
     self.timer = FADE_FRAMES
   elseif self.phase == "end_fade" then
     -- Credits returns to HallOfFameResetEventsAndSaveScript here: the
-    -- save happens now, then 5 x 120 DelayFrames before the button wait
+    -- save (plus post-game home relocate, #103) happens now, then
+    -- 5 x 120 DelayFrames before the button wait
     if self.onTheEnd then self.onTheEnd() end
     self.phase = "end_hold"
     self.timer = 600

@@ -69,6 +69,12 @@ check(runScript(mapScripts.talkScript("OAKS_LAB", "TEXT_OAKSLAB_OAK1")),
 eq(Game.save.inventory.OAKS_PARCEL, nil, "parcel delivered")
 check(Flags.get(Game.save, "EVENT_OAK_GOT_PARCEL"), "delivery flag set")
 check(Flags.get(Game.save, "EVENT_GOT_POKEDEX"), "Pokedex flag set")
+-- OaksLab.asm OakGivesPokedex: HideObject TOGGLE_POKEDEX_1/2 (#106)
+local labToggles = Game.save.objectToggles and Game.save.objectToggles.OAKS_LAB
+check(labToggles and labToggles.OAKSLAB_POKEDEX1 == false,
+      "POKEDEX1 hidden after receiving Pokédex")
+check(labToggles and labToggles.OAKSLAB_POKEDEX2 == false,
+      "POKEDEX2 hidden after receiving Pokédex")
 eq(Game.save.inventory.POKE_BALL, nil, "still no POKe BALLs at the pokedex beat")
 
 -- talking to Oak again before beating the Route 22 rival should fall
@@ -88,5 +94,17 @@ check(Flags.get(Game.save, "EVENT_GOT_POKEBALLS_FROM_OAK"), "one-shot flag set")
 check(runScript(mapScripts.talkScript("OAKS_LAB", "TEXT_OAKSLAB_OAK1")),
       "Oak talk (post-grant) script completes")
 eq(Game.save.inventory.POKE_BALL, 5, "POKe Ball count unchanged on a second talk")
+
+-- === 5) onEnter re-hides table Pokédex for pre-#106 saves ===
+Game.save.objectToggles = { OAKS_LAB = {
+  OAKSLAB_POKEDEX1 = true, OAKSLAB_POKEDEX2 = true,
+} }
+local oaksLab = mapScripts.get("OAKS_LAB")
+check(oaksLab and type(oaksLab.onEnter) == "function", "OAKS_LAB onEnter present")
+oaksLab.onEnter(Game, nil)
+local repaired = Game.save.objectToggles.OAKS_LAB
+check(repaired.OAKSLAB_POKEDEX1 == false
+      and repaired.OAKSLAB_POKEDEX2 == false,
+      "onEnter hides both Pokédex table sprites when EVENT_GOT_POKEDEX is set")
 
 S.finish()

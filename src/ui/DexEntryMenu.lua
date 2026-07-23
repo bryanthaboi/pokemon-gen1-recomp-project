@@ -1,5 +1,11 @@
 -- Pokédex entry page: front sprite, kind, height/weight and the real
 -- dex description (data/pokemon/dex_entries.asm + dex_text.asm).
+--
+-- `species` may be a species id string, or a table
+-- `{ species = id, forceOwned = true }`.  forceOwned mirrors pret's
+-- StarterDex (engine/events/starter_dex.asm), which temporarily sets the
+-- owned bit so Oak's lab ball previews show height/weight/description
+-- without permanently marking the mon owned.
 
 local Font = require("src.render.Font")
 
@@ -16,8 +22,17 @@ function DexEntryMenu:sgbPalettes(game)
            P.zone(P.monPal(game.data, self.def and self.def.id), 1, 1, 8, 8) }
 end
 
-function DexEntryMenu.new(game, species)
-  local self = setmetatable({ game = game }, DexEntryMenu)
+local function resolveArgs(speciesOrOpts)
+  if type(speciesOrOpts) == "table" then
+    return speciesOrOpts.species or speciesOrOpts[1],
+           speciesOrOpts.forceOwned and true or false
+  end
+  return speciesOrOpts, false
+end
+
+function DexEntryMenu.new(game, speciesOrOpts)
+  local species, forceOwned = resolveArgs(speciesOrOpts)
+  local self = setmetatable({ game = game, forceOwned = forceOwned }, DexEntryMenu)
   self.def = game.data.pokemon[species]
   local ok, img = pcall(love.graphics.newImage, self.def.spriteFront)
   self.sprite = ok and img or nil
@@ -42,12 +57,16 @@ function DexEntryMenu:draw()
   love.graphics.setColor(0, 0, 0, 1)
   Font.draw(def.name, 72, 8)
   local e = def.dexEntry or {}
-  Font.draw((e.kind or "?") .. " POKéMON", 72, 20)
+  -- English R/B prints only the kind string (hlcoord 9,4 PlaceString).
+  -- PokeText ("#"/POKéMON) is an unreferenced JPN leftover in pokedex.asm;
+  -- appending " POKéMON" here clipped longer kinds ("LIZARD POKé").
+  Font.draw(e.kind or "?", 72, 20)
   -- same number width as the list (constants.dexDigits), so a dex past 999
   -- prints the extra digit everywhere at once
   local digits = (self.game.data.constants or {}).dexDigits or 3
   Font.draw(("No.%0" .. digits .. "d"):format(def.dex or 0), 72, 32)
-  local owned = self.game.save.pokedex and self.game.save.pokedex.owned[def.id]
+  local owned = self.forceOwned
+    or (self.game.save.pokedex and self.game.save.pokedex.owned[def.id])
   -- height/weight print only once owned, like the description
   -- (pokedex.asm: "if the pokemon has not been owned, don't print the
   -- height, weight, or description")

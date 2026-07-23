@@ -242,6 +242,20 @@ function PaletteFX.pack(data)
   return data and data.palettes or nil
 end
 
+-- SuperPalettes that differ between Red and Blue (pokered data/sgb/
+-- sgb_palettes.asm IF DEF(_RED)/_BLUE).  data/palettes_gbc.lua is the
+-- Red-derived pokered-gbc pack, so under RED++ a Blue playthrough must
+-- read these from the ROM-imported table or the title ribbon stays red
+-- and the Game Corner reels keep Red's pink (issue #128).
+local BLUE_VERSIONED = {
+  LOGO1 = true, SLOTS2 = true, SLOTS3 = true, SLOTS4 = true,
+}
+
+local function romNamedPal(data, name)
+  local p = data and data.palettes
+  return p and p.palettes and p.palettes[name]
+end
+
 -- named palette from the active pack (nil on stale builds / missing name).
 -- RED++ falls back to the ROM pack for names the gbc table omits (rare).
 -- OG RED short-circuits EVERY name to the one global GBC boot-ROM BG palette
@@ -251,11 +265,15 @@ end
 -- GBC_OBJ green), so this stays a BG-only hook.
 function PaletteFX.pal(data, name)
   if PaletteFX.mode == "ogred" then return PaletteFX.ogBg() end
+  if GameVersion.isBlue() and BLUE_VERSIONED[name] then
+    local fromRom = romNamedPal(data, name)
+    if fromRom then return fromRom end
+  end
   local p = PaletteFX.pack(data)
   local c = p and p.palettes[name]
   if c then return c end
-  if PaletteFX.usesGbcPack() and data and data.palettes then
-    return data.palettes.palettes[name]
+  if PaletteFX.usesGbcPack() then
+    return romNamedPal(data, name)
   end
   return nil
 end

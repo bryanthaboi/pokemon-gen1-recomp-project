@@ -618,6 +618,33 @@ check(PaletteFX.pal({ palettes = nil }, "ROUTE") == gbc.palettes.ROUTE,
       "RED++ still has ROUTE (aliased from VIRIDIAN)")
 check(PaletteFX.effectiveColors(gbc.palettes.MEWMON) == gbc.palettes.MEWMON,
       "RED++ passes zone colors through like GBC")
+-- issue #128: RED++'s gbc pack is Red-derived; Blue must keep ROM LOGO1
+-- (and the Blue-only SLOTS* rows) so the title ribbon is blue, not red
+do
+  local GameVersion = require("src.core.GameVersion")
+  local prevVer = GameVersion.get()
+  local blueLogo1 = {
+    { 255, 239, 255 }, { 247, 247, 140 }, { 173, 0, 33 }, { 115, 156, 239 },
+  }
+  local blueSlots2 = {
+    { 255, 239, 255 }, { 255, 255, 140 }, { 132, 156, 239 }, { 25, 16, 16 },
+  }
+  local rom = { palettes = { palettes = {
+    LOGO1 = blueLogo1, SLOTS2 = blueSlots2, ROUTE = { { 1, 2, 3 }, { 0, 0, 0 },
+      { 0, 0, 0 }, { 0, 0, 0 } },
+  } } }
+  GameVersion.set("blue")
+  check(PaletteFX.pal(rom, "LOGO1") == blueLogo1,
+        "Blue + RED++ prefers ROM LOGO1 over the Red gbc pack")
+  check(PaletteFX.pal(rom, "SLOTS2") == blueSlots2,
+        "Blue + RED++ prefers ROM SLOTS2 over the Red gbc pack")
+  check(PaletteFX.pal(rom, "ROUTE") == gbc.palettes.ROUTE,
+        "Blue + RED++ still uses the gbc pack for shared names")
+  GameVersion.set("red")
+  check(PaletteFX.pal(rom, "LOGO1") == gbc.palettes.LOGO1,
+        "Red + RED++ keeps the gbc-pack LOGO1 (title stays red)")
+  GameVersion.set(prevVer)
+end
 PaletteFX.setMode(prevMode)
 
 -- ------- the transitions registry

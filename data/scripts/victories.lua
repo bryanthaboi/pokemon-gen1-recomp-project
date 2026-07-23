@@ -2,8 +2,9 @@
 -- "OPP_CLASS#partyIndex" (the object_event trainer args).  Hand-ported
 -- from the leaders'/bosses' text_asm victory scripts:
 --   gym badges: scripts/PewterGym.asm ... ViridianGym.asm
---   Rocket Hideout Giovanni: his Silph Scope is an item ball next to him
---   (data/maps/objects/RocketHideoutB4F.asm), so no reward entry needed.
+--   Rocket Hideout Giovanni: Silph Scope is a hidden item ball revealed by
+--   ShowObject in RocketHideoutB4FBeatGiovanniScript (ported as the
+--   TEXT_ROCKETHIDEOUTB4F_GIOVANNI talk handler in story3.lua).
 -- The TM each gym leader hands out afterwards is also ported.
 --
 -- `deactivate` lists the EVENT_BEAT_* flags each gym's victory script

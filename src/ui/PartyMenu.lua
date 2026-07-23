@@ -69,10 +69,26 @@ local function drawIcon(game, mon, x, y, selected, counter)
   local icons = game.data.icons
   if not icons then return end
   local def = game.data.pokemon[mon.species]
-  -- byDex is the vanilla lookup, but the icons registry can bring the table
-  -- into existence on its own, so it may be the only key present
-  local name = def and def.dex and icons.byDex and icons.byDex[def.dex]
-  local path = name and icons.icons[name]
+  -- Per-species override first: the icons registry folds into
+  -- icons.bySpecies, and a pokemon record may carry its own `icon` field.
+  -- Either is a built-in icon name (resolved through icons.icons) or a
+  -- { image = <path>, frames? } table pointing at bundled art. Falling
+  -- through to icons.byDex[def.dex] keeps the vanilla dex-indexed default;
+  -- without the override a modded or dex-renumbered species could never
+  -- change its menu icon.
+  local entry = (icons.bySpecies and icons.bySpecies[mon.species])
+             or (def and def.icon)
+  local name, path
+  if type(entry) == "string" then
+    name = entry
+    path = icons.icons and icons.icons[entry]
+  elseif type(entry) == "table" then
+    path = entry.image
+  end
+  if not path then
+    name = def and def.dex and icons.byDex and icons.byDex[def.dex]
+    path = name and icons.icons and icons.icons[name]
+  end
   if not path then return end
   if iconImages[path] == nil then
     local ok, img = pcall(love.graphics.newImage, path)
@@ -332,7 +348,11 @@ function PartyMenu:update(dt)
       local items = { { label = "STATS", action = "stats" },
                       { label = "SWITCH", action = "switch" } }
       local ow = self.game.overworld
-      if not self.battle and ow and mon.hp > 0 then
+      -- Field moves (HMs/TMs) are usable out of battle even when the mon
+      -- is fainted -- Gen 1 does not require HP for Cut/Fly/Surf/etc.
+      -- Battle still excludes this list via `not self.battle`. Softboiled
+      -- can appear for a fainted user; its heal transfer then no-ops.
+      if not self.battle and ow then
         for _, mv in ipairs(mon.moves) do
           if mv.id == "FLY" and ow.map.def.tileset == "OVERWORLD"
              and self.game.save.inventory.THUNDERBADGE then

@@ -408,6 +408,55 @@ check(strFlash ~= page2 and strFlash ~= ow and strFlash.pages == nil,
 for _ = 1, 10 do frame({}) end
 eq(Game.stack:top(), ow, "back on the map after the blink")
 
+-- ===========================================================================
+-- #107: fainted Pokémon can still use field moves (party submenu + partyKnows)
+-- ===========================================================================
+local fainted = mkMon("PIDGEOTTO", "FLY", "CUT", "STRENGTH", "SURF")
+fainted.hp = 0
+Game.save.party = { fainted }
+Game.save.inventory = {
+  THUNDERBADGE = true, CASCADEBADGE = true,
+  RAINBOWBADGE = true, SOULBADGE = true,
+}
+ow = pushOW("PALLET_TOWN", 4, 13, "down")
+check(ow:partyKnows("SURF") == fainted,
+      "partyKnows finds SURF on a fainted mon")
+check(ow:partyKnows("CUT") == fainted,
+      "partyKnows finds CUT on a fainted mon")
+local pmFaint = PartyMenu.new(Game)
+Game.stack:push(pmFaint)
+frame({ "a" })
+local actsFaint = submenuActions(pmFaint)
+-- FLY needs OVERWORLD tileset (Pallet); CUT/SURF/STRENGTH need badges only
+check(actsFaint.fly and actsFaint.cut and actsFaint.surf and actsFaint.strength,
+      "fainted mon still lists FLY/CUT/SURF/STRENGTH in the party submenu")
+popToOW()
+
+-- STRENGTH activation from a fainted user (name text + strengthActive)
+ow = pushOW("SEAFOAM_ISLANDS_1F", 17, 10, "right")
+clearCaptured()
+local pmFaintStr = PartyMenu.new(Game)
+-- Seafoam is not OVERWORLD, so FLY is omitted: STATS, SWITCH, CUT, STRENGTH, SURF
+selectSubItem(pmFaintStr, 4)
+eq(Game.overworld.strengthActive, true,
+   "fainted mon can activate STRENGTH from the party menu")
+check(sawText("used") and sawText("STRENGTH"),
+      "fainted STRENGTH still prints _UsedStrengthText")
+drainText()
+
+-- SURF mount from a fainted user when facing water
+Game.save.party = { fainted }
+Game.save.inventory.SOULBADGE = true
+ow = pushOW("PALLET_TOWN", 4, 13, "down")
+ow.player.surfing = false
+eq(ow:useSurfFieldMove(), "ok", "useSurfFieldMove ok with only a fainted SURF mon")
+clearCaptured()
+-- submenu order: STATS, SWITCH, FLY, CUT, STRENGTH, SURF (move order on mon)
+local pmFaintSurf = PartyMenu.new(Game)
+selectSubItem(pmFaintSurf, 6)
+eq(ow.player.surfing, true, "fainted mon can SURF from the party menu")
+check(not onStack(pmFaintSurf), "party menu closes after fainted SURF")
+
 -- restore the spied constructor so later dofile'd suites are unaffected
 TextBox.new = realTextBoxNew
 popAll()

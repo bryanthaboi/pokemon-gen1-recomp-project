@@ -64,6 +64,13 @@ return function(game)
   check(warped, "YES warps to REDS_HOUSE_2F")
   check(ow.player.cellX == 3 and ow.player.cellY == 6,
         "landed on the bedroom spawn (3,6)")
+  check(ow.lastOutdoor and ow.lastOutdoor.id == "PALLET_TOWN",
+        "PC home warp retargets lastOutdoor to Pallet (#103)")
+  local lead = game.save.party and game.save.party[1]
+  if lead and lead.stats then
+    check(lead.hp == lead.stats.hp and lead.status == nil,
+          "PC home warp heals the party")
+  end
 
   U.log(pass and "RESULT: ALL PASS" or "RESULT: SEE FAILURES ABOVE")
 end
