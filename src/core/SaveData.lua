@@ -449,6 +449,17 @@ SaveData.addCoreMigration(1, function(save)
   Boxes.ensure(save)
 end)
 
+-- game version (Red vs Blue) prep: saves written before Blue support
+-- existed carry no `version` tag, and Red is the only game that ever
+-- shipped, so default every untagged save to Red.  from=2 so it catches
+-- every pre-bump save (format 1 and 2) and is skipped once re-stamped to
+-- the current format.
+SaveData.addCoreMigration(2, function(save)
+  if not save.version then
+    save.version = "red"
+  end
+end)
+
 -- ------- write
 
 -- Game progress only; options are written separately via saveOptions.
@@ -785,6 +796,9 @@ function SaveData.newGame(boot)
   local heal = SaveData.defaultHeal(boot)
   local save = {
     meta = { format = Version.saveFormat, mods = {} },
+    -- which game this playthrough is (Red vs Blue).  Only Red ships today;
+    -- boot carries the choice once Blue support lands.
+    version = boot.version or "red",
     player = {
       map = map,
       x = x,

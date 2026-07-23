@@ -68,20 +68,40 @@ function love.load(args)
   end
 
   local RomImporter = require("src.import.RomImporter")
-  if os.getenv("POKEPORT_FORCE_IMPORT") == "1" or not RomImporter.isReady() then
-    Importer = RomImporter.new(function()
-      if os.getenv("POKEPORT_IMPORT_ONLY") == "1" then
-        love.event.quit()
-        return
-      end
-      Importer = nil
-      bootGame()
-    end)
-    local importPath = os.getenv("POKEPORT_IMPORT_ROM")
-    if importPath then Importer:startPath(importPath) end
+  local ready = RomImporter.isReady()
+  local forceImport = os.getenv("POKEPORT_FORCE_IMPORT") == "1"
+  local importPath = os.getenv("POKEPORT_IMPORT_ROM")
+  -- Scripted / headless runs have to reach the game with no human pressing
+  -- Play: an autopilot, a frame driver, an import-only build step, or an
+  -- explicit ROM path all bypass the interactive launcher and keep today's
+  -- import-then-boot (or boot-straight-in) behavior.
+  local scripted = os.getenv("POKEPORT_AUTOPILOT") or os.getenv("POKEPORT_DRIVER")
+    or os.getenv("POKEPORT_IMPORT_ONLY") == "1" or importPath ~= nil
+
+  if scripted then
+    if forceImport or not ready then
+      Importer = RomImporter.new(function()
+        if os.getenv("POKEPORT_IMPORT_ONLY") == "1" then
+          love.event.quit()
+          return
+        end
+        Importer = nil
+        bootGame()
+      end)
+      if importPath then Importer:startPath(importPath) end
+      return
+    end
+    bootGame()
     return
   end
-  bootGame()
+
+  -- Interactive: the launcher always runs.  Its Red column shows Play when the
+  -- ROM is already imported or Choose ROM / drag-drop when it is not (Blue and
+  -- Yellow are placeholders); pressing Play boots the chosen game.
+  Importer = RomImporter.new(function()
+    Importer = nil
+    bootGame()
+  end, { ready = ready and not forceImport, launcher = true })
 end
 
 function love.update(dt)

@@ -24,8 +24,12 @@ function love.conf(t)
     local ok, Version = pcall(require, "src.core.Version")
     t.window.title = ok and Version.title()
       or "Pokemon Red (Gen 1 Recompilation Project)"
-    t.window.width = 160 * 4
-    t.window.height = 144 * 4
+    -- Open at the launcher's design size (the split-screen ROM selector is
+    -- laid out for 1024x768). The window is resizable and the 160x144 game
+    -- canvas letterboxes into whatever size it ends up, so this only sets the
+    -- starting size, not the game's resolution.
+    t.window.width = 1024
+    t.window.height = 768
   end
   t.version = "11.5"
   t.window.vsync = 1

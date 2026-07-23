@@ -7,7 +7,7 @@ local Version = {
   engine = "1.0.0",       -- game/engine release (semver triple)
   modApi = 2,             -- mod API major (manifest `api`)
   linkProtocol = 2,       -- link handshake wire version (Handshake.PROTOCOL)
-  saveFormat = 2,         -- save.meta.format
+  saveFormat = 3,         -- save.meta.format
   cache = "rom-cache-v5", -- ROM import cache generation (RomImporter marker)
 }
 
