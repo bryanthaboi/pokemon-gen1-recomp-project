@@ -344,6 +344,24 @@ check(lastSource().queueable and lastSource().playing,
   "a chip song still plays after a file song")
 check(not body.playing, "the outgoing file song was stopped")
 
+-- playOnce must survive the threaded "empty QueueableSource" window:
+-- Source:isPlaying is false until the first worker buffer lands, and that
+-- gap must not look like the jingle already ended (Poké Center heal).
+data = reset(fixtureData())
+Music.playMap(data, "PALLET_TOWN", false, false)
+check(Music.playOnce(data, "Music_Chip"), "playOnce starts a chip jingle")
+local jingle = lastSource()
+local clearAwait = ChipAudio._simulateAwaitingFirstBufferForTest()
+check(clearAwait ~= nil, "test can force the awaiting-first-buffer window")
+check(Music.oneShotPlaying(),
+  "oneShotPlaying stays true while the first buffer is still in flight")
+Music.update(data)
+check(jingle == lastSource() and jingle.queueable,
+  "pendingRestore does not swap the map theme over a pending chip jingle")
+check(ChipAudio.awaitingFirstBuffer(),
+  "awaitingFirstBuffer reports the forced window")
+clearAwait()
+
 -- sfx shape dispatch
 check(Sound.play(data, "Beep") == nil, "Sound.play returns nothing")
 check(lastSource().file == "assets/beep.wav", "a bare string sfx is a static source")
