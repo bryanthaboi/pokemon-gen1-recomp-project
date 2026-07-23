@@ -10,6 +10,8 @@
 -- RED++ swaps the named-palette pack for pokered-gbc SuperPalettes
 -- (data/palettes_gbc.lua), including per-species mon colors.
 
+local GameVersion = require("src.core.GameVersion")
+
 local PaletteFX = {}
 
 local shader -- false = unavailable (headless / no shader support)
@@ -46,6 +48,26 @@ PaletteFX.GBC_BG = {
 PaletteFX.GBC_OBJ = {
   { 255, 255, 255 }, { 123, 255, 49 }, { 0, 132, 0 }, { 0, 0, 0 },
 }
+
+-- OG BLUE: Pokemon Blue's Game Boy Color boot-ROM auto-palette.  Same
+-- one-global-pair scheme as OG RED (Blue also ships no CGB code), but the
+-- boot ROM colorizes the background blue instead of red -- so "OG RED" for a
+-- Blue playthrough is white -> light blue -> dark blue -> black, mirroring
+-- GBC_BG channel-for-channel so the blue reads at the same brightness.  The
+-- OBJ (sprite) palette stays the same green, matching how Red and Blue share
+-- the green-character look on a Game Boy Color.
+PaletteFX.GBC_BG_BLUE = {
+  { 255, 255, 255 }, { 132, 132, 255 }, { 58, 58, 148 }, { 0, 0, 0 },
+}
+
+-- The active game's OG boot-ROM background palette: blue for a Blue
+-- playthrough, red otherwise.  White (index 1) and black (index 4) are
+-- identical across versions, so callers that only touch the endpoints
+-- (e.g. BattleState's zone white/black snap) need no version branch.
+function PaletteFX.ogBg()
+  if GameVersion.isBlue() then return PaletteFX.GBC_BG_BLUE end
+  return PaletteFX.GBC_BG
+end
 
 local INV_MAP = { [0] = 3, [1] = 2, [2] = 1, [3] = 0 }
 
@@ -228,7 +250,7 @@ end
 -- background tile drew.  Objects do not come through here (they bake
 -- GBC_OBJ green), so this stays a BG-only hook.
 function PaletteFX.pal(data, name)
-  if PaletteFX.mode == "ogred" then return PaletteFX.GBC_BG end
+  if PaletteFX.mode == "ogred" then return PaletteFX.ogBg() end
   local p = PaletteFX.pack(data)
   local c = p and p.palettes[name]
   if c then return c end
@@ -248,7 +270,7 @@ function PaletteFX.monPal(data, species, transformed)
   -- the tilemap, colored by BGP), so it wears the global red BG palette, not
   -- a per-species one -- matching the hardware capture where both mons are
   -- red/pink on the white field.
-  if PaletteFX.mode == "ogred" then return PaletteFX.GBC_BG end
+  if PaletteFX.mode == "ogred" then return PaletteFX.ogBg() end
   local p = PaletteFX.pack(data)
   if not p then return nil end
   if transformed then
@@ -490,7 +512,11 @@ function PaletteFX.applyOptions(opts)
 end
 
 function PaletteFX.modeLabel(mode)
-  return PaletteFX.MODE_LABELS[mode or PaletteFX.mode] or "GBC"
+  mode = mode or PaletteFX.mode
+  -- The GBC boot-ROM mode wears the running game's name: it is red for Red and
+  -- blue for Blue (see ogBg), so a Blue playthrough shows "OG BLUE".
+  if mode == "ogred" and GameVersion.isBlue() then return "OG BLUE" end
+  return PaletteFX.MODE_LABELS[mode] or "GBC"
 end
 
 -- When a state exposes no SGB zones but COLORS needs a forced palette

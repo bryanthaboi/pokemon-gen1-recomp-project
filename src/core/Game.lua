@@ -99,7 +99,12 @@ end
 -- total conversion overrides.  Threaded into SaveData so persistence stays
 -- free of a Data dependency.
 function Game:bootConfig()
-  return self.data and self.data.field and self.data.field.boot
+  local boot = self.data and self.data.field and self.data.field.boot
+  -- stamp the running game version onto the boot config so a New Game records
+  -- it (SaveData.newGame reads boot.version); this is what routes a Blue
+  -- playthrough to save_blue.lua and Blue's version-gated content
+  if boot then boot.version = require("src.core.GameVersion").get() end
+  return boot
 end
 
 -- the title screen with its NEW GAME / CONTINUE wiring; used at boot

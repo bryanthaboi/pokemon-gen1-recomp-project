@@ -5,6 +5,7 @@
 
 local Font = require("src.render.Font")
 local Music = require("src.core.Music")
+local GameVersion = require("src.core.GameVersion")
 
 local TitleState = {}
 TitleState.__index = TitleState
@@ -29,6 +30,13 @@ local CYCLE_SPECIES = {
   "CHARMANDER", "SQUIRTLE", "BULBASAUR", "WEEDLE", "NIDORAN_M", "SCYTHER",
   "PIKACHU", "CLEFAIRY", "RHYDON", "ABRA", "GASTLY", "DITTO",
   "PIDGEOTTO", "ONIX", "PONYTA", "MAGIKARP",
+}
+-- Blue's TitleMons (data/pokemon/title_mons.asm, _BLUE branch): STARTER2 is
+-- Squirtle, STARTER1 Charmander, STARTER3 Bulbasaur.
+local BLUE_CYCLE_SPECIES = {
+  "SQUIRTLE", "CHARMANDER", "BULBASAUR", "MANKEY", "HITMONLEE",
+  "VULPIX", "CHANSEY", "AERODACTYL", "JOLTEON", "SNORLAX",
+  "GLOOM", "POLIWAG", "DODUO", "PORYGON", "GENGAR", "RAICHU",
 }
 local CYCLE_FRAMES = 240 -- the original waits ~4s between picks
 
@@ -61,9 +69,13 @@ function TitleState.new(game, opts)
   self.version = tryImage(imagePath(title.versionRibbon or title.version)
                           or "assets/generated/title/red_version.png")
   self.player = tryImage("assets/generated/title/player.png")
+  self.blue = GameVersion.isBlue()
+  -- Blue cycles its own title mons and prints its ribbon contiguously; a
+  -- field.title.cycleSpecies override (mods / total conversions) still wins.
+  local defaultCycle = self.blue and BLUE_CYCLE_SPECIES or CYCLE_SPECIES
   self.cycleSpecies = (type(title.cycleSpecies) == "table"
                        and #title.cycleSpecies > 0)
-                      and title.cycleSpecies or CYCLE_SPECIES
+                      and title.cycleSpecies or defaultCycle
   self.sprites = {} -- species -> image or false (load failed)
   self.cycleIndex = 1
   self.timer = 0
@@ -92,8 +104,10 @@ end
 
 local function hasSave()
   local ok, info = pcall(function()
+    -- the active game's save file (save.lua for Red, save_blue.lua for Blue)
+    local name = require("src.core.SaveData").saveFilename(GameVersion.get())
     return love.filesystem and love.filesystem.getInfo
-       and love.filesystem.getInfo("save.lua") or nil
+       and love.filesystem.getInfo(name) or nil
   end)
   return ok and info ~= nil
 end
@@ -211,17 +225,26 @@ function TitleState:draw()
     love.graphics.draw(self.logo, 16, 8)
   else
     love.graphics.setColor(0, 0, 0, 1)
-    Font.draw("POKéMON RED", (160 - 11 * 8) / 2, 24)
+    Font.draw(self.blue and "POKéMON BLUE" or "POKéMON RED",
+      (160 - 12 * 8) / 2, 24)
     love.graphics.setColor(1, 1, 1, 1)
   end
   if self.version then
-    -- the strip holds Red+Green+Version glyphs; the tilemap prints
-    -- tiles $60,$61 ("Red"), a space, then $65-$69 ("Version")
     local iw, ih = self.version:getDimensions()
-    love.graphics.draw(self.version,
-      love.graphics.newQuad(0, 0, 16, 8, iw, ih), 56, 64)
-    love.graphics.draw(self.version,
-      love.graphics.newQuad(40, 0, 40, 8, iw, ih), 80, 64)
+    if self.blue then
+      -- Blue prints its ribbon contiguously ("Blue Version", hlcoord 7,8).
+      -- The extracted strip packs those eight glyph tiles into image tiles
+      -- 0..7 (tiles 8..9 are blank), so draw that 64px run at px (56, 64).
+      love.graphics.draw(self.version,
+        love.graphics.newQuad(0, 0, 64, 8, iw, ih), 56, 64)
+    else
+      -- Red's strip holds Red+Green+Version glyphs; the tilemap prints
+      -- tiles $60,$61 ("Red"), a space, then $65-$69 ("Version").
+      love.graphics.draw(self.version,
+        love.graphics.newQuad(0, 0, 16, 8, iw, ih), 56, 64)
+      love.graphics.draw(self.version,
+        love.graphics.newQuad(40, 0, 40, 8, iw, ih), 80, 64)
+    end
   end
   local sprite = self:currentSprite()
   if sprite then

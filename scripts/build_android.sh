@@ -137,7 +137,7 @@ pack_game_love() {
   mkdir -p "$EMBED_ASSETS"
   rm -f "$LOVE_FILE"
   (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
-    main.lua conf.lua src data assets tools/rom_manifest.json \
+    main.lua conf.lua src data assets tools/rom_manifest.json tools/rom_manifest_blue.json \
     -x '*.DS_Store' -x '*/.git/*' -x '*/.DS_Store' \
     -x 'data/generated/*' -x 'assets/generated/*')
   if unzip -Z1 "$LOVE_FILE" \

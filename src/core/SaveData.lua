@@ -18,14 +18,30 @@ local Semver = require("src.mods.Semver")
 local Boxes = require("src.pokemon.Boxes")
 local Bag = require("src.inventory.Bag")
 
+local GameVersion = require("src.core.GameVersion")
+
 local SaveData = {}
 
-local FILENAME = "save.lua"
+-- Progress files carry the game-version suffix so Red and Blue saves coexist:
+-- Red keeps save.lua / .bak / .tmp exactly as before; Blue is save_blue.lua
+-- (+ .bak/.tmp).  options.lua is deliberately shared across versions (it holds
+-- global preferences and the mod enable-state, not per-playthrough data).
 local OPTIONS_FILENAME = "options.lua"
--- one rolling backup plus the staged-write witness; load promotes either
--- when the main file is missing or fails to parse
-local BACKUP_FILENAME = FILENAME .. ".bak"
-local TMP_FILENAME = FILENAME .. ".tmp"
+
+-- Main / backup / staged-witness names for a version (defaults to the active
+-- one).  The backup is a rolling copy and .tmp is the staged-write witness;
+-- load promotes either when the main file is missing or fails to parse.
+local function saveNames(version)
+  local main = "save" .. GameVersion.saveSuffix(version) .. ".lua"
+  return main, main .. ".bak", main .. ".tmp"
+end
+
+-- The main save filename for a version -- used by the title screen's
+-- CONTINUE gate so it looks for the right game's save.
+function SaveData.saveFilename(version)
+  local main = saveNames(version)
+  return main
+end
 
 -- ------- portable mode
 -- LÖVE's save directory is always the OS per-user path derived from the
@@ -469,6 +485,9 @@ end)
 -- itself rolls the last good save into .bak and stages the new bytes as
 -- a .tmp witness before the swap, so a crash mid-write is recoverable.
 function SaveData.save(data, mods)
+  -- write to the file matching this save's own version, not just the active
+  -- one, so a Blue playthrough always lands in save_blue.lua
+  local FILENAME, BACKUP_FILENAME, TMP_FILENAME = saveNames(data.version)
   if data.options then
     SaveData.saveOptions(data.options)
   end
@@ -508,7 +527,10 @@ end
 -- returns the parsed save plus "tmp"/"bak" when the main file was gone
 -- or corrupt and a staged/backup copy was promoted; Game surfaces the
 -- recovery on the load report
-function SaveData.load()
+function SaveData.load(version)
+  -- version defaults to the active game (set at boot from the launcher);
+  -- an explicit version lets callers/tests load a specific game's save.
+  local FILENAME, BACKUP_FILENAME, TMP_FILENAME = saveNames(version)
   local fs = persistFs(nil)
   local data, err = readTable(fs, FILENAME)
   local recovered

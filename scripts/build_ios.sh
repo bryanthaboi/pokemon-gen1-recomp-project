@@ -166,7 +166,7 @@ pack_game_love() {
   rm -f "$LOVE_FILE"
   # Same payload as scripts/build.sh / build_android.sh: game sources only.
   (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
-    main.lua conf.lua src data assets tools/rom_manifest.json \
+    main.lua conf.lua src data assets tools/rom_manifest.json tools/rom_manifest_blue.json \
     -x '*.DS_Store' -x '*/.git/*' -x '*/.DS_Store' \
     -x 'data/generated/*' -x 'assets/generated/*')
   if unzip -Z1 "$LOVE_FILE" \

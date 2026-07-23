@@ -26,7 +26,19 @@ local function scriptedIterations()
   return math.max(1, math.floor(require("src.core.GameSpeed").clamp(speedOverride)))
 end
 
-local function bootGame()
+local function bootGame(version)
+  -- The launcher hands us the chosen game (Red / Blue); scripted and headless
+  -- runs fall back to POKEPORT_VERSION, then Red.  Set the active version and
+  -- overlay its extracted cache BEFORE anything requires generated data, so
+  -- data/generated + assets/generated resolve to that version's files.
+  local GameVersion = require("src.core.GameVersion")
+  GameVersion.set(version or os.getenv("POKEPORT_VERSION") or "red")
+  require("src.import.CacheFs").mountVersion(GameVersion.get())
+  if love.window and love.window.setTitle then
+    local Version = require("src.core.Version")
+    love.window.setTitle(Version.title(
+      GameVersion.info().displayName .. " (Gen 1 Recompilation Project)"))
+  end
   Game = require("src.core.Game")
   Game:load()
   if os.getenv("POKEPORT_AUTOPILOT") then
@@ -68,9 +80,12 @@ function love.load(args)
   end
 
   local RomImporter = require("src.import.RomImporter")
-  local ready = RomImporter.isReady()
   local forceImport = os.getenv("POKEPORT_FORCE_IMPORT") == "1"
   local importPath = os.getenv("POKEPORT_IMPORT_ROM")
+  -- Scripted / headless runs pick their game from POKEPORT_VERSION (default
+  -- Red); the launcher's per-column choice does not apply to them.
+  local scriptedVersion = os.getenv("POKEPORT_VERSION") or "red"
+  local ready = RomImporter.isReady(scriptedVersion)
   -- Scripted / headless runs have to reach the game with no human pressing
   -- Play: an autopilot, a frame driver, an import-only build step, or an
   -- explicit ROM path all bypass the interactive launcher and keep today's
@@ -80,28 +95,31 @@ function love.load(args)
 
   if scripted then
     if forceImport or not ready then
-      Importer = RomImporter.new(function()
+      -- The importer detects the dropped/loaded ROM's version by SHA-1 and
+      -- passes it to onComplete; boot that version.
+      Importer = RomImporter.new(function(version)
         if os.getenv("POKEPORT_IMPORT_ONLY") == "1" then
           love.event.quit()
           return
         end
         Importer = nil
-        bootGame()
+        bootGame(version or scriptedVersion)
       end)
       if importPath then Importer:startPath(importPath) end
       return
     end
-    bootGame()
+    bootGame(scriptedVersion)
     return
   end
 
-  -- Interactive: the launcher always runs.  Its Red column shows Play when the
-  -- ROM is already imported or Choose ROM / drag-drop when it is not (Blue and
-  -- Yellow are placeholders); pressing Play boots the chosen game.
-  Importer = RomImporter.new(function()
+  -- Interactive: the launcher always runs.  Red and Blue are each live: a
+  -- column shows Play when that game's ROM is already imported, or Choose ROM
+  -- / drag-drop when it is not (Yellow is still a placeholder).  Any dropped
+  -- .gb is routed to Red or Blue by its SHA-1; pressing Play boots that game.
+  Importer = RomImporter.new(function(version)
     Importer = nil
-    bootGame()
-  end, { ready = ready and not forceImport, launcher = true })
+    bootGame(version)
+  end, { launcher = true, forceImport = forceImport })
 end
 
 function love.update(dt)

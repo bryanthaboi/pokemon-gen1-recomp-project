@@ -1,9 +1,19 @@
+local GameVersion = require("src.core.GameVersion")
+
 local RomImporter = {}
 RomImporter.__index = RomImporter
 
-local ROM_SHA1 = "ea9bcae617fdf159b045185467ae58b2e4a48b9a"
-local CACHE_MARKER = "rom-cache-v7:" .. ROM_SHA1
+-- Cache generation tag; bump to force every imported version to re-extract.
+local CACHE_FORMAT = "rom-cache-v7:"
+-- The completion marker is written under each version's cache prefix
+-- (rom-cache.complete for Red, blue/rom-cache.complete for Blue).
 local MARKER_PATH = "rom-cache.complete"
+
+-- The marker a finished import writes for a version: the generation tag plus
+-- that version's ROM hash, so both a format bump and a swapped ROM invalidate.
+local function markerFor(version)
+  return CACHE_FORMAT .. GameVersion.info(version).sha1
+end
 local COMMUNITY_URL = "https://bois.icu"
 local TRUST_WARNING = "if you did not get this from bryanthaboi's github " ..
   "or a link from the discord that bryanthaboi himself posted, just know " ..
@@ -58,18 +68,27 @@ local PAL = {
   disabledInk = { 149, 161, 189 }, -- #95a1bd
 }
 
-local function allRequiredFilesExist()
-  -- CacheFs.exists checks the game folder directly for a portable install,
-  -- otherwise the save directory through love.filesystem.
+-- CacheFs.exists checks the game folder directly for a portable install,
+-- otherwise the save directory through love.filesystem.  It honors
+-- CacheFs.prefix, so we point it at the version's cache subtree (Red at the
+-- root, Blue under blue/).
+local function allRequiredFilesExist(version)
   local CacheFs = require("src.import.CacheFs")
+  local saved = CacheFs.prefix
+  CacheFs.prefix = GameVersion.cachePrefix(version)
+  local ok = true
   for _, path in ipairs(REQUIRED_FILES) do
-    if not CacheFs.exists(path) then return false end
+    if not CacheFs.exists(path) then ok = false; break end
   end
-  return true
+  CacheFs.prefix = saved
+  return ok
 end
 
+-- A developer checkout / Python build leaves Red's generated data in the
+-- physfs SOURCE at the un-prefixed root; that is always current.  Only Red
+-- ships this way (Blue is import-only), so this stays a Red-root check.
 local function sourceTreeHasData()
-  if not allRequiredFilesExist() or not love.filesystem.getRealDirectory then
+  if not allRequiredFilesExist("red") or not love.filesystem.getRealDirectory then
     return false
   end
   local real = love.filesystem.getRealDirectory(REQUIRED_FILES[1])
@@ -127,38 +146,49 @@ local function purgeSaveDirCache()
     f:close()
     return true
   end
-  if not (saveDirHas(MARKER_PATH) or saveDirHas(REQUIRED_FILES[1])) then
-    return
+  -- Purge each version's stale save-directory copy (Red at the root, Blue
+  -- under blue/) so it cannot shadow the portable game-folder cache.
+  for _, version in ipairs(GameVersion.ORDER) do
+    local prefix = GameVersion.cachePrefix(version)
+    if saveDirHas(prefix .. MARKER_PATH) or saveDirHas(prefix .. REQUIRED_FILES[1]) then
+      removeTree(prefix .. "data/generated")
+      removeTree(prefix .. "assets/generated")
+      love.filesystem.remove(prefix .. MARKER_PATH)
+    end
   end
-  removeTree("data/generated")
-  removeTree("assets/generated")
-  love.filesystem.remove(MARKER_PATH)
 end
 
-function RomImporter.isReady()
+-- Whether a given game version's ROM has already been imported and cached.
+function RomImporter.isReady(version)
+  version = version or "red"
   local CacheFs = require("src.import.CacheFs")
   if CacheFs.root() then
     -- Portable: the cache lives in the game folder next to the executable
     -- (mounted onto the read path for a fused build).  Drop any stale
-    -- save-directory copy that would otherwise shadow it at runtime -- and,
-    -- for a source run, hide the game folder from sourceTreeHasData below.
+    -- save-directory copy that would otherwise shadow it at runtime.
     purgeSaveDirCache()
   end
-  -- Generated data sitting in the physfs source -- a developer checkout, a
-  -- Python/bootstrap build, or a source-run portable import -- is always
-  -- current (as it has always been).  A fused portable install is not the
-  -- source, so it falls through to the version-marker gate.
-  if sourceTreeHasData() then return true end
-  return CacheFs.read(MARKER_PATH) == CACHE_MARKER and allRequiredFilesExist()
+  -- Red generated data in the physfs source (developer checkout / Python
+  -- build) is always current; Blue is import-only and falls through to the
+  -- version-marker gate.
+  if version == "red" and sourceTreeHasData() then return true end
+  local saved = CacheFs.prefix
+  CacheFs.prefix = GameVersion.cachePrefix(version)
+  local marker = CacheFs.read(MARKER_PATH)
+  CacheFs.prefix = saved
+  return marker == markerFor(version) and allRequiredFilesExist(version)
 end
 
-local function decodeManifest()
-  local raw, readError = love.filesystem.read("tools/rom_manifest.json")
+-- Load the import manifest for a version and confirm it matches that ROM.
+local function decodeManifest(version)
+  local path = GameVersion.info(version).manifest
+  local raw, readError = love.filesystem.read(path)
   if not raw then error("ROM import metadata is missing: " .. tostring(readError)) end
   local Json = require("src.link.Json")
   local manifest, decodeError = Json.decode(raw)
   if not manifest then error("ROM import metadata is invalid: " .. tostring(decodeError)) end
-  assert(manifest.romSha1 == ROM_SHA1, "ROM import metadata version mismatch")
+  assert(manifest.romSha1 == GameVersion.info(version).sha1,
+    "ROM import metadata version mismatch")
   return manifest
 end
 
@@ -215,16 +245,19 @@ local function scanForRom()
   return nil
 end
 
-local function chooseRom()
+local function chooseRom(promptName)
+  promptName = promptName or "Pokemon"
+  local prompt = "Choose your " .. promptName .. " ROM"
   local platform = love.system.getOS()
   if platform == "OS X" then
     return commandOutput(
-      [[osascript -e 'POSIX path of (choose file with prompt "Choose your Pokemon Red ROM" of type {"gb"})' 2>/dev/null]])
+      ([[osascript -e 'POSIX path of (choose file with prompt "%s" of type {"gb"})' 2>/dev/null]])
+        :format(prompt))
   elseif platform == "Windows" then
     local script = table.concat({
       "Add-Type -AssemblyName System.Windows.Forms;",
       "$d=New-Object System.Windows.Forms.OpenFileDialog;",
-      "$d.Title='Choose your Pokemon Red ROM';",
+      "$d.Title='" .. prompt .. "';",
       "$d.Filter='Game Boy ROM (*.gb)|*.gb|All files (*.*)|*.*';",
       "if($d.ShowDialog() -eq 'OK'){[Console]::Write($d.FileName)}",
     })
@@ -232,7 +265,8 @@ local function chooseRom()
       'powershell -NoProfile -STA -Command "' .. script .. '"')
   elseif platform == "Linux" then
     local path = commandOutput(
-      [[zenity --file-selection --title="Choose your Pokemon Red ROM" --file-filter="Game Boy ROM | *.gb" 2>/dev/null]])
+      ([[zenity --file-selection --title="%s" --file-filter="Game Boy ROM | *.gb" 2>/dev/null]])
+        :format(prompt))
     if path then return path end
     return commandOutput(
       [[kdialog --getopenfilename "$HOME" "*.gb|Game Boy ROM" 2>/dev/null]])
@@ -240,47 +274,53 @@ local function chooseRom()
   return nil
 end
 
--- onComplete hands off to the game (boot).  opts:
---   ready    -- this game's ROM is already imported: open on the Play state
---   launcher -- interactive launcher: a fresh import lands on the Play state
---               instead of auto-booting (headless callers omit this and keep
---               the old import-then-boot behavior)
---   romName  -- filename shown next to Play when already imported
+-- The launcher runs Red and Blue as two independent columns.  Each dropped or
+-- chosen ROM is routed to its version by SHA-1, extracted into that version's
+-- own cache (Red at the root, Blue under blue/), so both can be imported and
+-- played side by side.  onComplete(version) hands the chosen game off to boot.
+-- opts: launcher (a fresh import stays on the launcher instead of auto-booting),
+-- forceImport (treat every version as not-yet-imported, so re-import is forced).
 function RomImporter.new(onComplete, opts)
   opts = opts or {}
-  local previousMarker = require("src.import.CacheFs").read(MARKER_PATH)
-  local returning = previousMarker ~= nil and previousMarker ~= CACHE_MARKER
   local android = love.system.getOS() == "Android"
+  local CacheFs = require("src.import.CacheFs")
   local self = setmetatable({
     onComplete = onComplete,
     launcher = opts.launcher or false,
+    forceImport = opts.forceImport or false,
+    android = android,
     logo = love.graphics.newImage("assets/logo/logo.png"),
     bcg = love.graphics.newImage("assets/logo/bcg.png"),
-    state = opts.ready and "ready" or "waiting",
-    romName = opts.romName or "pokemon_red.gb",
-    returning = returning,
-    android = android,
-    status = returning and "More assets are needed from your ROM"
-      or "Choose or drop a Pokemon Red ROM",
-    detail = returning
-      and "This update pulls a few more things from your ROM. "
-        .. "Please re-import it to continue (it's quick)."
-      or "The ROM is verified before any files are created.",
-    progress = 0,
-    stageCurrent = 0,
-    stageTotal = 1,
-    pulse = 0,
+    ready = {}, returning = {}, romName = {},
+    importing = nil,      -- the version currently extracting, or nil
+    workState = nil,      -- "working" / "complete" / "error" for that import
+    errorVersion = nil,   -- which column shows the current error
+    notice = nil,         -- { version, status, detail } transient hint (Android)
+    status = "", detail = "", progress = 0,
+    stageCurrent = 0, stageTotal = 1, pulse = 0,
   }, RomImporter)
 
-  -- Only hunt for a ROM when one is actually needed; an already-imported
-  -- game opens straight on Play.
-  if android and self.state ~= "ready" then
-    self.status = returning and "More ROM assets needed" or "Get your Pokemon Red ROM (.gb) in"
-    self.detail = "Tap Choose ROM to pick your file"
+  for _, version in ipairs(GameVersion.ORDER) do
+    local info = GameVersion.info(version)
+    local ready = RomImporter.isReady(version) and not self.forceImport
+    self.ready[version] = ready
+    -- a marker present but for an older cache generation / different ROM means
+    -- "update required" (re-import) rather than a clean first-run choose
+    local saved = CacheFs.prefix
+    CacheFs.prefix = info.cachePrefix
+    local marker = CacheFs.read(MARKER_PATH)
+    CacheFs.prefix = saved
+    self.returning[version] =
+      (not ready) and marker ~= nil and marker ~= markerFor(version)
+    self.romName[version] = "pokemon_" .. info.id .. ".gb"
+  end
+
+  -- Android has no native picker until the player copies a ROM into the
+  -- external folder; import any .gb already there (routed by SHA-1) unless
+  -- both games are already imported.
+  if android and not (self.ready.red and self.ready.blue) then
     local name = scanForRom()
-    if name then
-      self:startData(love.filesystem.read(name), name)
-    end
+    if name then self:startData(love.filesystem.read(name), name) end
   end
 
   return self
@@ -292,18 +332,18 @@ end
 -- it into the folder scanForRom checks, so a rescan on refocus picks it up
 -- without the player needing to tap the button again.
 function RomImporter:focus(f)
-  if not (f and self.android
-      and (self.state == "waiting" or self.state == "error")) then
-    return
-  end
+  if not (f and self.android and self.workState ~= "working") then return end
+  if self.ready.red and self.ready.blue then return end
   local name = scanForRom()
-  if name then
-    self:startData(love.filesystem.read(name), name)
-  end
+  if name then self:startData(love.filesystem.read(name), name) end
 end
 
-function RomImporter:setError(message)
-  self.state = "error"
+function RomImporter:setError(message, version)
+  require("src.import.CacheFs").prefix = ""
+  self.workState = "error"
+  self.errorVersion = version or self.importing or self.chooseVersion or "red"
+  self.importing = nil
+  self.notice = nil
   self.status = "That ROM could not be imported"
   self.detail = tostring(message)
   self.progress = 0
@@ -311,42 +351,52 @@ function RomImporter:setError(message)
   self.romData = nil
 end
 
+-- Verify + extract a ROM.  The version is decided by the ROM's own SHA-1, so
+-- dropping a Red or Blue cart into either column always lands in the right one.
 function RomImporter:startData(data, displayName)
-  if self.state == "working" then return end
+  if self.workState == "working" then return end
   if type(data) ~= "string" then
     self:setError("The selected file could not be read.")
     return
   end
   if #data ~= 1024 * 1024 then
-    self:setError(("Expected a 1 MiB Pokemon Red ROM; this file is %.2f MiB.")
+    self:setError(("Expected a 1 MiB Game Boy ROM; this file is %.2f MiB.")
       :format(#data / 1024 / 1024))
     return
   end
+  local actualHash = sha1(data)
+  local version = GameVersion.forSha1(actualHash)
+  if not version then
+    self:setError(("Unsupported ROM (SHA-1 %s). Use an unmodified US Pokemon "
+      .. "Red or Blue ROM."):format(actualHash))
+    return
+  end
+  local info = GameVersion.info(version)
 
-  self.state = "working"
-  self.status = "Verifying ROM"
-  self.detail = displayName or "Pokemon Red"
+  self.importing = version
+  self.workState = "working"
+  self.notice = nil
+  self.status = "Verifying " .. info.displayName
+  self.detail = displayName or info.displayName
   self.progress = 0
   self.romData = data
   self.worker = coroutine.create(function()
-    local actualHash = sha1(self.romData)
-    if actualHash ~= ROM_SHA1 then
-      error(("Unsupported ROM (SHA-1 %s). Use an unmodified US Pokemon Red ROM.")
-        :format(actualHash))
-    end
     self.status = "Preparing private game data"
     coroutine.yield()
-    -- Clear any previous cache from both possible homes: the save directory
-    -- (removeTree) and, for a portable install, the game folder (CacheFs).
+    -- Redirect every cache write to this version's subtree, then clear only
+    -- that version's previous cache from both homes (save directory and, for
+    -- a portable install, the game folder).  The other version is untouched.
     local CacheFs = require("src.import.CacheFs")
-    removeTree("data/generated")
-    removeTree("assets/generated")
-    love.filesystem.remove(MARKER_PATH)
+    local prefix = info.cachePrefix
+    CacheFs.prefix = prefix
+    removeTree(prefix .. "data/generated")
+    removeTree(prefix .. "assets/generated")
+    love.filesystem.remove(prefix .. MARKER_PATH)
     CacheFs.removeTree("data/generated")
     CacheFs.removeTree("assets/generated")
     CacheFs.remove(MARKER_PATH)
 
-    local manifest = decodeManifest()
+    local manifest = decodeManifest(version)
     local RomExtractor = require("src.import.RomExtractor")
     local extractor = RomExtractor.new(self.romData, manifest,
       function(progress, total, stage, current, stageTotal)
@@ -360,24 +410,25 @@ function RomImporter:startData(data, displayName)
     self.romData = nil
     collectgarbage("collect")
     -- Written last: the marker is what isReady() checks, so it must only
-    -- appear once every required file is in place.  CacheFs puts it beside
-    -- the cache -- the game folder for a portable install, else the save
-    -- directory.
-    local ok, writeError = CacheFs.write(MARKER_PATH, CACHE_MARKER)
+    -- appear once every required file is in place.
+    local ok, writeError = CacheFs.write(MARKER_PATH, markerFor(version))
+    CacheFs.prefix = ""   -- restore the default so later writes stay at the root
     if not ok then error("could not finish the private cache: " .. tostring(writeError)) end
-    self.state = "complete"
+    self.ready[version] = true
+    self.returning[version] = false
+    self.romName[version] = (displayName
+      and (displayName:match("[^/\\]+$") or displayName)) or self.romName[version]
+    self.importing = nil
+    self.workState = "complete"
+    self.completeVersion = version
     self.status = "Ready"
-    self.detail = "Starting Pokemon Red..."
+    self.detail = "Starting " .. info.displayName .. "..."
     self.progress = 1
     if self.launcher then
-      -- Stay on the launcher and show Play for the game just imported; the
-      -- player presses Play to boot it.
-      self.romName = (displayName and (displayName:match("[^/\\]+$") or displayName))
-        or self.romName
-      self.state = "ready"
+      -- Stay on the launcher; the player presses Play to boot the new game.
       return
     end
-    if self.onComplete then self.onComplete() end
+    if self.onComplete then self.onComplete(version) end
   end)
 end
 
@@ -392,7 +443,7 @@ function RomImporter:startPath(path)
 end
 
 function RomImporter:filedropped(file)
-  if self.state == "working" then return end
+  if self.workState == "working" then return end
   local data, readError = readDroppedFile(file)
   if not data then
     self:setError("Could not read the dropped file: " .. tostring(readError))
@@ -401,25 +452,30 @@ function RomImporter:filedropped(file)
   self:startData(data, file:getFilename())
 end
 
-function RomImporter:choose()
-  if self.state == "working" then return end
+-- Open a picker (or, on Android, scan the external folder) for a column.  The
+-- version argument only titles the dialog and steers error/notice text; the
+-- picked ROM is still routed by its SHA-1, so choosing a Blue cart in the Red
+-- column imports Blue.
+function RomImporter:choose(version)
+  if self.workState == "working" then return end
+  self.chooseVersion = version or "red"
   if self.android then
     local name = scanForRom()
     if name then
       self:startData(love.filesystem.read(name), name)
     elseif not love.system.pickFile() then
       -- Picker unavailable (API < 19, or no document-picker app installed):
-      -- fall back to the USB folder-drop path. Not setError(): that status
-      -- text ("could not be imported") reads as a rejected file, not "none
-      -- found yet" -- and detail only renders 3 wrapped lines, so the path
-      -- again gets the line to itself.
-      self.state = "waiting"
-      self.status = "No picker available, copy your ROM into:"
-      self.detail = love.filesystem.getSaveDirectory()
+      -- fall back to the USB folder-drop path as a friendly notice, not an
+      -- error (which would read as a rejected file).
+      self.notice = {
+        version = self.chooseVersion,
+        status = "No picker available, copy your ROM into:",
+        detail = love.filesystem.getSaveDirectory(),
+      }
     end
     return
   end
-  local path = chooseRom()
+  local path = chooseRom(GameVersion.info(self.chooseVersion).displayName)
   if path then
     self:startPath(path)
   elseif love.system.getOS() ~= "OS X"
@@ -431,7 +487,7 @@ end
 
 function RomImporter:update(dt)
   self.pulse = self.pulse + dt
-  if self.state ~= "working" or not self.worker then return end
+  if self.workState ~= "working" or not self.worker then return end
   local started = love.timer.getTime()
   repeat
     local ok, workerError = coroutine.resume(self.worker)
@@ -448,16 +504,20 @@ function RomImporter:update(dt)
 end
 
 -- Player pressed Play on a game whose ROM is imported: hand off to boot.
-function RomImporter:play()
-  if self.onComplete then self.onComplete() end
+function RomImporter:play(version)
+  if self.workState == "working" then return end
+  if not self.ready[version] then return end
+  if self.onComplete then self.onComplete(version) end
 end
 
--- "re-import" from the Play state: drop back to the choose/drop UI so a fresh
--- ROM can be selected (the extract itself replaces the old cache).
-function RomImporter:reimport()
-  if self.state ~= "ready" then return end
-  self.state = "waiting"
-  self.returning = false
+-- "re-import" a column: drop it back to the choose/drop state so a fresh ROM
+-- can be selected (the extract replaces that version's cache).
+function RomImporter:reimport(version)
+  if self.workState == "working" then return end
+  if not self.ready[version] then return end
+  self.ready[version] = false
+  self.returning[version] = false
+  self.chooseVersion = version
 end
 
 local function clamp(v, lo, hi)
@@ -711,48 +771,60 @@ function RomImporter:draw()
       + buttonH + gapButton + hintH + padBot
   end
 
-  -- Red column: live, driven by the import state machine.
-  local redHint = self.android and "or copy the .gb via USB" or "or drop the .gb file here"
-  local redSpec = {
-    accent = PAL.red, interior = PAL.cardRed,
-    alpha = 1, glowScale = 1, period = 2.6,
-  }
-  if self.state == "ready" then
-    redSpec.heading = "Red ROM ready"
-    redSpec.detail  = "Your ROM is verified. Press Play to start."
-    redSpec.button  = { kind = "play", text = "Play Red" }
-    redSpec.link    = { name = self.romName }
-  elseif self.state == "working" or self.state == "complete" then
-    redSpec.heading  = self.status
-    redSpec.detail   = self.detail
-    redSpec.progress = self.progress or 0
-  elseif self.state == "error" then
-    redSpec.heading = "That ROM could not be imported"
-    redSpec.detail  = self.detail
-    redSpec.button  = { kind = "choose", text = "Choose ROM" }
-    redSpec.hint    = redHint
-  else -- waiting
-    if self.android then
-      redSpec.heading = self.status
-      redSpec.detail  = self.detail
-    elseif self.returning then
-      redSpec.heading = "Update required"
-      redSpec.detail  = "This build needs a few more things from your ROM. Re-import to continue."
+  -- Red and Blue are each live: a column shows Play once its ROM is imported,
+  -- Choose ROM / drag-drop before that, and a progress bar while extracting.
+  local dropHint = self.android and "or copy the .gb via USB"
+    or "or drop the .gb file here"
+  local function columnSpec(version, style)
+    local info = GameVersion.info(version)
+    local spec = {
+      version = version,
+      accent = style.accent, interior = style.interior,
+      alpha = 1, glowScale = 1, period = style.period,
+    }
+    local importing = self.importing == version
+    local erroring = self.workState == "error" and self.errorVersion == version
+    local notice = self.notice and self.notice.version == version and self.notice
+    if importing and
+        (self.workState == "working" or self.workState == "complete") then
+      spec.heading  = self.status
+      spec.detail   = self.detail
+      spec.progress = self.progress or 0
+    elseif self.ready[version] then
+      spec.heading = info.label .. " ROM ready"
+      spec.detail  = "Your ROM is verified. Press Play to start."
+      spec.button  = { kind = "play", text = "Play " .. info.label }
+      spec.link    = { name = self.romName[version] }
+    elseif erroring then
+      spec.heading = "That ROM could not be imported"
+      spec.detail  = self.detail
+      spec.button  = { kind = "choose", text = "Choose ROM" }
+      spec.hint    = dropHint
+    elseif notice then
+      spec.heading = notice.status
+      spec.detail  = notice.detail
+      spec.button  = { kind = "choose", text = "Choose ROM" }
+      spec.hint    = dropHint
+    elseif self.returning[version] then
+      spec.heading = "Update required"
+      spec.detail  = "This build needs a few more things from your "
+        .. info.label .. " ROM. Re-import to continue."
+      spec.button  = { kind = "choose", text = "Choose ROM" }
+      spec.hint    = dropHint
     else
-      redSpec.heading = "Choose or drop a Red ROM"
-      redSpec.detail  = "The ROM is verified before any files are created."
+      spec.heading = "Choose or drop a " .. info.label .. " ROM"
+      spec.detail  = "The ROM is verified before any files are created."
+      spec.button  = { kind = "choose", text = "Choose ROM" }
+      spec.hint    = dropHint
     end
-    redSpec.button = { kind = "choose", text = "Choose ROM" }
-    redSpec.hint   = redHint
+    return spec
   end
 
-  -- Blue and Yellow columns: lit placeholders until those games are supported.
-  local blueSpec = {
-    accent = PAL.blue, interior = PAL.cardBlue,
-    alpha = 0.92, glowScale = 0.5, period = 3.4,
-    heading = "Choose or drop a Blue ROM", detail = "Blue support is on the way.",
-    button = { kind = "disabled", text = "Coming soon" }, hint = "not yet available",
-  }
+  local redSpec = columnSpec("red",
+    { accent = PAL.red, interior = PAL.cardRed, period = 2.6 })
+  local blueSpec = columnSpec("blue",
+    { accent = PAL.blue, interior = PAL.cardBlue, period = 3.4 })
+  -- Yellow stays a lit placeholder until that game is supported.
   local yellowSpec = {
     accent = PAL.gold, interior = PAL.cardGold,
     alpha = 0.92, glowScale = 0.5, period = 3.8,
@@ -885,9 +957,20 @@ function RomImporter:draw()
     return buttonRect, linkRect
   end
 
-  self.redButton, self.reimportRect = drawCard(0, redSpec, top)
-  drawCard(third, blueSpec, top)
-  drawCard(2 * third, yellowSpec, top)
+  -- Per-column hit rects, rebuilt each frame and keyed by version so clicks
+  -- route to the right game (Yellow has none -- it is inert).
+  self.buttons = {}
+  self.reimportRects = {}
+  local function place(colX, spec)
+    local b, l = drawCard(colX, spec, top)
+    if spec.version then
+      self.buttons[spec.version] = b
+      self.reimportRects[spec.version] = l
+    end
+  end
+  place(0, redSpec)
+  place(third, blueSpec)
+  place(2 * third, yellowSpec)
 
   -- logo, centred over the split, with a gentle bob + gold glow
   local bob = math.sin(pulse * (2 * math.pi / 4)) * 6 * s
@@ -978,19 +1061,28 @@ function RomImporter:mousepressed(x, y, button)
     love.system.openURL(COMMUNITY_URL)
     return
   end
-  if self.state == "working" or self.state == "complete" then return end
-  if self.state == "ready" then
-    if inside(self.reimportRect, x, y) then self:reimport()
-    elseif inside(self.redButton, x, y) then self:play() end
-    return
+  if self.workState == "working" then return end
+  local buttons = self.buttons or {}
+  local reimports = self.reimportRects or {}
+  for _, version in ipairs(GameVersion.ORDER) do
+    if self.ready[version] then
+      if inside(reimports[version], x, y) then self:reimport(version); return
+      elseif inside(buttons[version], x, y) then self:play(version); return end
+    elseif inside(buttons[version], x, y) then
+      self:choose(version); return
+    end
   end
-  if inside(self.redButton, x, y) then self:choose() end
 end
 
 function RomImporter:keypressed(key)
-  if self.state == "working" or self.state == "complete" then return end
+  if self.workState == "working" then return end
   if key == "return" or key == "space" or key == "kpenter" then
-    if self.state == "ready" then self:play() else self:choose() end
+    -- Keyboard is ambiguous across columns: Play the first imported game,
+    -- otherwise open the Red picker.
+    for _, version in ipairs(GameVersion.ORDER) do
+      if self.ready[version] then self:play(version); return end
+    end
+    self:choose("red")
   end
 end
 

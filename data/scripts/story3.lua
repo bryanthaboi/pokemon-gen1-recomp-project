@@ -390,24 +390,42 @@ M.GAME_CORNER = {
   },
 }
 
--- Red-version prize lists (data/events/prizes.asm, prize_mon_levels.asm)
-local PRIZES = {
+-- Game Corner prize lists (data/events/prizes.asm, prize_mon_levels.asm).
+-- The six mon prizes differ between Red and Blue; the three TM prizes are
+-- identical, so they are shared and appended to each version's mon list.
+local PRIZE_TMS = {
+  { kind = "item", item = "TM_DRAGON_RAGE", cost = 3300 },
+  { kind = "item", item = "TM_HYPER_BEAM", cost = 5500 },
+  { kind = "item", item = "TM_SUBSTITUTE", cost = 7700 },
+}
+local RED_PRIZES = {
   { kind = "mon", species = "ABRA", level = 9, cost = 180 },
   { kind = "mon", species = "CLEFAIRY", level = 8, cost = 500 },
   { kind = "mon", species = "NIDORINA", level = 17, cost = 1200 },
   { kind = "mon", species = "DRATINI", level = 18, cost = 2800 },
   { kind = "mon", species = "SCYTHER", level = 25, cost = 5500 },
   { kind = "mon", species = "PORYGON", level = 26, cost = 9999 },
-  { kind = "item", item = "TM_DRAGON_RAGE", cost = 3300 },
-  { kind = "item", item = "TM_HYPER_BEAM", cost = 5500 },
-  { kind = "item", item = "TM_SUBSTITUTE", cost = 7700 },
+  PRIZE_TMS[1], PRIZE_TMS[2], PRIZE_TMS[3],
 }
+local BLUE_PRIZES = {
+  { kind = "mon", species = "ABRA", level = 6, cost = 120 },
+  { kind = "mon", species = "CLEFAIRY", level = 12, cost = 750 },
+  { kind = "mon", species = "NIDORINO", level = 17, cost = 1200 },
+  { kind = "mon", species = "PINSIR", level = 20, cost = 2500 },
+  { kind = "mon", species = "DRATINI", level = 24, cost = 4600 },
+  { kind = "mon", species = "PORYGON", level = 18, cost = 6500 },
+  PRIZE_TMS[1], PRIZE_TMS[2], PRIZE_TMS[3],
+}
+
+local function activePrizes()
+  return require("src.core.GameVersion").isBlue() and BLUE_PRIZES or RED_PRIZES
+end
 
 local function prizeCounter(game, ow, npc, done)
   local ListMenu = require("src.ui.ListMenu")
   local Commands = require("src.script.Commands")
   local items = {}
-  for _, p in ipairs(PRIZES) do
+  for _, p in ipairs(activePrizes()) do
     local label
     if p.kind == "mon" then
       label = ("%s L%d"):format(game.data.pokemon[p.species].name, p.level)
